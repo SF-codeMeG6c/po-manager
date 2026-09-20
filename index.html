@@ -6,22 +6,32 @@
   <title>PO Manager - Freeman Restoration</title>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root" style="font-family: Arial; padding: 20px;"></div>
+  <div id="errors" style="background: #fee; padding: 10px; margin: 10px 0; border: 1px solid #f88; display: none; color: red; font-size: 12px;"></div>
 
-  <!-- React -->
+  <script>
+    const errorDiv = document.getElementById('errors');
+    function logError(msg) {
+      console.error(msg);
+      const p = document.createElement('p');
+      p.textContent = msg;
+      errorDiv.appendChild(p);
+      errorDiv.style.display = 'block';
+    }
+    window.onerror = (msg, url, line) => logError(`JS Error L${line}: ${msg}`);
+  </script>
+
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  
-  <!-- Babel -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-  
-  <!-- Firebase (compat) -->
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
 
   <script type="text/babel">
     const { useState, useEffect } = React;
+    console.log('✓ React loaded:', typeof React);
+    console.log('✓ Firebase loaded:', typeof firebase);
     
     let auth = null, db = null;
     try {
@@ -36,22 +46,86 @@
         });
         auth = firebase.auth();
         db = firebase.firestore();
+        console.log('✓ Firebase initialized');
       }
     } catch (e) {
       console.error('Firebase error:', e);
+      document.getElementById('errors').innerHTML += '<p>Firebase init failed: ' + e.message + '</p>';
     }
 
-    const ChevronDown = ({ size = 24 }) => (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <polyline points="6 9 12 15 18 9"></polyline>
-      </svg>
-    );
+    const AuthScreen = () => {
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [isSignUp, setIsSignUp] = useState(false);
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
 
-    const ChevronUp = ({ size = 24 }) => (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <polyline points="18 15 12 9 6 15"></polyline>
-      </svg>
-    );
+      const handleAuth = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        try {
+          if (isSignUp) {
+            await auth.createUserWithEmailAndPassword(email, password);
+          } else {
+            await auth.signInWithEmailAndPassword(email, password);
+          }
+        } catch (err) {
+          setError(err.message);
+        }
+        setLoading(false);
+      };
 
-    const Trash2 = ({ size = 24 }) => (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      return (
+        <div style={{ maxWidth: '400px', margin: '100px auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+          <h1 style={{ textAlign: 'center' }}>Freeman Restoration</h1>
+          <h2 style={{ textAlign: 'center', fontSize: '18px', fontWeight: 'normal', color: '#666' }}>PO Manager</h2>
+          <form onSubmit={handleAuth} style={{ background: '#f9f9f9', padding: '20px', borderRadius: '4px' }}>
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '13px' }}>Email</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '13px' }}>Password</label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', boxSizing: 'border-box' }} />
+            </div>
+            {error && <div style={{ color: '#f44336', marginBottom: '15px', fontSize: '13px' }}>{error}</div>}
+            <button type="submit" disabled={loading} style={{ width: '100%', padding: '10px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', marginBottom: '10px' }}>
+              {loading ? 'Loading...' : isSignUp ? 'Sign Up' : 'Log In'}
+            </button>
+            <button type="button" onClick={() => setIsSignUp(!isSignUp)} style={{ width: '100%', padding: '10px', background: 'transparent', color: '#2196F3', border: '1px solid #2196F3', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>
+              {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
+            </button>
+          </form>
+        </div>
+      );
+    };
+
+    const App = () => {
+      const [user, setUser] = useState(null);
+      const [authLoading, setAuthLoading] = useState(true);
+
+      useEffect(() => {
+        if (!auth) { setAuthLoading(false); return; }
+        const unsubscribe = auth.onAuthStateChanged((currentUser) => { setUser(currentUser); setAuthLoading(false); });
+        return unsubscribe;
+      }, []);
+
+      if (authLoading) return <div style={{ textAlign: 'center', padding: '40px', fontFamily: 'Arial, sans-serif' }}>Loading...</div>;
+      if (!user) return <AuthScreen />;
+
+      return <div style={{ padding: '20px' }}><h1>Logged in as {user.email}</h1><button onClick={() => auth.signOut()} style={{ padding: '10px 20px', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Logout</button></div>;
+    };
+
+    console.log('Starting render...');
+    try {
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+      console.log('✓ Render successful');
+    } catch (e) {
+      console.error('Render error:', e);
+      document.getElementById('errors').innerHTML = '<p><strong>Failed to render:</strong> ' + e.message + '</p>';
+      document.getElementById('errors').style.display = 'block';
+    }
+  </script>
+</body>
+</html>
