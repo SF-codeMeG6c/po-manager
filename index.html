@@ -116,7 +116,6 @@
       const [user, setUser] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
       const [showJobDefaults, setShowJobDefaults] = useState(true);
-      const [showSubcontractor, setShowSubcontractor] = useState(true);
       const [saving, setSaving] = useState(false);
       
       const [jobDefaults, setJobDefaults] = useState({
@@ -137,17 +136,6 @@
         superName: '',
         superPhone: '',
         superEmail: '',
-      });
-
-      const [subcontractor, setSubcontractor] = useState({
-        subName: '',
-        subAddress: '',
-        subPhone: '',
-        subContact: '',
-        subEmail: '',
-        subCode: '',
-        subCAT: '',
-        amountDue: '',
       });
 
       useEffect(() => {
@@ -207,19 +195,6 @@
         setCurrentJob(jobDefaults);
       };
 
-      const handleClearSubcontractor = () => {
-        setSubcontractor({
-          subName: '',
-          subAddress: '',
-          subPhone: '',
-          subContact: '',
-          subEmail: '',
-          subCode: '',
-          subCAT: '',
-          amountDue: '',
-        });
-      };
-
       if (authLoading) return <div style={{ textAlign: 'center', padding: '40px' }}>Loading...</div>;
       if (!user) return <AuthScreen />;
 
@@ -228,7 +203,7 @@
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', paddingBottom: '20px', borderBottom: '1px solid #eee' }}>
             <div>
               <h1 style={{ margin: '0 0 5px 0' }}>Freeman Restoration - PO Manager</h1>
-              <div style={{ fontSize: '12px', color: '#999' }}>Step 2: Job Defaults + Subcontractor</div>
+              <div style={{ fontSize: '12px', color: '#999' }}>Job Defaults</div>
               <div style={{ fontSize: '12px', color: '#999' }}>{user.email}</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -288,44 +263,6 @@
               <div><strong>Phone:</strong> {jobDefaults.superPhone || '(none)'}</div>
               <div><strong>Email:</strong> {jobDefaults.superEmail || '(none)'}</div>
             </div>
-          </div>
-
-          <div style={{ border: '1px solid #ddd', marginBottom: '20px', borderRadius: '4px' }}>
-            <button
-              onClick={() => setShowSubcontractor(!showSubcontractor)}
-              style={{
-                width: '100%',
-                padding: '12px',
-                background: '#f5f5f5',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: 'bold',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              SUBCONTRACTOR DETAILS
-              {showSubcontractor ? <ChevronUp /> : <ChevronDown />}
-            </button>
-
-            {showSubcontractor && (
-              <div style={{ padding: '15px' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-                  <input type="text" placeholder="Subcontractor" value={subcontractor.subName} onChange={(e) => setSubcontractor({ ...subcontractor, subName: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Address" value={subcontractor.subAddress} onChange={(e) => setSubcontractor({ ...subcontractor, subAddress: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Phone" value={subcontractor.subPhone} onChange={(e) => setSubcontractor({ ...subcontractor, subPhone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Contact" value={subcontractor.subContact} onChange={(e) => setSubcontractor({ ...subcontractor, subContact: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="email" placeholder="Email" value={subcontractor.subEmail} onChange={(e) => setSubcontractor({ ...subcontractor, subEmail: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Sub Code" value={subcontractor.subCode} onChange={(e) => setSubcontractor({ ...subcontractor, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="CAT" value={subcontractor.subCAT} onChange={(e) => setSubcontractor({ ...subcontractor, subCAT: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="number" placeholder="Amount Due" value={subcontractor.amountDue} onChange={(e) => setSubcontractor({ ...subcontractor, amountDue: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                </div>
-
-                <button onClick={handleClearSubcontractor} style={{ padding: '8px 16px', background: '#f44336', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>Clear Subcontractor</button>
-              </div>
-            )}
           </div>
         </div>
       );
