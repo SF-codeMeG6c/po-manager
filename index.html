@@ -145,8 +145,7 @@
         subPhone: '',
         subEmail: '',
         subCode: '',
-        contractAmount: '',
-        previousPayment: '',
+        amountDue: '',
         scopeOfWork: '',
       });
 
@@ -207,12 +206,6 @@
         setCurrentJob(jobDefaults);
       };
 
-      const calculateAmountDue = () => {
-        const contract = parseFloat(subcontractor.contractAmount) || 0;
-        const previous = parseFloat(subcontractor.previousPayment) || 0;
-        return (contract - previous).toFixed(2);
-      };
-
       const handleClearSubcontractor = () => {
         setSubcontractor({
           subName: '',
@@ -220,8 +213,7 @@
           subPhone: '',
           subEmail: '',
           subCode: '',
-          contractAmount: '',
-          previousPayment: '',
+          amountDue: '',
           scopeOfWork: '',
         });
       };
@@ -324,9 +316,7 @@
                   <input type="text" placeholder="Phone / Contact" value={subcontractor.subPhone} onChange={(e) => setSubcontractor({ ...subcontractor, subPhone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <input type="email" placeholder="Email" value={subcontractor.subEmail} onChange={(e) => setSubcontractor({ ...subcontractor, subEmail: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <input type="text" placeholder="Sub Code / CAT / Type" value={subcontractor.subCode} onChange={(e) => setSubcontractor({ ...subcontractor, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <div style={{ padding: '8px', background: '#f9f9f9', borderRadius: '4px', fontSize: '13px', fontWeight: 'bold' }}>Amount Due: ${calculateAmountDue()}</div>
-                  <input type="number" placeholder="Contract Amount" value={subcontractor.contractAmount} onChange={(e) => setSubcontractor({ ...subcontractor, contractAmount: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="number" placeholder="Previous Payment" value={subcontractor.previousPayment} onChange={(e) => setSubcontractor({ ...subcontractor, previousPayment: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="number" placeholder="Amount Due" value={subcontractor.amountDue} onChange={(e) => setSubcontractor({ ...subcontractor, amountDue: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                 </div>
 
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', fontSize: '13px' }}>Scope of Work</label>
