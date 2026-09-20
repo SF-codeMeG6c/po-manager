@@ -27,6 +27,7 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
   <script type="text/babel">
     const { useState, useEffect } = React;
@@ -116,7 +117,28 @@
       const [user, setUser] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
       const [showJobDefaults, setShowJobDefaults] = useState(true);
+      const [showFormFiller, setShowFormFiller] = useState(true);
+      const [showSearchLibrary, setShowSearchLibrary] = useState(false);
       const [saving, setSaving] = useState(false);
+      const [generating, setGenerating] = useState(false);
+      
+      const [formData, setFormData] = useState({
+        subName: '',
+        contact: '',
+        phone: '',
+        email: '',
+        subCode: '',
+        category: '',
+        scopeOfWork: '',
+        contractAmount: '',
+        previousPayment: '',
+        amountDue: '',
+      });
+
+      const [searchQuery, setSearchQuery] = useState('');
+      const [searchType, setSearchType] = useState('subName');
+      const [searchResults, setSearchResults] = useState([]);
+      const [selectedResult, setSelectedResult] = useState(null);
       
       const [jobDefaults, setJobDefaults] = useState({
         jobCode: '',
@@ -195,6 +217,95 @@
         setCurrentJob(jobDefaults);
       };
 
+      const handleGeneratePDF = async () => {
+        setGenerating(true);
+        try {
+          alert('PDF generation feature coming soon - form data will be overlaid on blank PDF');
+          console.log('Generate PDF with:', formData);
+        } catch (err) {
+          console.error('PDF generation error:', err);
+          logError('PDF generation failed: ' + err.message);
+        }
+        setGenerating(false);
+      };
+
+      const handleSaveFormToLibrary = async () => {
+        if (!user || !db) {
+          alert('Not connected to database');
+          return;
+        }
+        if (!formData.subName || !formData.category) {
+          alert('Subcontractor name and category required');
+          return;
+        }
+        setSaving(true);
+        try {
+          await db.collection('formLibrary').add({
+            userId: user.uid,
+            subName: formData.subName,
+            category: formData.category,
+            contact: formData.contact,
+            phone: formData.phone,
+            email: formData.email,
+            subCode: formData.subCode,
+            scopeOfWork: formData.scopeOfWork,
+            contractAmount: formData.contractAmount,
+            previousPayment: formData.previousPayment,
+            amountDue: formData.amountDue,
+            timestamp: new Date(),
+          });
+          alert('Form saved to library');
+          setFormData({ subName: '', contact: '', phone: '', email: '', subCode: '', category: '', scopeOfWork: '', contractAmount: '', previousPayment: '', amountDue: '' });
+        } catch (err) {
+          console.error('Save error:', err);
+          logError('Save to library failed: ' + err.message);
+        }
+        setSaving(false);
+      };
+
+      const handleSearch = async () => {
+        if (!user || !db || !searchQuery) {
+          alert('Enter search term');
+          return;
+        }
+        try {
+          let results = [];
+          if (searchType === 'subName') {
+            const snapshot = await db.collection('formLibrary').where('userId', '==', user.uid).where('subName', '==', searchQuery).get();
+            results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const categories = [...new Set(results.map(r => r.category))];
+            alert(`Found ${results.length} records. Categories: ${categories.join(', ') || 'none'}`);
+          } else if (searchType === 'category') {
+            const snapshot = await db.collection('formLibrary').where('userId', '==', user.uid).where('category', '==', searchQuery).get();
+            results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const subs = [...new Set(results.map(r => r.subName))];
+            alert(`Found ${results.length} records. Subcontractors: ${subs.join(', ') || 'none'}`);
+          }
+          setSearchResults(results);
+        } catch (err) {
+          console.error('Search error:', err);
+          logError('Search failed: ' + err.message);
+        }
+      };
+
+      const handleSelectResult = (result) => {
+        setFormData({
+          subName: result.subName,
+          contact: result.contact,
+          phone: result.phone,
+          email: result.email,
+          subCode: result.subCode,
+          category: result.category,
+          scopeOfWork: result.scopeOfWork,
+          contractAmount: result.contractAmount,
+          previousPayment: result.previousPayment,
+          amountDue: result.amountDue,
+        });
+        setSelectedResult(result.id);
+        setSearchResults([]);
+        setSearchQuery('');
+      };
+
       if (authLoading) return <div style={{ textAlign: 'center', padding: '40px' }}>Loading...</div>;
       if (!user) return <AuthScreen />;
 
@@ -203,7 +314,6 @@
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', paddingBottom: '20px', borderBottom: '1px solid #eee' }}>
             <div>
               <h1 style={{ margin: '0 0 5px 0' }}>Freeman Restoration - PO Manager</h1>
-              <div style={{ fontSize: '12px', color: '#999' }}>Job Defaults</div>
               <div style={{ fontSize: '12px', color: '#999' }}>{user.email}</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -263,6 +373,84 @@
               <div><strong>Phone:</strong> {jobDefaults.superPhone || '(none)'}</div>
               <div><strong>Email:</strong> {jobDefaults.superEmail || '(none)'}</div>
             </div>
+          </div>
+
+          <div style={{ border: '1px solid #ddd', marginBottom: '20px', borderRadius: '4px' }}>
+            <button
+              onClick={() => setShowFormFiller(!showFormFiller)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: '#f5f5f5',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 'bold',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              FILL & GENERATE FORM
+              {showFormFiller ? <ChevronUp /> : <ChevronDown />}
+            </button>
+
+            {showFormFiller && (
+              <div style={{ padding: '15px' }}>
+                <div style={{ background: '#f9f9f9', padding: '10px', marginBottom: '15px', borderRadius: '4px', fontSize: '13px', color: '#666' }}>
+                  <strong>Job Info:</strong> {currentJob.jobCode} | {currentJob.jobAddress} | {currentJob.superName}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                  <input type="text" placeholder="Subcontractor" value={formData.subName} onChange={(e) => setFormData({ ...formData, subName: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Contact" value={formData.contact} onChange={(e) => setFormData({ ...formData, contact: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Phone" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="email" placeholder="Email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Sub Code" value={formData.subCode} onChange={(e) => setFormData({ ...formData, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Category" value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                </div>
+
+                <textarea placeholder="Scope of Work" value={formData.scopeOfWork} onChange={(e) => setFormData({ ...formData, scopeOfWork: e.target.value })} style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px', marginBottom: '12px', minHeight: '100px', boxSizing: 'border-box' }} />
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                  <input type="number" placeholder="Contract Amount" value={formData.contractAmount} onChange={(e) => setFormData({ ...formData, contractAmount: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="number" placeholder="Previous Payment" value={formData.previousPayment} onChange={(e) => setFormData({ ...formData, previousPayment: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="number" placeholder="Amount Due" value={formData.amountDue} onChange={(e) => setFormData({ ...formData, amountDue: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+                  <button onClick={handleGeneratePDF} disabled={generating} style={{ padding: '8px 16px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
+                    {generating ? 'Generating...' : 'Generate & Download PDF'}
+                  </button>
+                  <button onClick={handleSaveFormToLibrary} disabled={saving} style={{ padding: '8px 16px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
+                    {saving ? 'Saving...' : 'Save to Library'}
+                  </button>
+                </div>
+
+                <div style={{ borderTop: '1px solid #ddd', paddingTop: '15px' }}>
+                  <strong style={{ fontSize: '13px' }}>Search Library</strong>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '10px', marginBottom: '10px' }}>
+                    <select value={searchType} onChange={(e) => setSearchType(e.target.value)} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '13px' }}>
+                      <option value="subName">Search by Subcontractor</option>
+                      <option value="category">Search by Category</option>
+                    </select>
+                    <input type="text" placeholder="Enter search term" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ flex: 1, padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                    <button onClick={handleSearch} style={{ padding: '8px 16px', background: '#FF9800', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>Search</button>
+                  </div>
+
+                  {searchResults.length > 0 && (
+                    <div style={{ background: '#f9f9f9', padding: '10px', borderRadius: '4px', fontSize: '13px' }}>
+                      <strong>{searchResults.length} results:</strong>
+                      {searchResults.map((result) => (
+                        <div key={result.id} onClick={() => handleSelectResult(result)} style={{ padding: '8px', background: 'white', border: '1px solid #eee', borderRadius: '3px', marginTop: '5px', cursor: 'pointer' }}>
+                          <strong>{result.subName}</strong> | {result.category} | {result.contact}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
