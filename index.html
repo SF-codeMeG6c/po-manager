@@ -143,10 +143,11 @@
         subName: '',
         subAddress: '',
         subPhone: '',
+        subContact: '',
         subEmail: '',
         subCode: '',
+        subCAT: '',
         amountDue: '',
-        scopeOfWork: '',
       });
 
       useEffect(() => {
@@ -211,10 +212,11 @@
           subName: '',
           subAddress: '',
           subPhone: '',
+          subContact: '',
           subEmail: '',
           subCode: '',
+          subCAT: '',
           amountDue: '',
-          scopeOfWork: '',
         });
       };
 
@@ -313,14 +315,13 @@
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
                   <input type="text" placeholder="Subcontractor" value={subcontractor.subName} onChange={(e) => setSubcontractor({ ...subcontractor, subName: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <input type="text" placeholder="Address" value={subcontractor.subAddress} onChange={(e) => setSubcontractor({ ...subcontractor, subAddress: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Phone / Contact" value={subcontractor.subPhone} onChange={(e) => setSubcontractor({ ...subcontractor, subPhone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Phone" value={subcontractor.subPhone} onChange={(e) => setSubcontractor({ ...subcontractor, subPhone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Contact" value={subcontractor.subContact} onChange={(e) => setSubcontractor({ ...subcontractor, subContact: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <input type="email" placeholder="Email" value={subcontractor.subEmail} onChange={(e) => setSubcontractor({ ...subcontractor, subEmail: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Sub Code / CAT / Type" value={subcontractor.subCode} onChange={(e) => setSubcontractor({ ...subcontractor, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="Sub Code" value={subcontractor.subCode} onChange={(e) => setSubcontractor({ ...subcontractor, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <input type="text" placeholder="CAT" value={subcontractor.subCAT} onChange={(e) => setSubcontractor({ ...subcontractor, subCAT: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <input type="number" placeholder="Amount Due" value={subcontractor.amountDue} onChange={(e) => setSubcontractor({ ...subcontractor, amountDue: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
                 </div>
-
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', fontSize: '13px' }}>Scope of Work</label>
-                <textarea placeholder="Enter scope of work details..." value={subcontractor.scopeOfWork} onChange={(e) => setSubcontractor({ ...subcontractor, scopeOfWork: e.target.value })} style={{ width: '100%', height: '120px', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', fontFamily: 'Arial, sans-serif', fontSize: '13px', marginBottom: '12px', boxSizing: 'border-box' }} />
 
                 <button onClick={handleClearSubcontractor} style={{ padding: '8px 16px', background: '#f44336', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>Clear Subcontractor</button>
               </div>
