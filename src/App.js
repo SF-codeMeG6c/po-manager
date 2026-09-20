@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, Plus, Lock, Unlock, Trash2, Search, X } from 'lucide-react';
+import { Lock } from 'lucide-react';
 
 export default function POManager() {
   const [currentView, setCurrentView] = useState('jobs');
