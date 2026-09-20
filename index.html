@@ -23,10 +23,6 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
     
-    console.log('Script loaded');
-    console.log('Firebase available:', typeof firebase !== 'undefined');
-    
-    // Firebase setup
     let auth = null, db = null;
     try {
       if (typeof firebase !== 'undefined' && (!firebase.apps || !firebase.apps.length)) {
@@ -40,7 +36,6 @@
         });
         auth = firebase.auth();
         db = firebase.firestore();
-        console.log('Firebase initialized');
       }
     } catch (e) {
       console.error('Firebase error:', e);
@@ -52,6 +47,7 @@
       const [email, setEmail] = useState('');
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
+      const [isSignUp, setIsSignUp] = useState(false);
 
       useEffect(() => {
         if (!auth) {
@@ -66,14 +62,18 @@
         setLoading(false);
       }, []);
 
-      const handleLogin = async (e) => {
+      const handleAuth = async (e) => {
         e.preventDefault();
         if (!auth) {
           setError('Firebase not available');
           return;
         }
         try {
-          await auth.signInWithEmailAndPassword(email, password);
+          if (isSignUp) {
+            await auth.createUserWithEmailAndPassword(email, password);
+          } else {
+            await auth.signInWithEmailAndPassword(email, password);
+          }
         } catch (e) {
           setError(e.message);
         }
@@ -86,12 +86,13 @@
           <div style={{ maxWidth: '400px', margin: '100px auto', padding: '20px', fontFamily: 'Arial' }}>
             <h1>Freeman Restoration</h1>
             <h2>PO Manager</h2>
-            <form onSubmit={handleLogin} style={{ background: '#f9f9f9', padding: '20px' }}>
+            <form onSubmit={handleAuth} style={{ background: '#f9f9f9', padding: '20px' }}>
               <input
                 type="email"
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                required
                 style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box' }}
               />
               <input
@@ -99,11 +100,19 @@
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                required
                 style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box' }}
               />
-              {error && <div style={{ color: 'red', marginBottom: '10px' }}>{error}</div>}
-              <button type="submit" style={{ width: '100%', padding: '10px', background: '#2196F3', color: 'white', border: 'none' }}>
-                Log In
+              {error && <div style={{ color: 'red', marginBottom: '10px', fontSize: '12px' }}>{error}</div>}
+              <button type="submit" style={{ width: '100%', padding: '10px', background: '#2196F3', color: 'white', border: 'none', marginBottom: '10px' }}>
+                {isSignUp ? 'Sign Up' : 'Log In'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsSignUp(!isSignUp)}
+                style={{ width: '100%', padding: '10px', background: 'transparent', color: '#2196F3', border: '1px solid #2196F3', cursor: 'pointer' }}
+              >
+                {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
               </button>
             </form>
           </div>
