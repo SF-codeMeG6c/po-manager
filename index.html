@@ -8,28 +8,30 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
-        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-        .section:last-child { border-bottom: none; }
-        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; }
-        .form-group { margin-bottom: 12px; }
-        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        h1 { color: #333; margin-bottom: 5px; font-size: 24px; }
+        .subtitle { color: #999; margin-bottom: 25px; font-size: 12px; }
+        .section { margin-bottom: 25px; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .form-group { margin-bottom: 10px; }
+        label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; font-weight: 500; }
         input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
         input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
-        button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
+        button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 10px; }
         .btn-primary { background: #0066cc; color: white; }
         .btn-primary:hover { background: #0052a3; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
-        .saved-box { background: #e6f3e6; border: 1px solid #4caf50; border-radius: 4px; padding: 12px; margin-top: 15px; font-size: 13px; color: #2e7d32; }
-        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        .btn-small { width: auto; padding: 8px 12px; font-size: 12px; margin-top: 0; }
+        .message { margin-top: 12px; padding: 8px; text-align: center; font-size: 12px; }
+        .message.success { color: #388e3c; }
+        .message.error { color: #d32f2f; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>PO Manager</h1>
-        <p class="subtitle">Freeman Restoration Subcontractor Scope of Work</p>
+        <p class="subtitle">Freeman Restoration</p>
         <div id="app"></div>
     </div>
 
@@ -147,7 +149,7 @@
                             superEmail
                         }
                     }, { merge: true });
-                    setMessage('Saved!');
+                    setMessage('Saved');
                     setTimeout(() => setMessage(''), 2000);
                 } catch (error) {
                     setMessage('Error: ' + error.message);
@@ -163,6 +165,8 @@
                     setSuperName(savedDefaults.superName);
                     setSuperPhone(savedDefaults.superPhone);
                     setSuperEmail(savedDefaults.superEmail);
+                    setMessage('Applied');
+                    setTimeout(() => setMessage(''), 1500);
                 }
             };
 
@@ -218,7 +222,7 @@
                     link.click();
                     URL.revokeObjectURL(url);
 
-                    setMessage('Downloaded!');
+                    setMessage('Downloaded: ' + po);
                     setTimeout(() => setMessage(''), 2000);
                 } catch (error) {
                     setMessage('Error: ' + error.message);
@@ -231,13 +235,13 @@
                         <div className="section-title">{authMode === 'login' ? 'Login' : 'Sign Up'}</div>
                         <div className="form-group">
                             <label>Email</label>
-                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} />
+                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
                         </div>
                         <div className="form-group">
                             <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
                         </div>
-                        {authError && <div className="error">{authError}</div>}
+                        {authError && <div className="message error">{authError}</div>}
                         <button className="btn-primary" onClick={authMode === 'login' ? handleLogin : handleSignUp}>
                             {authMode === 'login' ? 'Login' : 'Create Account'}
                         </button>
@@ -250,56 +254,56 @@
 
             return (
                 <div>
+                    <div className="header">
+                        <div></div>
+                        <button className="btn-secondary btn-small" onClick={handleLogout}>Logout</button>
+                    </div>
+
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <div className="section-title">JOB HEADER DEFAULTS</div>
-                            <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
-                        </div>
+                        <div className="section-title">Job Defaults</div>
 
                         <div className="form-group">
                             <label>Job Code</label>
-                            <input value={jobCode} onChange={e => setJobCode(e.target.value)} />
+                            <input value={jobCode} onChange={e => setJobCode(e.target.value)} placeholder="Stark W 2602" />
                         </div>
                         <div className="form-group">
                             <label>Job Address</label>
-                            <input value={jobAddress} onChange={e => setJobAddress(e.target.value)} />
+                            <input value={jobAddress} onChange={e => setJobAddress(e.target.value)} placeholder="Street address" />
                         </div>
                         <div className="form-group">
                             <label>City / State / Zip</label>
-                            <input value={cityStateZip} onChange={e => setCityStateZip(e.target.value)} />
+                            <input value={cityStateZip} onChange={e => setCityStateZip(e.target.value)} placeholder="City, State ZIP" />
                         </div>
                         <div className="form-group">
                             <label>Lock Box</label>
-                            <input value={lockBox} onChange={e => setLockBox(e.target.value)} />
+                            <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
                         </div>
                         <div className="form-group">
                             <label>Super Name</label>
-                            <input value={superName} onChange={e => setSuperName(e.target.value)} />
+                            <input value={superName} onChange={e => setSuperName(e.target.value)} placeholder="Supervisor name" />
                         </div>
                         <div className="form-group">
                             <label>Super Phone</label>
-                            <input value={superPhone} onChange={e => setSuperPhone(e.target.value)} />
+                            <input value={superPhone} onChange={e => setSuperPhone(e.target.value)} placeholder="Phone" />
                         </div>
                         <div className="form-group">
                             <label>Super Email</label>
-                            <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} />
+                            <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
                         </div>
 
-                        <button className="btn-primary" onClick={handleSaveDefaults}>Save as Defaults</button>
-                        {savedDefaults && <div className="saved-box">Saved: {savedDefaults.jobCode}</div>}
+                        <button className="btn-primary" onClick={handleSaveDefaults}>Save Defaults</button>
+                        {savedDefaults && <button className="btn-secondary" onClick={handleApplyDefaults}>Apply Saved</button>}
                     </div>
 
                     <div className="section">
-                        <div className="section-title">FILL & GENERATE FORM</div>
-                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px' }}>
-                            Job: {jobCode || '(none)'}<br/>
-                            {currentPO && <strong>Last PO: {currentPO}</strong>}
+                        <div className="section-title">Generate PO</div>
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
+                            {jobCode && currentPO && <>PO: <strong>{currentPO}</strong></>}
                         </div>
                         <button className="btn-primary" onClick={handleGeneratePDF}>Generate & Download PDF</button>
-                        {savedDefaults && <button className="btn-secondary" onClick={handleApplyDefaults}>Apply Saved Defaults</button>}
                     </div>
 
-                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
+                    {message && <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>{message}</div>}
                 </div>
             );
         }
