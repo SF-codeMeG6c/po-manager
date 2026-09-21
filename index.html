@@ -284,54 +284,27 @@
                 }
             };
 
-            const handleGeneratePDF = async () => {
-                if (!jobCode || !superName) {
-                    setMessage('Select job and supervisor first');
-                    return;
-                }
-                try {
-                    const response = await fetch(TEMPLATE_PDF_URL);
-                    const arrayBuffer = await response.arrayBuffer();
-                    const pdfDoc = await PDFDocument.load(arrayBuffer);
-                    
-                    const form = pdfDoc.getForm();
-                    
-                    const fieldMap = {
-                        'JobCode': jobCode,
-                        'Address': jobAddress,
-                        'CityStateZip': cityStateZip,
-                        'LockBox': lockBox,
-                        'SupervisorName': superName,
-                        'SupervisorPhone': superPhone,
-                        'SupervisorEmail': superEmail
-                    };
-                    
-                    Object.keys(fieldMap).forEach(fieldName => {
-                        try {
-                            const field = form.getFieldByName(fieldName);
-                            if (field && !field.isReadOnly()) {
-                                field.setText(fieldMap[fieldName]);
-                            }
-                        } catch (e) {
-                            // Field doesn't exist or can't be written - skip it
-                        }
-                    });
-                    
-                    const pdfBytes = await pdfDoc.save();
-                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${jobCode}_SubcontractorScope.pdf`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    
-                    setCurrentPO(`${jobCode}_SubcontractorScope`);
-                    setMessage('PDF generated and downloaded');
-                } catch (error) {
-                    setMessage('Error generating PDF: ' + error.message);
-                }
-            };
+          const handleGeneratePDF = async () => {
+    if (!jobCode || !superName) {
+        setMessage('Select job and supervisor first');
+        return;
+    }
+    try {
+        const response = await fetch(TEMPLATE_PDF_URL);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${jobCode}_SubcontractorScope.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        setCurrentPO(`${jobCode}_SubcontractorScope`);
+        setMessage('PDF downloaded. Fill in manually and upload completed form.');
+    } catch (error) {
+        setMessage('Error downloading PDF: ' + error.message);
+    }
+};
 
             const handlePDFSelect = (e) => {
                 const file = e.target.files[0];
