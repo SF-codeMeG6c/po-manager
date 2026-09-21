@@ -31,7 +31,6 @@
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
         .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
         
-        /* Table styles */
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
         th { background: #f5f5f5; padding: 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
         td { padding: 10px; border-bottom: 1px solid #eee; }
@@ -40,17 +39,13 @@
         .status-completed { background: #c8e6c9; color: #2e7d32; }
         .status-in-progress { background: #fff9c4; color: #f57f17; }
         
-        /* Upload area */
         .upload-area { border: 2px dashed #ccc; border-radius: 4px; padding: 20px; text-align: center; margin: 15px 0; background: #fafafa; }
         .upload-area:hover { border-color: #0066cc; background: #f0f8ff; }
-        .upload-area.active { border-color: #0066cc; background: #f0f8ff; }
         .upload-area input[type="file"] { display: none; }
         
-        /* Button group */
         .button-group { display: flex; gap: 8px; margin-top: 8px; }
         .button-group button { margin: 0; }
         
-        /* Edit row styles */
         .edit-row input, .edit-row select, .edit-row textarea { width: 100%; margin: 0; }
     </style>
 </head>
@@ -88,6 +83,8 @@
         const db = firebase.firestore();
         const storage = firebase.storage();
 
+        const TEMPLATE_PDF_URL = 'https://raw.githubusercontent.com/SF-codeMeG6c/po-manager/main/Sub_Spec_Blank_9-20-26_V2.pdf';
+
         function POApp() {
             const [user, setUser] = useState(null);
             const [email, setEmail] = useState('');
@@ -111,7 +108,6 @@
             const [selectedJobIndex, setSelectedJobIndex] = useState('');
             const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
 
-            // Form tracking state
             const [selectedPDF, setSelectedPDF] = useState(null);
             const [uploadLoading, setUploadLoading] = useState(false);
             const [jobForms, setJobForms] = useState([]);
@@ -198,7 +194,6 @@
                     return;
                 }
                 try {
-                    // Create job document in jobs collection first
                     const jobDocRef = await db.collection('jobs').add({
                         userId: user.uid,
                         code: jobCode,
@@ -295,27 +290,42 @@
                     return;
                 }
                 try {
-                    // Create a simple PDF with job details
-                    const pdfDoc = await PDFDocument.create();
-                    const page = pdfDoc.addPage([595, 842]); // A4 size
-                    const { height } = page.getSize();
+                    const response = await fetch(TEMPLATE_PDF_URL);
+                    const arrayBuffer = await response.arrayBuffer();
+                    const pdfDoc = await PDFDocument.load(arrayBuffer);
                     
-                    page.drawText('SUBCONTRACTOR SCOPE OF WORK', {
-                        x: 50,
-                        y: height - 50,
-                        size: 16,
-                        color: rgb(0, 0, 0)
+                    const form = pdfDoc.getForm();
+                    const fields = form.getFields();
+                    
+                    const fieldMap = {
+                        'JobCode': jobCode,
+                        'Address': jobAddress,
+                        'CityStateZip': cityStateZip,
+                        'LockBox': lockBox,
+                        'SupervisorName': superName,
+                        'SupervisorPhone': superPhone,
+                        'SupervisorEmail': superEmail
+                    };
+                    
+                    fields.forEach(field => {
+                        const fieldName = field.getName();
+                        const value = fieldMap[fieldName] || '';
+                        
+                        if (value) {
+                            try {
+                                if (field.isReadOnly()) return;
+                                if (field.constructor.name === 'PDFTextField') {
+                                    field.setText(value);
+                                } else if (field.constructor.name === 'PDFCheckBox') {
+                                    if (value.toLowerCase() === 'true' || value === '1') {
+                                        field.check();
+                                    }
+                                }
+                            } catch (e) {
+                                console.log('Could not set field ' + fieldName);
+                            }
+                        }
                     });
-                    
-                    page.drawText(`Job: ${jobCode}`, { x: 50, y: height - 100, size: 12 });
-                    page.drawText(`Address: ${jobAddress}`, { x: 50, y: height - 130, size: 12 });
-                    page.drawText(`City/State/Zip: ${cityStateZip}`, { x: 50, y: height - 160, size: 12 });
-                    page.drawText(`Supervisor: ${superName}`, { x: 50, y: height - 190, size: 12 });
-                    page.drawText(`Phone: ${superPhone}`, { x: 50, y: height - 220, size: 12 });
-                    page.drawText(`Email: ${superEmail}`, { x: 50, y: height - 250, size: 12 });
-                    
-                    page.drawText('SUBCONTRACTOR DETAILS', { x: 50, y: height - 300, size: 14 });
-                    page.drawText('(To be filled in manually)', { x: 50, y: height - 330, size: 10, color: rgb(0.5, 0.5, 0.5) });
                     
                     const pdfBytes = await pdfDoc.save();
                     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -327,7 +337,7 @@
                     URL.revokeObjectURL(url);
                     
                     setCurrentPO(`${jobCode}_SubcontractorScope`);
-                    setMessage('PDF generated');
+                    setMessage('PDF generated and downloaded');
                 } catch (error) {
                     setMessage('Error generating PDF: ' + error.message);
                 }
@@ -345,19 +355,17 @@
 
             const handleSaveTemplate = async () => {
                 if (!user || !selectedPDF) {
-                    setMessage('Please select a PDF and fill in subcontractor details');
+                    setMessage('Please select a PDF');
                     return;
                 }
                 
                 setUploadLoading(true);
                 try {
-                    // Upload PDF to Firebase Storage
                     const timestamp = Date.now();
                     const fileRef = storage.ref(`formTemplates/${user.uid}/${timestamp}_${selectedPDF.name}`);
                     await fileRef.put(selectedPDF);
                     const downloadURL = await fileRef.getDownloadURL();
                     
-                    // Save metadata to Firestore
                     await db.collection('formLibrary').add({
                         userId: user.uid,
                         fileName: selectedPDF.name,
@@ -377,19 +385,17 @@
 
             const handleSaveToJob = async () => {
                 if (!user || !selectedPDF || !currentJobId) {
-                    setMessage('Select a job and PDF, then fill in subcontractor details');
+                    setMessage('Select a job and PDF');
                     return;
                 }
                 
                 setUploadLoading(true);
                 try {
-                    // Upload PDF to Firebase Storage
                     const timestamp = Date.now();
                     const fileRef = storage.ref(`jobForms/${currentJobId}/${timestamp}_${selectedPDF.name}`);
                     await fileRef.put(selectedPDF);
                     const downloadURL = await fileRef.getDownloadURL();
                     
-                    // Save to job's forms subcollection
                     await db.collection('jobs').doc(currentJobId).collection('forms').add({
                         fileName: selectedPDF.name,
                         pdfUrl: downloadURL,
