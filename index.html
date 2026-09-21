@@ -24,7 +24,6 @@
         .btn-secondary:hover { background: #e0e0e0; }
         .saved-box { background: #e6f3e6; border: 1px solid #4caf50; border-radius: 4px; padding: 12px; margin-top: 15px; font-size: 13px; color: #2e7d32; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
-        .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -58,6 +57,8 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+
+        let poCounters = {};
 
         function POApp() {
             const [user, setUser] = useState(null);
@@ -129,6 +130,7 @@
                 setSuperEmail('');
                 setCurrentPO('');
                 setSavedDefaults(null);
+                poCounters = {};
             };
 
             const handleSaveDefaults = async () => {
@@ -173,28 +175,15 @@
                     }
 
                     const formatted = jobCode.replace(/\s+/g, '.');
-const docRef = db.collection('poManagerData').doc(user.uid);
-
-try {
-    await docRef.update({
-        poCounters: {
-            [formatted]: firebase.firestore.FieldValue.increment(1)
-        }
-    });
-} catch (error) {
-    await docRef.set({
-        poCounters: {
-            [formatted]: 1
-        }
-    }, { merge: true });
-}
-
-const doc = await docRef.get();
-const count = doc.data().poCounters[formatted] || 1;
-const padded = String(count).padStart(3, '0');
-const po = formatted + '-' + padded;
-setCurrentPO(po);
                     
+                    if (!poCounters[formatted]) {
+                        poCounters[formatted] = 0;
+                    }
+                    
+                    poCounters[formatted]++;
+                    const padded = String(poCounters[formatted]).padStart(3, '0');
+                    const po = formatted + '-' + padded;
+                    setCurrentPO(po);
 
                     const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
                     if (!resp.ok) throw new Error('PDF fetch failed');
