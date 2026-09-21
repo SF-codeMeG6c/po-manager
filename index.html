@@ -198,14 +198,7 @@
                     return;
                 }
                 try {
-                   const newJob = { id: jobDocRef.id, code: jobCode, address: jobAddress, cityStateZip, lockBox };
-                    const updatedJobs = [...jobLibrary, newJob];
-                    await db.collection('poManagerData').doc(user.uid).set(
-                        { jobLibrary: updatedJobs },
-                        { merge: true }
-                    );
-                    
-                    // Create job document in jobs collection for forms subcollection
+                    // Create job document in jobs collection first
                     const jobDocRef = await db.collection('jobs').add({
                         userId: user.uid,
                         code: jobCode,
@@ -214,6 +207,13 @@
                         lockBox,
                         dateCreated: new Date()
                     });
+                    
+                    const newJob = { id: jobDocRef.id, code: jobCode, address: jobAddress, cityStateZip, lockBox };
+                    const updatedJobs = [...jobLibrary, newJob];
+                    await db.collection('poManagerData').doc(user.uid).set(
+                        { jobLibrary: updatedJobs },
+                        { merge: true }
+                    );
                     
                     setMessage('Job saved');
                     setJobCode('');
@@ -225,16 +225,15 @@
                 }
             };
 
-           const handleSelectJob = (job) => {
-    setJobCode(job.code);
-    setJobAddress(job.address);
-    setCityStateZip(job.cityStateZip);
-    setLockBox(job.lockBox);
-    if (job.id) {
-        setCurrentJobId(job.id);
-        loadJobForms(job.id);
-    }
-};
+            const handleSelectJob = (job) => {
+                setJobCode(job.code);
+                setJobAddress(job.address);
+                setCityStateZip(job.cityStateZip);
+                setLockBox(job.lockBox);
+                if (job.id) {
+                    setCurrentJobId(job.id);
+                    loadJobForms(job.id);
+                }
             };
 
             const handleDeleteJob = async (index) => {
