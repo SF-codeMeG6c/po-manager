@@ -173,9 +173,28 @@
                     }
 
                     const formatted = jobCode.replace(/\s+/g, '.');
-                    const timestamp = Date.now().toString().slice(-3);
-                    const po = formatted + '-' + timestamp;
-                    setCurrentPO(po);
+const docRef = db.collection('poManagerData').doc(user.uid);
+
+try {
+    await docRef.update({
+        poCounters: {
+            [formatted]: firebase.firestore.FieldValue.increment(1)
+        }
+    });
+} catch (error) {
+    await docRef.set({
+        poCounters: {
+            [formatted]: 1
+        }
+    }, { merge: true });
+}
+
+const doc = await docRef.get();
+const count = doc.data().poCounters[formatted] || 1;
+const padded = String(count).padStart(3, '0');
+const po = formatted + '-' + padded;
+setCurrentPO(po);
+                    
 
                     const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
                     if (!resp.ok) throw new Error('PDF fetch failed');
