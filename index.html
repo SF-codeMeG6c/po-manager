@@ -175,7 +175,7 @@
                 const doc = await docRef.get();
                 
                 let counters = {};
-                if (doc.exists && doc.data().poNumbers) {
+                if (doc.exists && doc.data() && doc.data().poNumbers) {
                     counters = doc.data().poNumbers;
                 }
                 
@@ -197,7 +197,18 @@
                     if (!po) return;
                     setCurrentPO(po);
 
-                    const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
+                    console.log('Fetching PDF from: https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
+                    
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+                    
+                    const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf', {
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (!resp.ok) throw new Error('PDF fetch failed: ' + resp.status);
+                    
                     const bytes = await resp.arrayBuffer();
                     const pdfDoc = await PDFDocument.load(bytes);
                     const page = pdfDoc.getPages()[0];
@@ -238,6 +249,7 @@
                     setMessage('Downloaded!');
                     setTimeout(() => setMessage(''), 2000);
                 } catch (error) {
+                    console.error('Error:', error);
                     setMessage('Error: ' + error.message);
                 }
             };
