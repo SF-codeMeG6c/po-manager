@@ -118,7 +118,6 @@
       const [authLoading, setAuthLoading] = useState(true);
       const [showJobDefaults, setShowJobDefaults] = useState(true);
       const [showFormFiller, setShowFormFiller] = useState(true);
-      const [showSearchLibrary, setShowSearchLibrary] = useState(false);
       const [saving, setSaving] = useState(false);
       const [generating, setGenerating] = useState(false);
       
@@ -221,7 +220,7 @@
         setGenerating(true);
         try {
           alert('PDF generation feature coming soon - form data will be overlaid on blank PDF');
-          console.log('Generate PDF with:', formData);
+          console.log('Generate PDF with job:', currentJob);
         } catch (err) {
           console.error('PDF generation error:', err);
           logError('PDF generation failed: ' + err.message);
@@ -398,57 +397,12 @@
             {showFormFiller && (
               <div style={{ padding: '15px' }}>
                 <div style={{ background: '#f9f9f9', padding: '10px', marginBottom: '15px', borderRadius: '4px', fontSize: '13px', color: '#666' }}>
-                  <strong>Job Info:</strong> {currentJob.jobCode} | {currentJob.jobAddress} | {currentJob.superName}
+                  <strong>Job:</strong> {currentJob.jobCode} | {currentJob.jobAddress} | {currentJob.cityStateZip} | {currentJob.superName}
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-                  <input type="text" placeholder="Subcontractor" value={formData.subName} onChange={(e) => setFormData({ ...formData, subName: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Contact" value={formData.contact} onChange={(e) => setFormData({ ...formData, contact: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Phone" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="email" placeholder="Email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Sub Code" value={formData.subCode} onChange={(e) => setFormData({ ...formData, subCode: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="text" placeholder="Category" value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                </div>
-
-                <textarea placeholder="Scope of Work" value={formData.scopeOfWork} onChange={(e) => setFormData({ ...formData, scopeOfWork: e.target.value })} style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px', marginBottom: '12px', minHeight: '100px', boxSizing: 'border-box' }} />
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-                  <input type="number" placeholder="Contract Amount" value={formData.contractAmount} onChange={(e) => setFormData({ ...formData, contractAmount: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="number" placeholder="Previous Payment" value={formData.previousPayment} onChange={(e) => setFormData({ ...formData, previousPayment: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <input type="number" placeholder="Amount Due" value={formData.amountDue} onChange={(e) => setFormData({ ...formData, amountDue: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                </div>
-
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-                  <button onClick={handleGeneratePDF} disabled={generating} style={{ padding: '8px 16px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                    {generating ? 'Generating...' : 'Generate & Download PDF'}
-                  </button>
-                  <button onClick={handleSaveFormToLibrary} disabled={saving} style={{ padding: '8px 16px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                    {saving ? 'Saving...' : 'Save to Library'}
-                  </button>
-                </div>
-
-                <div style={{ borderTop: '1px solid #ddd', paddingTop: '15px' }}>
-                  <strong style={{ fontSize: '13px' }}>Search Library</strong>
-                  <div style={{ display: 'flex', gap: '10px', marginTop: '10px', marginBottom: '10px' }}>
-                    <select value={searchType} onChange={(e) => setSearchType(e.target.value)} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '13px' }}>
-                      <option value="subName">Search by Subcontractor</option>
-                      <option value="category">Search by Category</option>
-                    </select>
-                    <input type="text" placeholder="Enter search term" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ flex: 1, padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                    <button onClick={handleSearch} style={{ padding: '8px 16px', background: '#FF9800', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>Search</button>
-                  </div>
-
-                  {searchResults.length > 0 && (
-                    <div style={{ background: '#f9f9f9', padding: '10px', borderRadius: '4px', fontSize: '13px' }}>
-                      <strong>{searchResults.length} results:</strong>
-                      {searchResults.map((result) => (
-                        <div key={result.id} onClick={() => handleSelectResult(result)} style={{ padding: '8px', background: 'white', border: '1px solid #eee', borderRadius: '3px', marginTop: '5px', cursor: 'pointer' }}>
-                          <strong>{result.subName}</strong> | {result.category} | {result.contact}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <button onClick={handleGeneratePDF} disabled={generating} style={{ padding: '10px 20px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
+                  {generating ? 'Generating...' : 'Generate & Download PDF'}
+                </button>
               </div>
             )}
           </div>
