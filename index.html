@@ -137,7 +137,6 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [searchType, setSearchType] = useState('subName');
       const [searchResults, setSearchResults] = useState([]);
-      const [selectedResult, setSelectedResult] = useState(null);
       
       const [jobDefaults, setJobDefaults] = useState({
         jobCode: '',
@@ -219,90 +218,59 @@
       const handleGeneratePDF = async () => {
         setGenerating(true);
         try {
-          alert('PDF generation feature coming soon - form data will be overlaid on blank PDF');
-          console.log('Generate PDF with job:', currentJob);
+          const { PDFDocument } = PDFLib;
+          
+          // Fetch blank PDF
+          const pdfUrl = 'https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf';
+          const pdfResponse = await fetch(pdfUrl);
+          const pdfBytes = await pdfResponse.arrayBuffer();
+          const pdfDoc = await PDFDocument.load(pdfBytes);
+          
+          // Get first page
+          const pages = pdfDoc.getPages();
+          const firstPage = pages[0];
+          const { height } = firstPage.getSize();
+          
+          // Estimate field positions (top-left origin)
+          const fields = [
+            { name: currentJob.jobCode, y: height - 100 },
+            { name: currentJob.jobAddress, y: height - 130 },
+            { name: currentJob.cityStateZip, y: height - 160 },
+            { name: currentJob.lockBox, y: height - 190 },
+            { name: currentJob.superName, y: height - 220 },
+            { name: currentJob.superPhone, y: height - 250 },
+            { name: currentJob.superEmail, y: height - 280 },
+          ];
+          
+          // Draw text on PDF
+          const { rgb } = PDFLib;
+          fields.forEach((field, idx) => {
+            if (field.name) {
+              firstPage.drawText(field.name, {
+                x: 50,
+                y: field.y,
+                size: 11,
+                color: rgb(0, 0, 0),
+              });
+            }
+          });
+          
+          // Download
+          const pdfBytesOut = await pdfDoc.save();
+          const blob = new Blob([pdfBytesOut], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `PO-${currentJob.jobCode || 'Form'}.pdf`;
+          link.click();
+          URL.revokeObjectURL(url);
+          
+          console.log('PDF generated and downloaded');
         } catch (err) {
           console.error('PDF generation error:', err);
           logError('PDF generation failed: ' + err.message);
         }
         setGenerating(false);
-      };
-
-      const handleSaveFormToLibrary = async () => {
-        if (!user || !db) {
-          alert('Not connected to database');
-          return;
-        }
-        if (!formData.subName || !formData.category) {
-          alert('Subcontractor name and category required');
-          return;
-        }
-        setSaving(true);
-        try {
-          await db.collection('formLibrary').add({
-            userId: user.uid,
-            subName: formData.subName,
-            category: formData.category,
-            contact: formData.contact,
-            phone: formData.phone,
-            email: formData.email,
-            subCode: formData.subCode,
-            scopeOfWork: formData.scopeOfWork,
-            contractAmount: formData.contractAmount,
-            previousPayment: formData.previousPayment,
-            amountDue: formData.amountDue,
-            timestamp: new Date(),
-          });
-          alert('Form saved to library');
-          setFormData({ subName: '', contact: '', phone: '', email: '', subCode: '', category: '', scopeOfWork: '', contractAmount: '', previousPayment: '', amountDue: '' });
-        } catch (err) {
-          console.error('Save error:', err);
-          logError('Save to library failed: ' + err.message);
-        }
-        setSaving(false);
-      };
-
-      const handleSearch = async () => {
-        if (!user || !db || !searchQuery) {
-          alert('Enter search term');
-          return;
-        }
-        try {
-          let results = [];
-          if (searchType === 'subName') {
-            const snapshot = await db.collection('formLibrary').where('userId', '==', user.uid).where('subName', '==', searchQuery).get();
-            results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            const categories = [...new Set(results.map(r => r.category))];
-            alert(`Found ${results.length} records. Categories: ${categories.join(', ') || 'none'}`);
-          } else if (searchType === 'category') {
-            const snapshot = await db.collection('formLibrary').where('userId', '==', user.uid).where('category', '==', searchQuery).get();
-            results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            const subs = [...new Set(results.map(r => r.subName))];
-            alert(`Found ${results.length} records. Subcontractors: ${subs.join(', ') || 'none'}`);
-          }
-          setSearchResults(results);
-        } catch (err) {
-          console.error('Search error:', err);
-          logError('Search failed: ' + err.message);
-        }
-      };
-
-      const handleSelectResult = (result) => {
-        setFormData({
-          subName: result.subName,
-          contact: result.contact,
-          phone: result.phone,
-          email: result.email,
-          subCode: result.subCode,
-          category: result.category,
-          scopeOfWork: result.scopeOfWork,
-          contractAmount: result.contractAmount,
-          previousPayment: result.previousPayment,
-          amountDue: result.amountDue,
-        });
-        setSelectedResult(result.id);
-        setSearchResults([]);
-        setSearchQuery('');
       };
 
       if (authLoading) return <div style={{ textAlign: 'center', padding: '40px' }}>Loading...</div>;
