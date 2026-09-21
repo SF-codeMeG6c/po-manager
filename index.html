@@ -314,15 +314,9 @@
                         if (value) {
                             try {
                                 if (field.isReadOnly()) return;
-                                if (field.constructor.name === 'PDFTextField') {
-                                    field.setText(value);
-                                } else if (field.constructor.name === 'PDFCheckBox') {
-                                    if (value.toLowerCase() === 'true' || value === '1') {
-                                        field.check();
-                                    }
-                                }
+                                field.setText(value);
                             } catch (e) {
-                                console.log('Could not set field ' + fieldName);
+                                // Skip fields that can't be written to (rich text, etc)
                             }
                         }
                     });
