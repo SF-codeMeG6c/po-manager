@@ -295,7 +295,6 @@
                     const pdfDoc = await PDFDocument.load(arrayBuffer);
                     
                     const form = pdfDoc.getForm();
-                    const fields = form.getFields();
                     
                     const fieldMap = {
                         'JobCode': jobCode,
@@ -307,17 +306,14 @@
                         'SupervisorEmail': superEmail
                     };
                     
-                    fields.forEach(field => {
-                        const fieldName = field.getName();
-                        const value = fieldMap[fieldName] || '';
-                        
-                        if (value) {
-                            try {
-                                if (field.isReadOnly()) return;
-                                field.setText(value);
-                            } catch (e) {
-                                // Skip fields that can't be written to (rich text, etc)
+                    Object.keys(fieldMap).forEach(fieldName => {
+                        try {
+                            const field = form.getFieldByName(fieldName);
+                            if (field && !field.isReadOnly()) {
+                                field.setText(fieldMap[fieldName]);
                             }
+                        } catch (e) {
+                            // Field doesn't exist or can't be written - skip it
                         }
                     });
                     
