@@ -221,7 +221,7 @@
           const { PDFDocument } = PDFLib;
           
           // Fetch blank PDF
-          const pdfUrl = 'https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf';
+        const pdfUrl = 'https://raw.githubusercontent.com/SF-codeMeG6c/po-manager/main/Sub_Spec_Blank_9-20-26_V2.pdf';
           const pdfResponse = await fetch(pdfUrl);
           const pdfBytes = await pdfResponse.arrayBuffer();
           const pdfDoc = await PDFDocument.load(pdfBytes);
