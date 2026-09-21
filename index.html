@@ -8,30 +8,28 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        h1 { color: #333; margin-bottom: 5px; font-size: 24px; }
-        .subtitle { color: #999; margin-bottom: 25px; font-size: 12px; }
-        .section { margin-bottom: 25px; }
-        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .form-group { margin-bottom: 10px; }
-        label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; font-weight: 500; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
         input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
         input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
-        button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 10px; }
+        button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
         .btn-primary { background: #0066cc; color: white; }
         .btn-primary:hover { background: #0052a3; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
-        .btn-small { width: auto; padding: 8px 12px; font-size: 12px; margin-top: 0; }
-        .message { margin-top: 12px; padding: 8px; text-align: center; font-size: 12px; }
-        .message.success { color: #388e3c; }
-        .message.error { color: #d32f2f; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>PO Manager</h1>
-        <p class="subtitle">Freeman Restoration</p>
+        <p class="subtitle">Freeman Restoration Subcontractor Scope of Work</p>
         <div id="app"></div>
     </div>
 
@@ -60,8 +58,6 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
 
-        let poCounters = {};
-
         function POApp() {
             const [user, setUser] = useState(null);
             const [email, setEmail] = useState('');
@@ -79,7 +75,8 @@
             
             const [currentPO, setCurrentPO] = useState('');
             const [message, setMessage] = useState('');
-            const [savedDefaults, setSavedDefaults] = useState(null);
+            const [jobLibrary, setJobLibrary] = useState([]);
+            const [supervisorLibrary, setSupervisorLibrary] = useState([]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(currentUser => {
@@ -92,8 +89,13 @@
 
             const loadDefaults = (uid) => {
                 db.collection('poManagerData').doc(uid).onSnapshot(doc => {
-                    if (doc.exists && doc.data().jobDefaults) {
-                        setSavedDefaults(doc.data().jobDefaults);
+                    if (doc.exists) {
+                        if (doc.data().jobLibrary) {
+                            setJobLibrary(doc.data().jobLibrary);
+                        }
+                        if (doc.data().supervisorLibrary) {
+                            setSupervisorLibrary(doc.data().supervisorLibrary);
+                        }
                     }
                 });
             };
@@ -131,67 +133,121 @@
                 setSuperPhone('');
                 setSuperEmail('');
                 setCurrentPO('');
-                setSavedDefaults(null);
-                poCounters = {};
+                setJobLibrary([]);
+                setSupervisorLibrary([]);
             };
 
-            const handleSaveDefaults = async () => {
-                if (!user) return;
+            const handleSaveJob = async () => {
+                if (!user || !jobCode) {
+                    setMessage('Job Code required');
+                    return;
+                }
                 try {
+                    const newJob = { code: jobCode, address: jobAddress, cityStateZip, lockBox };
+                    const updated = [...jobLibrary, newJob];
                     await db.collection('poManagerData').doc(user.uid).set({
-                        jobDefaults: {
-                            jobCode,
-                            jobAddress,
-                            cityStateZip,
-                            lockBox,
-                            superName,
-                            superPhone,
-                            superEmail
-                        }
+                        jobLibrary: updated
                     }, { merge: true });
-                    setMessage('Saved');
+                    setJobLibrary(updated);
+                    setMessage('Job saved!');
                     setTimeout(() => setMessage(''), 2000);
                 } catch (error) {
                     setMessage('Error: ' + error.message);
                 }
             };
 
-            const handleApplyDefaults = () => {
-                if (savedDefaults) {
-                    setJobCode(savedDefaults.jobCode);
-                    setJobAddress(savedDefaults.jobAddress);
-                    setCityStateZip(savedDefaults.cityStateZip);
-                    setLockBox(savedDefaults.lockBox);
-                    setSuperName(savedDefaults.superName);
-                    setSuperPhone(savedDefaults.superPhone);
-                    setSuperEmail(savedDefaults.superEmail);
-                    setMessage('Applied');
-                    setTimeout(() => setMessage(''), 1500);
+            const handleDeleteJob = async (index) => {
+                if (!user) return;
+                try {
+                    const updated = jobLibrary.filter((_, i) => i !== index);
+                    await db.collection('poManagerData').doc(user.uid).set({
+                        jobLibrary: updated
+                    }, { merge: true });
+                    setJobLibrary(updated);
+                } catch (error) {
+                    setMessage('Error: ' + error.message);
                 }
+            };
+
+            const handleSelectJob = (job) => {
+                setJobCode(job.code);
+                setJobAddress(job.address);
+                setCityStateZip(job.cityStateZip);
+                setLockBox(job.lockBox);
+            };
+
+            const handleSaveSupervisor = async () => {
+                if (!user || !superName) {
+                    setMessage('Supervisor Name required');
+                    return;
+                }
+                try {
+                    const newSuper = { name: superName, phone: superPhone, email: superEmail };
+                    const updated = [...supervisorLibrary, newSuper];
+                    await db.collection('poManagerData').doc(user.uid).set({
+                        supervisorLibrary: updated
+                    }, { merge: true });
+                    setSupervisorLibrary(updated);
+                    setMessage('Supervisor saved!');
+                    setTimeout(() => setMessage(''), 2000);
+                } catch (error) {
+                    setMessage('Error: ' + error.message);
+                }
+            };
+
+            const handleDeleteSupervisor = async (index) => {
+                if (!user) return;
+                try {
+                    const updated = supervisorLibrary.filter((_, i) => i !== index);
+                    await db.collection('poManagerData').doc(user.uid).set({
+                        supervisorLibrary: updated
+                    }, { merge: true });
+                    setSupervisorLibrary(updated);
+                } catch (error) {
+                    setMessage('Error: ' + error.message);
+                }
+            };
+
+            const handleSelectSupervisor = (supervisor) => {
+                setSuperName(supervisor.name);
+                setSuperPhone(supervisor.phone);
+                setSuperEmail(supervisor.email);
+            };
+
+            const getNextPONumber = async () => {
+                if (!jobCode) {
+                    setMessage('Job Code required');
+                    return null;
+                }
+                
+                const formatted = jobCode.replace(/\s+/g, '.');
+                const docRef = db.collection('poManagerData').doc(user.uid);
+                const doc = await docRef.get();
+                
+                let counters = {};
+                if (doc.exists && doc.data().poNumbers) {
+                    counters = doc.data().poNumbers;
+                }
+                
+                const current = counters[formatted] || 0;
+                const next = current + 1;
+                const padded = String(next).padStart(3, '0');
+                const newPO = formatted + '-' + padded;
+                
+                counters[formatted] = next;
+                await docRef.set({ poNumbers: counters }, { merge: true });
+                
+                return newPO;
             };
 
             const handleGeneratePDF = async () => {
                 setMessage('Generating...');
                 try {
-                    if (!jobCode) {
-                        setMessage('Job Code required');
-                        return;
-                    }
-
-                    const formatted = jobCode.replace(/\s+/g, '.');
-                    
-                    if (!poCounters[formatted]) {
-                        poCounters[formatted] = 0;
-                    }
-                    
-                    poCounters[formatted]++;
-                    const padded = String(poCounters[formatted]).padStart(3, '0');
-                    const po = formatted + '-' + padded;
+                    const po = await getNextPONumber();
+                    if (!po) return;
                     setCurrentPO(po);
 
                     const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
-                    if (!resp.ok) throw new Error('PDF fetch failed');
-                    
                     const bytes = await resp.arrayBuffer();
                     const pdfDoc = await PDFDocument.load(bytes);
                     const page = pdfDoc.getPages()[0];
@@ -209,7 +265,12 @@
 
                     data.forEach(item => {
                         if (item.text) {
-                            page.drawText(item.text, { x: item.x, y: item.y, size: 11, color: rgb(0, 0, 0) });
+                            page.drawText(item.text, {
+                                x: item.x,
+                                y: item.y,
+                                size: 11,
+                                color: rgb(0, 0, 0)
+                            });
                         }
                     });
 
@@ -219,10 +280,12 @@
                     const link = document.createElement('a');
                     link.href = url;
                     link.download = 'PO_' + po + '.pdf';
+                    document.body.appendChild(link);
                     link.click();
+                    document.body.removeChild(link);
                     URL.revokeObjectURL(url);
 
-                    setMessage('Downloaded: ' + po);
+                    setMessage('Downloaded!');
                     setTimeout(() => setMessage(''), 2000);
                 } catch (error) {
                     setMessage('Error: ' + error.message);
@@ -235,13 +298,13 @@
                         <div className="section-title">{authMode === 'login' ? 'Login' : 'Sign Up'}</div>
                         <div className="form-group">
                             <label>Email</label>
-                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" />
                         </div>
                         <div className="form-group">
                             <label>Password</label>
                             <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
                         </div>
-                        {authError && <div className="message error">{authError}</div>}
+                        {authError && <div className="error">{authError}</div>}
                         <button className="btn-primary" onClick={authMode === 'login' ? handleLogin : handleSignUp}>
                             {authMode === 'login' ? 'Login' : 'Create Account'}
                         </button>
@@ -254,13 +317,11 @@
 
             return (
                 <div>
-                    <div className="header">
-                        <div></div>
-                        <button className="btn-secondary btn-small" onClick={handleLogout}>Logout</button>
-                    </div>
-
                     <div className="section">
-                        <div className="section-title">Job Defaults</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <div className="section-title">JOB DETAILS</div>
+                            <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
+                        </div>
 
                         <div className="form-group">
                             <label>Job Code</label>
@@ -278,6 +339,46 @@
                             <label>Lock Box</label>
                             <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
                         </div>
+
+                        <button className="btn-primary" onClick={handleSaveJob}>Save Job</button>
+                        
+                        {jobLibrary.length > 0 && (
+                            <div style={{ marginTop: '20px' }}>
+                                <label style={{ fontWeight: '600', marginBottom: '10px', display: 'block' }}>Your Jobs</label>
+                                {jobLibrary.map((job, idx) => (
+                                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#f9f9f9', borderRadius: '4px', marginBottom: '8px' }}>
+                                        <span style={{ fontSize: '13px', cursor: 'pointer', flex: 1 }} onClick={() => handleSelectJob(job)}>
+                                            <strong>{job.code}</strong> - {job.address}
+                                        </span>
+                                        <button className="btn-secondary" onClick={() => handleDeleteJob(idx)} style={{ width: 'auto', padding: '4px 8px', fontSize: '12px' }}>Delete</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="section">
+                        <div className="section-title">SUPERVISOR</div>
+
+                        {supervisorLibrary.length > 0 && (
+                            <div className="form-group">
+                                <label>Select Supervisor</label>
+                                <select 
+                                    value="" 
+                                    onChange={e => {
+                                        const idx = parseInt(e.target.value);
+                                        if (idx >= 0) handleSelectSupervisor(supervisorLibrary[idx]);
+                                    }}
+                                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                >
+                                    <option value="">-- Pick a supervisor --</option>
+                                    {supervisorLibrary.map((sup, idx) => (
+                                        <option key={idx} value={idx}>{sup.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
                         <div className="form-group">
                             <label>Super Name</label>
                             <input value={superName} onChange={e => setSuperName(e.target.value)} placeholder="Supervisor name" />
@@ -291,19 +392,33 @@
                             <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
                         </div>
 
-                        <button className="btn-primary" onClick={handleSaveDefaults}>Save Defaults</button>
-                        {savedDefaults && <button className="btn-secondary" onClick={handleApplyDefaults}>Apply Saved</button>}
+                        <button className="btn-primary" onClick={handleSaveSupervisor}>Save Supervisor</button>
+
+                        {supervisorLibrary.length > 0 && (
+                            <div style={{ marginTop: '20px' }}>
+                                <label style={{ fontWeight: '600', marginBottom: '10px', display: 'block' }}>Saved Supervisors</label>
+                                {supervisorLibrary.map((sup, idx) => (
+                                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#f9f9f9', borderRadius: '4px', marginBottom: '8px' }}>
+                                        <span style={{ fontSize: '13px' }}>
+                                            <strong>{sup.name}</strong> | {sup.phone}
+                                        </span>
+                                        <button className="btn-secondary" onClick={() => handleDeleteSupervisor(idx)} style={{ width: 'auto', padding: '4px 8px', fontSize: '12px' }}>Delete</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     <div className="section">
-                        <div className="section-title">Generate PO</div>
-                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
-                            {jobCode && currentPO && <>PO: <strong>{currentPO}</strong></>}
+                        <div className="section-title">GENERATE PO</div>
+                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px' }}>
+                            Job: {jobCode || '(none)'} | Super: {superName || '(none)'}<br/>
+                            {currentPO && <strong>Last PO: {currentPO}</strong>}
                         </div>
                         <button className="btn-primary" onClick={handleGeneratePDF}>Generate & Download PDF</button>
                     </div>
 
-                    {message && <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>{message}</div>}
+                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
                 </div>
             );
         }
