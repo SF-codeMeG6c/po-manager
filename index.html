@@ -7,16 +7,17 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
         h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
         .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .section:last-child { border-bottom: none; }
-        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
         .form-group { margin-bottom: 12px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        textarea { resize: vertical; min-height: 80px; }
+        input:focus, textarea:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
         .btn-primary { background: #0066cc; color: white; }
         .btn-primary:hover { background: #0052a3; }
@@ -24,8 +25,33 @@
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
         .btn-secondary:disabled { background: #e0e0e0; cursor: not-allowed; }
+        .btn-sm { width: auto; padding: 6px 10px; font-size: 12px; margin-right: 4px; }
+        .btn-danger { background: #d32f2f; color: white; }
+        .btn-danger:hover { background: #b71c1c; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
         .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
+        
+        /* Table styles */
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+        th { background: #f5f5f5; padding: 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 10px; border-bottom: 1px solid #eee; }
+        tr:hover { background: #fafafa; }
+        .status-badge { padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; }
+        .status-completed { background: #c8e6c9; color: #2e7d32; }
+        .status-in-progress { background: #fff9c4; color: #f57f17; }
+        
+        /* Upload area */
+        .upload-area { border: 2px dashed #ccc; border-radius: 4px; padding: 20px; text-align: center; margin: 15px 0; background: #fafafa; }
+        .upload-area:hover { border-color: #0066cc; background: #f0f8ff; }
+        .upload-area.active { border-color: #0066cc; background: #f0f8ff; }
+        .upload-area input[type="file"] { display: none; }
+        
+        /* Button group */
+        .button-group { display: flex; gap: 8px; margin-top: 8px; }
+        .button-group button { margin: 0; }
+        
+        /* Edit row styles */
+        .edit-row input, .edit-row select, .edit-row textarea { width: 100%; margin: 0; }
     </style>
 </head>
 <body>
@@ -41,6 +67,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
     <script type="text/babel">
@@ -59,6 +86,7 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+        const storage = firebase.storage();
 
         function POApp() {
             const [user, setUser] = useState(null);
@@ -74,6 +102,7 @@
             const [superName, setSuperName] = useState('');
             const [superPhone, setSuperPhone] = useState('');
             const [superEmail, setSuperEmail] = useState('');
+            const [currentJobId, setCurrentJobId] = useState('');
             
             const [currentPO, setCurrentPO] = useState('');
             const [message, setMessage] = useState('');
@@ -81,6 +110,13 @@
             const [supervisorLibrary, setSupervisorLibrary] = useState([]);
             const [selectedJobIndex, setSelectedJobIndex] = useState('');
             const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
+
+            // Form tracking state
+            const [selectedPDF, setSelectedPDF] = useState(null);
+            const [uploadLoading, setUploadLoading] = useState(false);
+            const [jobForms, setJobForms] = useState([]);
+            const [editingFormId, setEditingFormId] = useState(null);
+            const [editFormData, setEditFormData] = useState({});
 
             useEffect(() => {
                 auth.onAuthStateChanged(currentUser => {
@@ -101,6 +137,17 @@
                             setSupervisorLibrary(doc.data().supervisorLibrary);
                         }
                     }
+                });
+            };
+
+            const loadJobForms = (jobId) => {
+                if (!user) return;
+                db.collection('jobs').doc(jobId).collection('forms').orderBy('dateCreated', 'desc').onSnapshot(snapshot => {
+                    const forms = [];
+                    snapshot.forEach(doc => {
+                        forms.push({ id: doc.id, ...doc.data() });
+                    });
+                    setJobForms(forms);
                 });
             };
 
@@ -137,10 +184,12 @@
                 setSuperPhone('');
                 setSuperEmail('');
                 setCurrentPO('');
+                setCurrentJobId('');
                 setJobLibrary([]);
                 setSupervisorLibrary([]);
                 setSelectedJobIndex('');
                 setSelectedSupervisorIndex('');
+                setJobForms([]);
             };
 
             const handleSaveJob = async () => {
@@ -150,26 +199,27 @@
                 }
                 try {
                     const newJob = { code: jobCode, address: jobAddress, cityStateZip, lockBox };
-                    const updated = [...jobLibrary, newJob];
-                    await db.collection('poManagerData').doc(user.uid).set({
-                        jobLibrary: updated
-                    }, { merge: true });
-                    setJobLibrary(updated);
-                    setMessage('Job saved!');
-                    setTimeout(() => setMessage(''), 2000);
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-            const handleDeleteJob = async (index) => {
-                if (!user) return;
-                try {
-                    const updated = jobLibrary.filter((_, i) => i !== index);
-                    await db.collection('poManagerData').doc(user.uid).set({
-                        jobLibrary: updated
-                    }, { merge: true });
-                    setJobLibrary(updated);
+                    const updatedJobs = [...jobLibrary, newJob];
+                    await db.collection('poManagerData').doc(user.uid).set(
+                        { jobLibrary: updatedJobs },
+                        { merge: true }
+                    );
+                    
+                    // Create job document in jobs collection for forms subcollection
+                    const jobDocRef = await db.collection('jobs').add({
+                        userId: user.uid,
+                        code: jobCode,
+                        address: jobAddress,
+                        cityStateZip,
+                        lockBox,
+                        dateCreated: new Date()
+                    });
+                    
+                    setMessage('Job saved');
+                    setJobCode('');
+                    setJobAddress('');
+                    setCityStateZip('');
+                    setLockBox('');
                 } catch (error) {
                     setMessage('Error: ' + error.message);
                 }
@@ -180,35 +230,45 @@
                 setJobAddress(job.address);
                 setCityStateZip(job.cityStateZip);
                 setLockBox(job.lockBox);
+                // Find the job document ID and load forms
+                db.collection('jobs').where('userId', '==', user.uid).where('code', '==', job.code).limit(1).get().then(snapshot => {
+                    if (!snapshot.empty) {
+                        const jobId = snapshot.docs[0].id;
+                        setCurrentJobId(jobId);
+                        loadJobForms(jobId);
+                    }
+                });
             };
 
-            const handleSaveSupervisor = async () => {
-                if (!user || !superName) {
-                    setMessage('Supervisor Name required');
-                    return;
-                }
+            const handleDeleteJob = async (index) => {
+                const updatedJobs = jobLibrary.filter((_, i) => i !== index);
                 try {
-                    const newSuper = { name: superName, phone: superPhone, email: superEmail };
-                    const updated = [...supervisorLibrary, newSuper];
-                    await db.collection('poManagerData').doc(user.uid).set({
-                        supervisorLibrary: updated
-                    }, { merge: true });
-                    setSupervisorLibrary(updated);
-                    setMessage('Supervisor saved!');
-                    setTimeout(() => setMessage(''), 2000);
+                    await db.collection('poManagerData').doc(user.uid).set(
+                        { jobLibrary: updatedJobs },
+                        { merge: true }
+                    );
+                    setMessage('Job deleted');
                 } catch (error) {
                     setMessage('Error: ' + error.message);
                 }
             };
 
-            const handleDeleteSupervisor = async (index) => {
-                if (!user) return;
+            const handleSaveSupervisor = async () => {
+                if (!user || !superName) {
+                    setMessage('Supervisor name required');
+                    return;
+                }
                 try {
-                    const updated = supervisorLibrary.filter((_, i) => i !== index);
-                    await db.collection('poManagerData').doc(user.uid).set({
-                        supervisorLibrary: updated
-                    }, { merge: true });
-                    setSupervisorLibrary(updated);
+                    const newSupervisor = { name: superName, phone: superPhone, email: superEmail };
+                    const updatedSupervisors = [...supervisorLibrary, newSupervisor];
+                    await db.collection('poManagerData').doc(user.uid).set(
+                        { supervisorLibrary: updatedSupervisors },
+                        { merge: true }
+                    );
+                    setMessage('Supervisor saved');
+                    setSuperName('');
+                    setSuperPhone('');
+                    setSuperEmail('');
                 } catch (error) {
                     setMessage('Error: ' + error.message);
                 }
@@ -220,103 +280,189 @@
                 setSuperEmail(supervisor.email);
             };
 
-            const getNextPONumber = async () => {
-                if (!jobCode) {
-                    setMessage('Job Code required');
-                    return null;
+            const handleDeleteSupervisor = async (index) => {
+                const updatedSupervisors = supervisorLibrary.filter((_, i) => i !== index);
+                try {
+                    await db.collection('poManagerData').doc(user.uid).set(
+                        { supervisorLibrary: updatedSupervisors },
+                        { merge: true }
+                    );
+                    setMessage('Supervisor deleted');
+                } catch (error) {
+                    setMessage('Error: ' + error.message);
                 }
-                
-                const formatted = jobCode.replace(/\s+/g, '.');
-                const docRef = db.collection('poManagerData').doc(user.uid);
-                const doc = await docRef.get();
-                
-                let counters = {};
-                if (doc.exists && doc.data().poNumbers) {
-                    counters = doc.data().poNumbers;
-                }
-                
-                const current = counters[formatted] || 0;
-                const next = current + 1;
-                const padded = String(next).padStart(3, '0');
-                const newPO = formatted + '-' + padded;
-                
-                counters[formatted] = next;
-                await docRef.set({ poNumbers: counters }, { merge: true });
-                
-                return newPO;
             };
 
             const handleGeneratePDF = async () => {
-                setMessage('Generating...');
+                if (!jobCode || !superName) {
+                    setMessage('Select job and supervisor first');
+                    return;
+                }
                 try {
-                    const po = await getNextPONumber();
-                    if (!po) return;
-                    setCurrentPO(po);
-
-                    const resp = await fetch('https://charming-griffin-e1112f.netlify.app/Sub_Spec_Blank_9-20-26_V2.pdf');
-                    const bytes = await resp.arrayBuffer();
-                    const pdfDoc = await PDFDocument.load(bytes);
-                    const page = pdfDoc.getPages()[0];
-
-                    const data = [
-                        { text: jobCode, x: 81, y: 671 },
-                        { text: jobAddress, x: 369, y: 671 },
-                        { text: cityStateZip, x: 126, y: 653 },
-                        { text: lockBox, x: 360, y: 653 },
-                        { text: po, x: 486, y: 653 },
-                        { text: superName, x: 81, y: 635 },
-                        { text: superPhone, x: 495, y: 635 },
-                        { text: superEmail, x: 243, y: 635 }
-                    ];
-
-                    data.forEach(item => {
-                        if (item.text) {
-                            page.drawText(item.text, {
-                                x: item.x,
-                                y: item.y,
-                                size: 11,
-                                color: rgb(0, 0, 0)
-                            });
-                        }
+                    // Create a simple PDF with job details
+                    const pdfDoc = await PDFDocument.create();
+                    const page = pdfDoc.addPage([595, 842]); // A4 size
+                    const { height } = page.getSize();
+                    
+                    page.drawText('SUBCONTRACTOR SCOPE OF WORK', {
+                        x: 50,
+                        y: height - 50,
+                        size: 16,
+                        color: rgb(0, 0, 0)
                     });
-
-                    const output = await pdfDoc.save();
-                    const blob = new Blob([output], { type: 'application/pdf' });
+                    
+                    page.drawText(`Job: ${jobCode}`, { x: 50, y: height - 100, size: 12 });
+                    page.drawText(`Address: ${jobAddress}`, { x: 50, y: height - 130, size: 12 });
+                    page.drawText(`City/State/Zip: ${cityStateZip}`, { x: 50, y: height - 160, size: 12 });
+                    page.drawText(`Supervisor: ${superName}`, { x: 50, y: height - 190, size: 12 });
+                    page.drawText(`Phone: ${superPhone}`, { x: 50, y: height - 220, size: 12 });
+                    page.drawText(`Email: ${superEmail}`, { x: 50, y: height - 250, size: 12 });
+                    
+                    page.drawText('SUBCONTRACTOR DETAILS', { x: 50, y: height - 300, size: 14 });
+                    page.drawText('(To be filled in manually)', { x: 50, y: height - 330, size: 10, color: rgb(128, 128, 128) });
+                    
+                    const pdfBytes = await pdfDoc.save();
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
                     const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.download = 'PO_' + po + '.pdf';
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${jobCode}_SubcontractorScope.pdf`;
+                    a.click();
                     URL.revokeObjectURL(url);
-
-                    setMessage('Downloaded!');
-                    setTimeout(() => setMessage(''), 2000);
+                    
+                    setCurrentPO(`${jobCode}_SubcontractorScope`);
+                    setMessage('PDF generated');
                 } catch (error) {
-                    setMessage('Error: ' + error.message);
+                    setMessage('Error generating PDF: ' + error.message);
+                }
+            };
+
+            const handlePDFSelect = (e) => {
+                const file = e.target.files[0];
+                if (file && file.type === 'application/pdf') {
+                    setSelectedPDF(file);
+                    setMessage('PDF selected: ' + file.name);
+                } else {
+                    setMessage('Error: Please select a PDF file');
+                }
+            };
+
+            const handleSaveTemplate = async () => {
+                if (!user || !selectedPDF) {
+                    setMessage('Please select a PDF and fill in subcontractor details');
+                    return;
+                }
+                
+                setUploadLoading(true);
+                try {
+                    // Upload PDF to Firebase Storage
+                    const timestamp = Date.now();
+                    const fileRef = storage.ref(`formTemplates/${user.uid}/${timestamp}_${selectedPDF.name}`);
+                    await fileRef.put(selectedPDF);
+                    const downloadURL = await fileRef.getDownloadURL();
+                    
+                    // Save metadata to Firestore
+                    await db.collection('formLibrary').add({
+                        userId: user.uid,
+                        fileName: selectedPDF.name,
+                        pdfUrl: downloadURL,
+                        dateCreated: new Date(),
+                        notes: 'Template'
+                    });
+                    
+                    setMessage('Template saved successfully');
+                    setSelectedPDF(null);
+                    setUploadLoading(false);
+                } catch (error) {
+                    setMessage('Error saving template: ' + error.message);
+                    setUploadLoading(false);
+                }
+            };
+
+            const handleSaveToJob = async () => {
+                if (!user || !selectedPDF || !currentJobId) {
+                    setMessage('Select a job and PDF, then fill in subcontractor details');
+                    return;
+                }
+                
+                setUploadLoading(true);
+                try {
+                    // Upload PDF to Firebase Storage
+                    const timestamp = Date.now();
+                    const fileRef = storage.ref(`jobForms/${currentJobId}/${timestamp}_${selectedPDF.name}`);
+                    await fileRef.put(selectedPDF);
+                    const downloadURL = await fileRef.getDownloadURL();
+                    
+                    // Save to job's forms subcollection
+                    await db.collection('jobs').doc(currentJobId).collection('forms').add({
+                        fileName: selectedPDF.name,
+                        pdfUrl: downloadURL,
+                        notes: '',
+                        status: 'In Progress',
+                        dateCreated: new Date(),
+                        dateUpdated: new Date()
+                    });
+                    
+                    setMessage('Form saved to job successfully');
+                    setSelectedPDF(null);
+                    setUploadLoading(false);
+                } catch (error) {
+                    setMessage('Error saving to job: ' + error.message);
+                    setUploadLoading(false);
+                }
+            };
+
+            const handleEditForm = (form) => {
+                setEditingFormId(form.id);
+                setEditFormData({ notes: form.notes || '', status: form.status || 'In Progress' });
+            };
+
+            const handleSaveFormEdit = async (formId) => {
+                if (!currentJobId) return;
+                
+                try {
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
+                        notes: editFormData.notes,
+                        status: editFormData.status,
+                        dateUpdated: new Date()
+                    });
+                    setEditingFormId(null);
+                    setMessage('Form updated');
+                } catch (error) {
+                    setMessage('Error updating form: ' + error.message);
+                }
+            };
+
+            const handleDeleteForm = async (formId) => {
+                if (!currentJobId || !window.confirm('Delete this form record?')) return;
+                
+                try {
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).delete();
+                    setMessage('Form deleted');
+                } catch (error) {
+                    setMessage('Error deleting form: ' + error.message);
                 }
             };
 
             if (!user) {
                 return (
                     <div className="section">
-                        <div className="section-title">{authMode === 'login' ? 'Login' : 'Sign Up'}</div>
+                        <div className="section-title">{authMode === 'login' ? 'LOGIN' : 'SIGN UP'}</div>
                         <div className="form-group">
                             <label>Email</label>
                             <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" />
                         </div>
                         <div className="form-group">
                             <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} />
                         </div>
-                        {authError && <div className="error">{authError}</div>}
                         <button className="btn-primary" onClick={authMode === 'login' ? handleLogin : handleSignUp}>
-                            {authMode === 'login' ? 'Login' : 'Create Account'}
+                            {authMode === 'login' ? 'Login' : 'Sign Up'}
                         </button>
                         <button className="btn-secondary" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
                             {authMode === 'login' ? 'Need account?' : 'Have account?'}
                         </button>
+                        {authError && <div className="error">{authError}</div>}
                     </div>
                 );
             }
@@ -368,7 +514,7 @@
                                         style={{ width: 'auto', padding: '8px 12px' }}
                                         disabled={selectedJobIndex === ''}
                                     >
-                                        (Add)
+                                        (Load)
                                     </button>
                                     <button 
                                         className="btn-secondary" 
@@ -415,7 +561,7 @@
                                         style={{ width: 'auto', padding: '8px 12px' }}
                                         disabled={selectedSupervisorIndex === ''}
                                     >
-                                        (Add)
+                                        (Load)
                                     </button>
                                     <button 
                                         className="btn-secondary" 
@@ -459,7 +605,114 @@
                         <button className="btn-primary" onClick={handleGeneratePDF}>Generate & Download PDF</button>
                     </div>
 
-                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
+                    <div className="section">
+                        <div className="section-title">UPLOAD & SAVE COMPLETED FORM</div>
+                        
+                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px', borderLeft: '3px solid #0066cc' }}>
+                            Current Job: <strong>{jobCode || '(none selected)'}</strong>
+                        </div>
+
+                        <div className="form-group">
+                            <label>Select Completed PDF</label>
+                            <div className="upload-area" onClick={() => document.getElementById('pdfInput').click()}>
+                                <input 
+                                    id="pdfInput"
+                                    type="file" 
+                                    accept=".pdf" 
+                                    onChange={handlePDFSelect}
+                                />
+                                {selectedPDF ? (
+                                    <div style={{ color: '#0066cc', fontWeight: 500 }}>✓ {selectedPDF.name}</div>
+                                ) : (
+                                    <div style={{ color: '#999' }}>Click to upload or drag PDF here</div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="button-group">
+                            <button 
+                                className="btn-primary" 
+                                onClick={handleSaveTemplate}
+                                disabled={!selectedPDF || uploadLoading}
+                            >
+                                {uploadLoading ? 'Saving...' : 'Save as Template'}
+                            </button>
+                            <button 
+                                className="btn-primary" 
+                                onClick={handleSaveToJob}
+                                disabled={!selectedPDF || !currentJobId || uploadLoading}
+                            >
+                                {uploadLoading ? 'Saving...' : 'Save to This Job'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {currentJobId && jobForms.length > 0 && (
+                        <div className="section">
+                            <div className="section-title">JOB FORM COMPLETION TRACKER</div>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Notes</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {jobForms.map(form => (
+                                        <tr key={form.id} className={editingFormId === form.id ? 'edit-row' : ''}>
+                                            <td>{form.fileName}</td>
+                                            <td>
+                                                {editingFormId === form.id ? (
+                                                    <textarea 
+                                                        value={editFormData.notes}
+                                                        onChange={e => setEditFormData({...editFormData, notes: e.target.value})}
+                                                        placeholder="Add notes..."
+                                                    />
+                                                ) : (
+                                                    form.notes || '-'
+                                                )}
+                                            </td>
+                                            <td>
+                                                {editingFormId === form.id ? (
+                                                    <select 
+                                                        value={editFormData.status}
+                                                        onChange={e => setEditFormData({...editFormData, status: e.target.value})}
+                                                    >
+                                                        <option>In Progress</option>
+                                                        <option>Completed</option>
+                                                    </select>
+                                                ) : (
+                                                    <span className={`status-badge status-${form.status.toLowerCase().replace(' ', '-')}`}>
+                                                        {form.status}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td>
+                                                <div className="button-group" style={{ gap: '4px' }}>
+                                                    {editingFormId === form.id ? (
+                                                        <>
+                                                            <button className="btn-primary btn-sm" onClick={() => handleSaveFormEdit(form.id)}>Save</button>
+                                                            <button className="btn-secondary btn-sm" onClick={() => setEditingFormId(null)}>Cancel</button>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <button className="btn-secondary btn-sm" onClick={() => handleEditForm(form)}>Edit</button>
+                                                            <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
+                                                            <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
                 </div>
             );
         }
