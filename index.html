@@ -20,8 +20,10 @@
         button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
         .btn-primary { background: #0066cc; color: white; }
         .btn-primary:hover { background: #0052a3; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
+        .btn-secondary:disabled { background: #e0e0e0; cursor: not-allowed; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
         .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
     </style>
@@ -77,6 +79,8 @@
             const [message, setMessage] = useState('');
             const [jobLibrary, setJobLibrary] = useState([]);
             const [supervisorLibrary, setSupervisorLibrary] = useState([]);
+            const [selectedJobIndex, setSelectedJobIndex] = useState('');
+            const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
 
             useEffect(() => {
                 auth.onAuthStateChanged(currentUser => {
@@ -135,6 +139,8 @@
                 setCurrentPO('');
                 setJobLibrary([]);
                 setSupervisorLibrary([]);
+                setSelectedJobIndex('');
+                setSelectedSupervisorIndex('');
             };
 
             const handleSaveJob = async () => {
@@ -340,21 +346,48 @@
                             <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
                         </div>
 
-                        <button className="btn-primary" onClick={handleSaveJob}>Save Job</button>
-                        
                         {jobLibrary.length > 0 && (
-                            <div style={{ marginTop: '20px' }}>
-                                <label style={{ fontWeight: '600', marginBottom: '10px', display: 'block' }}>Your Jobs</label>
-                                {jobLibrary.map((job, idx) => (
-                                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#f9f9f9', borderRadius: '4px', marginBottom: '8px' }}>
-                                        <span style={{ fontSize: '13px', cursor: 'pointer', flex: 1 }} onClick={() => handleSelectJob(job)}>
-                                            <strong>{job.code}</strong> - {job.address}
-                                        </span>
-                                        <button className="btn-secondary" onClick={() => handleDeleteJob(idx)} style={{ width: 'auto', padding: '4px 8px', fontSize: '12px' }}>Delete</button>
-                                    </div>
-                                ))}
+                            <div className="form-group">
+                                <label>Load Job</label>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <select 
+                                        value={selectedJobIndex}
+                                        onChange={e => setSelectedJobIndex(e.target.value)}
+                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                    >
+                                        <option value="">-- Pick a job --</option>
+                                        {jobLibrary.map((job, idx) => (
+                                            <option key={idx} value={idx}>{job.code} - {job.address}</option>
+                                        ))}
+                                    </select>
+                                    <button 
+                                        className="btn-primary" 
+                                        onClick={() => {
+                                            if (selectedJobIndex !== '') handleSelectJob(jobLibrary[parseInt(selectedJobIndex)]);
+                                        }}
+                                        style={{ width: 'auto', padding: '8px 12px' }}
+                                        disabled={selectedJobIndex === ''}
+                                    >
+                                        (Add)
+                                    </button>
+                                    <button 
+                                        className="btn-secondary" 
+                                        onClick={() => {
+                                            if (selectedJobIndex !== '') {
+                                                handleDeleteJob(parseInt(selectedJobIndex));
+                                                setSelectedJobIndex('');
+                                            }
+                                        }}
+                                        style={{ width: 'auto', padding: '8px 12px' }}
+                                        disabled={selectedJobIndex === ''}
+                                    >
+                                        (Delete)
+                                    </button>
+                                </div>
                             </div>
                         )}
+
+                        <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>
                     </div>
 
                     <div className="section">
@@ -362,20 +395,42 @@
 
                         {supervisorLibrary.length > 0 && (
                             <div className="form-group">
-                                <label>Select Supervisor</label>
-                                <select 
-                                    value="" 
-                                    onChange={e => {
-                                        const idx = parseInt(e.target.value);
-                                        if (idx >= 0) handleSelectSupervisor(supervisorLibrary[idx]);
-                                    }}
-                                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
-                                >
-                                    <option value="">-- Pick a supervisor --</option>
-                                    {supervisorLibrary.map((sup, idx) => (
-                                        <option key={idx} value={idx}>{sup.name}</option>
-                                    ))}
-                                </select>
+                                <label>Load Supervisor</label>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <select 
+                                        value={selectedSupervisorIndex}
+                                        onChange={e => setSelectedSupervisorIndex(e.target.value)}
+                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                    >
+                                        <option value="">-- Pick a supervisor --</option>
+                                        {supervisorLibrary.map((sup, idx) => (
+                                            <option key={idx} value={idx}>{sup.name}</option>
+                                        ))}
+                                    </select>
+                                    <button 
+                                        className="btn-primary" 
+                                        onClick={() => {
+                                            if (selectedSupervisorIndex !== '') handleSelectSupervisor(supervisorLibrary[parseInt(selectedSupervisorIndex)]);
+                                        }}
+                                        style={{ width: 'auto', padding: '8px 12px' }}
+                                        disabled={selectedSupervisorIndex === ''}
+                                    >
+                                        (Add)
+                                    </button>
+                                    <button 
+                                        className="btn-secondary" 
+                                        onClick={() => {
+                                            if (selectedSupervisorIndex !== '') {
+                                                handleDeleteSupervisor(parseInt(selectedSupervisorIndex));
+                                                setSelectedSupervisorIndex('');
+                                            }
+                                        }}
+                                        style={{ width: 'auto', padding: '8px 12px' }}
+                                        disabled={selectedSupervisorIndex === ''}
+                                    >
+                                        (Delete)
+                                    </button>
+                                </div>
                             </div>
                         )}
 
@@ -392,21 +447,7 @@
                             <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
                         </div>
 
-                        <button className="btn-primary" onClick={handleSaveSupervisor}>Save Supervisor</button>
-
-                        {supervisorLibrary.length > 0 && (
-                            <div style={{ marginTop: '20px' }}>
-                                <label style={{ fontWeight: '600', marginBottom: '10px', display: 'block' }}>Saved Supervisors</label>
-                                {supervisorLibrary.map((sup, idx) => (
-                                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#f9f9f9', borderRadius: '4px', marginBottom: '8px' }}>
-                                        <span style={{ fontSize: '13px' }}>
-                                            <strong>{sup.name}</strong> | {sup.phone}
-                                        </span>
-                                        <button className="btn-secondary" onClick={() => handleDeleteSupervisor(idx)} style={{ width: 'auto', padding: '4px 8px', fontSize: '12px' }}>Delete</button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                        <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>
                     </div>
 
                     <div className="section">
