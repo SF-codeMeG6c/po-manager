@@ -315,7 +315,7 @@
                     page.drawText(`Email: ${superEmail}`, { x: 50, y: height - 250, size: 12 });
                     
                     page.drawText('SUBCONTRACTOR DETAILS', { x: 50, y: height - 300, size: 14 });
-                    page.drawText('(To be filled in manually)', { x: 50, y: height - 330, size: 10, color: rgb(128, 128, 128) });
+                    page.drawText('(To be filled in manually)', { x: 50, y: height - 330, size: 10, color: rgb(0.5, 0.5, 0.5) });
                     
                     const pdfBytes = await pdfDoc.save();
                     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
