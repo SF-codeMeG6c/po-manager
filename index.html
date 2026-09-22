@@ -526,6 +526,19 @@
                             const extracted = {};
                             const tolerance = 80; // pixel tolerance for matching position
 
+                            // Debug: log all text items found
+                            console.log('=== PDF Text Items Found ===');
+                            items.forEach((item, idx) => {
+                                if (item.str && item.str.trim()) {
+                                    console.log(`Item ${idx}: "${item.str}" at x=${item.x.toFixed(0)}, y=${item.y.toFixed(0)}`);
+                                }
+                            });
+                            console.log('=== Target Field Coordinates ===');
+                            Object.keys(fields).forEach(key => {
+                                const field = fields[key];
+                                console.log(`${field.name}: x=${field.x}, y=${field.y}`);
+                            });
+
                             // For each field, find text closest to the specified coordinates
                             Object.keys(fields).forEach(key => {
                                 const field = fields[key];
@@ -543,6 +556,11 @@
                                 });
 
                                 extracted[key] = closestItem ? closestItem.str.trim() : '';
+                                if (closestItem) {
+                                    console.log(`${field.name}: found "${closestItem.str}" at distance ${closestDistance.toFixed(0)}`);
+                                } else {
+                                    console.log(`${field.name}: NOT FOUND`);
+                                }
                             });
 
                             resolve(extracted);
