@@ -530,7 +530,9 @@
                             console.log('=== PDF Text Items Found ===');
                             items.forEach((item, idx) => {
                                 if (item.str && item.str.trim()) {
-                                    console.log(`Item ${idx}: "${item.str}" at x=${item.x.toFixed(0)}, y=${item.y.toFixed(0)}`);
+                                    const x = item.x !== undefined ? item.x.toFixed(0) : 'undefined';
+                                    const y = item.y !== undefined ? item.y.toFixed(0) : 'undefined';
+                                    console.log(`Item ${idx}: "${item.str}" at x=${x}, y=${y}`);
                                 }
                             });
                             console.log('=== Target Field Coordinates ===');
@@ -546,7 +548,7 @@
                                 let closestDistance = Infinity;
 
                                 items.forEach(item => {
-                                    if (item.str && item.str.trim()) {
+                                    if (item.str && item.str.trim() && item.x !== undefined && item.y !== undefined) {
                                         const distance = Math.abs(item.x - field.x) + Math.abs(item.y - field.y);
                                         if (distance < closestDistance) {
                                             closestDistance = distance;
@@ -557,7 +559,8 @@
 
                                 extracted[key] = closestItem ? closestItem.str.trim() : '';
                                 if (closestItem) {
-                                    console.log(`${field.name}: found "${closestItem.str}" at distance ${closestDistance.toFixed(0)}`);
+                                    const dist = closestDistance !== Infinity ? closestDistance.toFixed(0) : 'N/A';
+                                    console.log(`${field.name}: found "${closestItem.str}" at distance ${dist}`);
                                 } else {
                                     console.log(`${field.name}: NOT FOUND`);
                                 }
