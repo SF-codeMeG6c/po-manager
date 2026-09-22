@@ -293,25 +293,27 @@
         const response = await fetch(TEMPLATE_PDF_URL);
         const arrayBuffer = await response.arrayBuffer();
         const pdfDoc = await PDFDocument.load(arrayBuffer);
-        const form = pdfDoc.getForm();
+        const page = pdfDoc.getPages()[0];
         
-        // Auto-fill standard text fields, skip Text1 (rich text)
-        const fieldMap = {
-            'Job Code': jobCode,
-            'Job Address': jobAddress,
-            'City / State / Zip': cityStateZip,
-            'Lock Box': lockBox,
-            'Super': superName,
-            'Super Phone': superPhone,
-            'Email': superEmail
-        };
+        // Draw text directly on PDF using coordinates (bypasses form field issues)
+        const data = [
+            { text: jobCode, x: 81, y: 671 },
+            { text: jobAddress, x: 369, y: 671 },
+            { text: cityStateZip, x: 126, y: 653 },
+            { text: lockBox, x: 360, y: 653 },
+            { text: superName, x: 81, y: 635 },
+            { text: superPhone, x: 495, y: 635 },
+            { text: superEmail, x: 243, y: 635 }
+        ];
         
-        Object.entries(fieldMap).forEach(([fieldName, value]) => {
-            try {
-                const field = form.getFieldMaybe(fieldName);
-                if (field) field.setText(value || '');
-            } catch (e) {
-                // Field not found or cannot be filled - skip silently
+        data.forEach(item => {
+            if (item.text) {
+                page.drawText(item.text, {
+                    x: item.x,
+                    y: item.y,
+                    size: 11,
+                    color: rgb(0, 0, 0)
+                });
             }
         });
         
@@ -325,7 +327,7 @@
         URL.revokeObjectURL(url);
         
         setCurrentPO(`${jobCode}_SubcontractorScope`);
-        setMessage('PDF downloaded with job & supervisor details filled. Manually complete remaining fields.');
+        setMessage('PDF downloaded with job & supervisor details filled.');
     } catch (error) {
         setMessage('Error generating PDF: ' + error.message);
     }
