@@ -114,14 +114,50 @@
             const [editingFormId, setEditingFormId] = useState(null);
             const [editFormData, setEditFormData] = useState({});
 
+            // Phase 4: PDF Metadata & Search
+            const [formLibraryData, setFormLibraryData] = useState([]);
+            const [showFormMetadata, setShowFormMetadata] = useState(false);
+            const [formMetadata, setFormMetadata] = useState({
+                subName: '',
+                category: '',
+                contact: '',
+                phone: '',
+                email: '',
+                subCode: '',
+                contractAmount: ''
+            });
+
+            // Search by Category
+            const [selectedCategory, setSelectedCategory] = useState('');
+            const [filteredSubsByCategory, setFilteredSubsByCategory] = useState([]);
+            const [selectedSubByCategory, setSelectedSubByCategory] = useState('');
+            const [categoryPreview, setCategoryPreview] = useState(null);
+
+            // Search by Subcontractor
+            const [selectedSubcontractor, setSelectedSubcontractor] = useState('');
+            const [filteredCategoriesBySub, setFilteredCategoriesBySub] = useState([]);
+            const [selectedCategoryBySub, setSelectedCategoryBySub] = useState('');
+            const [subPreview, setSubPreview] = useState(null);
+
             useEffect(() => {
                 auth.onAuthStateChanged(currentUser => {
                     setUser(currentUser);
                     if (currentUser) {
                         loadDefaults(currentUser.uid);
+                        loadFormLibraryData(currentUser.uid);
                     }
                 });
             }, []);
+
+            const loadFormLibraryData = (uid) => {
+                db.collection('formLibrary').where('userId', '==', uid).onSnapshot(snapshot => {
+                    const forms = [];
+                    snapshot.forEach(doc => {
+                        forms.push({ id: doc.id, ...doc.data() });
+                    });
+                    setFormLibraryData(forms);
+                });
+            };
 
             const loadDefaults = (uid) => {
                 db.collection('poManagerData').doc(uid).onSnapshot(doc => {
@@ -380,10 +416,96 @@
     }
 };
 
+            const getUniqueCategories = () => {
+                const categories = [...new Set(formLibraryData.map(f => f.category).filter(Boolean))];
+                return categories.sort();
+            };
+
+            const getSubsByCategory = (category) => {
+                const subs = [...new Set(formLibraryData.filter(f => f.category === category).map(f => f.subName).filter(Boolean))];
+                return subs.sort();
+            };
+
+            const getUniqueSubcontractors = () => {
+                const subs = [...new Set(formLibraryData.map(f => f.subName).filter(Boolean))];
+                return subs.sort();
+            };
+
+            const getCategoriesBySubcontractor = (subName) => {
+                const categories = [...new Set(formLibraryData.filter(f => f.subName === subName).map(f => f.category).filter(Boolean))];
+                return categories.sort();
+            };
+
+            const handleCategorySelect = (category) => {
+                setSelectedCategory(category);
+                setSelectedSubByCategory('');
+                setCategoryPreview(null);
+                if (category) {
+                    const subs = getSubsByCategory(category);
+                    setFilteredSubsByCategory(subs);
+                }
+            };
+
+            const handleSubByCategorySelect = (subName) => {
+                setSelectedSubByCategory(subName);
+                if (subName && selectedCategory) {
+                    const record = formLibraryData.find(f => f.category === selectedCategory && f.subName === subName);
+                    if (record) {
+                        setCategoryPreview({
+                            subName: record.subName,
+                            contact: record.contact,
+                            phone: record.phone,
+                            email: record.email,
+                            subCode: record.subCode,
+                            contractAmount: record.contractAmount,
+                            category: record.category,
+                            pdfUrl: record.pdfUrl
+                        });
+                    }
+                }
+            };
+
+            const handleSubcontractorSelect = (subName) => {
+                setSelectedSubcontractor(subName);
+                setSelectedCategoryBySub('');
+                setSubPreview(null);
+                if (subName) {
+                    const categories = getCategoriesBySubcontractor(subName);
+                    setFilteredCategoriesBySub(categories);
+                }
+            };
+
+            const handleCategoryBySubSelect = (category) => {
+                setSelectedCategoryBySub(category);
+                if (category && selectedSubcontractor) {
+                    const record = formLibraryData.find(f => f.subName === selectedSubcontractor && f.category === category);
+                    if (record) {
+                        setSubPreview({
+                            subName: record.subName,
+                            contact: record.contact,
+                            phone: record.phone,
+                            email: record.email,
+                            subCode: record.subCode,
+                            contractAmount: record.contractAmount,
+                            category: record.category,
+                            pdfUrl: record.pdfUrl
+                        });
+                    }
+                }
+            };
+
+            const loadPOFromSaved = (pdfUrl) => {
+                if (pdfUrl) {
+                    window.open(pdfUrl);
+                    setMessage('Opened saved PO. Edit and upload new version if needed.');
+                }
+            };
+
             const handlePDFSelect = (e) => {
                 const file = e.target.files[0];
                 if (file && file.type === 'application/pdf') {
                     setSelectedPDF(file);
+                    setShowFormMetadata(true);
                     setMessage('PDF selected: ' + file.name);
                 } else {
                     setMessage('Error: Please select a PDF file');
@@ -393,6 +515,10 @@
             const handleSaveTemplate = async () => {
                 if (!user || !selectedPDF) {
                     setMessage('Please select a PDF');
+                    return;
+                }
+                if (!formMetadata.subName || !formMetadata.category) {
+                    setMessage('Sub Name and Category required');
                     return;
                 }
                 
@@ -407,12 +533,20 @@
                         userId: user.uid,
                         fileName: selectedPDF.name,
                         pdfUrl: downloadURL,
-                        dateCreated: new Date(),
-                        notes: 'Template'
+                        subName: formMetadata.subName,
+                        category: formMetadata.category,
+                        contact: formMetadata.contact,
+                        phone: formMetadata.phone,
+                        email: formMetadata.email,
+                        subCode: formMetadata.subCode,
+                        contractAmount: formMetadata.contractAmount,
+                        dateCreated: new Date()
                     });
                     
                     setMessage('Template saved successfully');
                     setSelectedPDF(null);
+                    setShowFormMetadata(false);
+                    setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
                     setUploadLoading(false);
                 } catch (error) {
                     setMessage('Error saving template: ' + error.message);
@@ -423,6 +557,10 @@
             const handleSaveToJob = async () => {
                 if (!user || !selectedPDF || !currentJobId) {
                     setMessage('Select a job and PDF');
+                    return;
+                }
+                if (!formMetadata.subName || !formMetadata.category) {
+                    setMessage('Sub Name and Category required');
                     return;
                 }
                 
@@ -436,6 +574,13 @@
                     await db.collection('jobs').doc(currentJobId).collection('forms').add({
                         fileName: selectedPDF.name,
                         pdfUrl: downloadURL,
+                        subName: formMetadata.subName,
+                        category: formMetadata.category,
+                        contact: formMetadata.contact,
+                        phone: formMetadata.phone,
+                        email: formMetadata.email,
+                        subCode: formMetadata.subCode,
+                        contractAmount: formMetadata.contractAmount,
                         notes: '',
                         status: 'In Progress',
                         dateCreated: new Date(),
@@ -444,6 +589,8 @@
                     
                     setMessage('Form saved to job successfully');
                     setSelectedPDF(null);
+                    setShowFormMetadata(false);
+                    setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
                     setUploadLoading(false);
                 } catch (error) {
                     setMessage('Error saving to job: ' + error.message);
@@ -645,6 +792,112 @@
                     </div>
 
                     <div className="section">
+                        <div className="section-title">SEARCH BY CATEGORY</div>
+                        <div className="form-group">
+                            <label>Select Category</label>
+                            <select 
+                                value={selectedCategory}
+                                onChange={e => handleCategorySelect(e.target.value)}
+                                style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                            >
+                                <option value="">-- Pick a category --</option>
+                                {getUniqueCategories().map(cat => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {selectedCategory && filteredSubsByCategory.length > 0 && (
+                            <div className="form-group">
+                                <label>Select Subcontractor in {selectedCategory}</label>
+                                <select 
+                                    value={selectedSubByCategory}
+                                    onChange={e => handleSubByCategorySelect(e.target.value)}
+                                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                >
+                                    <option value="">-- Pick a subcontractor --</option>
+                                    {filteredSubsByCategory.map(sub => (
+                                        <option key={sub} value={sub}>{sub}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
+                        {categoryPreview && (
+                            <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginTop: '12px', border: '1px solid #ddd' }}>
+                                <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                                    <strong>{categoryPreview.subName}</strong> | {categoryPreview.category}<br/>
+                                    Contact: {categoryPreview.contact || '-'}<br/>
+                                    Phone: {categoryPreview.phone || '-'}<br/>
+                                    Email: {categoryPreview.email || '-'}<br/>
+                                    Sub Code: {categoryPreview.subCode || '-'}<br/>
+                                    Contract Amount: {categoryPreview.contractAmount || '-'}
+                                </div>
+                                <button 
+                                    className="btn-primary" 
+                                    onClick={() => loadPOFromSaved(categoryPreview.pdfUrl)}
+                                    style={{ width: '100%' }}
+                                >
+                                    Open This PO
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="section">
+                        <div className="section-title">SEARCH BY SUBCONTRACTOR</div>
+                        <div className="form-group">
+                            <label>Select Subcontractor</label>
+                            <select 
+                                value={selectedSubcontractor}
+                                onChange={e => handleSubcontractorSelect(e.target.value)}
+                                style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                            >
+                                <option value="">-- Pick a subcontractor --</option>
+                                {getUniqueSubcontractors().map(sub => (
+                                    <option key={sub} value={sub}>{sub}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {selectedSubcontractor && filteredCategoriesBySub.length > 0 && (
+                            <div className="form-group">
+                                <label>Select Category for {selectedSubcontractor}</label>
+                                <select 
+                                    value={selectedCategoryBySub}
+                                    onChange={e => handleCategoryBySubSelect(e.target.value)}
+                                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                >
+                                    <option value="">-- Pick a category --</option>
+                                    {filteredCategoriesBySub.map(cat => (
+                                        <option key={cat} value={cat}>{cat}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
+                        {subPreview && (
+                            <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginTop: '12px', border: '1px solid #ddd' }}>
+                                <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                                    <strong>{subPreview.subName}</strong> | {subPreview.category}<br/>
+                                    Contact: {subPreview.contact || '-'}<br/>
+                                    Phone: {subPreview.phone || '-'}<br/>
+                                    Email: {subPreview.email || '-'}<br/>
+                                    Sub Code: {subPreview.subCode || '-'}<br/>
+                                    Contract Amount: {subPreview.contractAmount || '-'}
+                                </div>
+                                <button 
+                                    className="btn-primary" 
+                                    onClick={() => loadPOFromSaved(subPreview.pdfUrl)}
+                                    style={{ width: '100%' }}
+                                >
+                                    Open This PO
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="section">
                         <div className="section-title">UPLOAD & SAVE COMPLETED FORM</div>
                         
                         <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px', borderLeft: '3px solid #0066cc' }}>
@@ -667,6 +920,68 @@
                                 )}
                             </div>
                         </div>
+
+                        {showFormMetadata && selectedPDF && (
+                            <div style={{ background: '#f9f9f9', padding: '15px', borderRadius: '4px', marginBottom: '15px', border: '1px solid #ddd' }}>
+                                <div className="section-title" style={{ marginBottom: '10px' }}>Complete Form Details</div>
+                                <div className="form-group">
+                                    <label>Subcontractor Name *</label>
+                                    <input 
+                                        value={formMetadata.subName}
+                                        onChange={e => setFormMetadata({...formMetadata, subName: e.target.value})}
+                                        placeholder="Sub name from PDF"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Category *</label>
+                                    <input 
+                                        value={formMetadata.category}
+                                        onChange={e => setFormMetadata({...formMetadata, category: e.target.value})}
+                                        placeholder="e.g., Plumbing, Electrical, etc."
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Contact</label>
+                                    <input 
+                                        value={formMetadata.contact}
+                                        onChange={e => setFormMetadata({...formMetadata, contact: e.target.value})}
+                                        placeholder="Contact person"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Phone</label>
+                                    <input 
+                                        value={formMetadata.phone}
+                                        onChange={e => setFormMetadata({...formMetadata, phone: e.target.value})}
+                                        placeholder="Phone number"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Email</label>
+                                    <input 
+                                        value={formMetadata.email}
+                                        onChange={e => setFormMetadata({...formMetadata, email: e.target.value})}
+                                        placeholder="Email address"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Sub Code</label>
+                                    <input 
+                                        value={formMetadata.subCode}
+                                        onChange={e => setFormMetadata({...formMetadata, subCode: e.target.value})}
+                                        placeholder="Sub code"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>Contract Amount</label>
+                                    <input 
+                                        value={formMetadata.contractAmount}
+                                        onChange={e => setFormMetadata({...formMetadata, contractAmount: e.target.value})}
+                                        placeholder="Amount"
+                                    />
+                                </div>
+                            </div>
+                        )}
 
                         <div className="button-group">
                             <button 
