@@ -297,13 +297,13 @@
         
         // Auto-fill standard text fields, skip Text1 (rich text)
         const fieldMap = {
-            'Job-Code': jobCode,
-            'Job Address': jobAddress,
-            'City State Zip': cityStateZip,
-            'Lock Box': lockBox,
-            'Super Name': superName,
-            'Super Phone': superPhone,
-            'Super Email': superEmail
+            'job code': jobCode,
+            'address': jobAddress,
+            'city/state/zip': cityStateZip,
+            'lock box': lockBox,
+            'Super': superName,
+            'Phone': superPhone,
+            'Email': superEmail
         };
         
         Object.entries(fieldMap).forEach(([fieldName, value]) => {
