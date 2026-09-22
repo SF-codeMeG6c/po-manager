@@ -64,8 +64,10 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const { useState, useEffect } = React;
         const { PDFDocument, rgb } = PDFLib;
 
@@ -116,7 +118,6 @@
 
             // Phase 4: PDF Metadata & Search
             const [formLibraryData, setFormLibraryData] = useState([]);
-            const [showFormMetadata, setShowFormMetadata] = useState(false);
             const [formMetadata, setFormMetadata] = useState({
                 subName: '',
                 category: '',
@@ -501,12 +502,78 @@
                 }
             };
 
-            const handlePDFSelect = (e) => {
+            const extractTextFromPDF = async (file) => {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        try {
+                            const pdf = await pdfjsLib.getDocument({ data: e.target.result }).promise;
+                            const page = await pdf.getPage(1);
+                            const textContent = await page.getTextContent();
+                            const items = textContent.items;
+
+                            // Field coordinates in PDF points
+                            const fields = {
+                                subName: { x: 90, y: 639, name: 'Subcontractor Name' },
+                                category: { x: 504, y: 603, name: 'Category' },
+                                contact: { x: 297, y: 639, name: 'Contact' },
+                                phone: { x: 432, y: 639, name: 'Phone' },
+                                email: { x: 72, y: 603, name: 'Email' },
+                                subCode: { x: 342, y: 603, name: 'Sub Code' },
+                                contractAmount: { x: 90, y: 72, name: 'Contract Amount' }
+                            };
+
+                            const extracted = {};
+                            const tolerance = 20; // pixel tolerance for matching position
+
+                            // For each field, find text closest to the specified coordinates
+                            Object.keys(fields).forEach(key => {
+                                const field = fields[key];
+                                let closestItem = null;
+                                let closestDistance = Infinity;
+
+                                items.forEach(item => {
+                                    if (item.str && item.str.trim()) {
+                                        const distance = Math.abs(item.x - field.x) + Math.abs(item.y - field.y);
+                                        if (distance < closestDistance) {
+                                            closestDistance = distance;
+                                            closestItem = item;
+                                        }
+                                    }
+                                });
+
+                                extracted[key] = closestItem ? closestItem.str.trim() : '';
+                            });
+
+                            resolve(extracted);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                });
+            };
+
+            const handlePDFSelect = async (e) => {
                 const file = e.target.files[0];
                 if (file && file.type === 'application/pdf') {
                     setSelectedPDF(file);
-                    setShowFormMetadata(true);
-                    setMessage('PDF selected: ' + file.name);
+                    try {
+                        const extracted = await extractTextFromPDF(file);
+                        setFormMetadata({
+                            subName: extracted.subName || '',
+                            category: extracted.category || '',
+                            contact: extracted.contact || '',
+                            phone: extracted.phone || '',
+                            email: extracted.email || '',
+                            subCode: extracted.subCode || '',
+                            contractAmount: extracted.contractAmount || ''
+                        });
+                        setMessage('PDF selected and data extracted: ' + file.name);
+                    } catch (error) {
+                        setMessage('PDF selected but extraction failed: ' + error.message + ' (you can still save)');
+                        setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
+                    }
                 } else {
                     setMessage('Error: Please select a PDF file');
                 }
@@ -545,7 +612,6 @@
                     
                     setMessage('Template saved successfully');
                     setSelectedPDF(null);
-                    setShowFormMetadata(false);
                     setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
                     setUploadLoading(false);
                 } catch (error) {
@@ -589,7 +655,6 @@
                     
                     setMessage('Form saved to job successfully');
                     setSelectedPDF(null);
-                    setShowFormMetadata(false);
                     setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
                     setUploadLoading(false);
                 } catch (error) {
@@ -920,68 +985,6 @@
                                 )}
                             </div>
                         </div>
-
-                        {showFormMetadata && selectedPDF && (
-                            <div style={{ background: '#f9f9f9', padding: '15px', borderRadius: '4px', marginBottom: '15px', border: '1px solid #ddd' }}>
-                                <div className="section-title" style={{ marginBottom: '10px' }}>Complete Form Details</div>
-                                <div className="form-group">
-                                    <label>Subcontractor Name *</label>
-                                    <input 
-                                        value={formMetadata.subName}
-                                        onChange={e => setFormMetadata({...formMetadata, subName: e.target.value})}
-                                        placeholder="Sub name from PDF"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Category *</label>
-                                    <input 
-                                        value={formMetadata.category}
-                                        onChange={e => setFormMetadata({...formMetadata, category: e.target.value})}
-                                        placeholder="e.g., Plumbing, Electrical, etc."
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Contact</label>
-                                    <input 
-                                        value={formMetadata.contact}
-                                        onChange={e => setFormMetadata({...formMetadata, contact: e.target.value})}
-                                        placeholder="Contact person"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Phone</label>
-                                    <input 
-                                        value={formMetadata.phone}
-                                        onChange={e => setFormMetadata({...formMetadata, phone: e.target.value})}
-                                        placeholder="Phone number"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Email</label>
-                                    <input 
-                                        value={formMetadata.email}
-                                        onChange={e => setFormMetadata({...formMetadata, email: e.target.value})}
-                                        placeholder="Email address"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Sub Code</label>
-                                    <input 
-                                        value={formMetadata.subCode}
-                                        onChange={e => setFormMetadata({...formMetadata, subCode: e.target.value})}
-                                        placeholder="Sub code"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Contract Amount</label>
-                                    <input 
-                                        value={formMetadata.contractAmount}
-                                        onChange={e => setFormMetadata({...formMetadata, contractAmount: e.target.value})}
-                                        placeholder="Amount"
-                                    />
-                                </div>
-                            </div>
-                        )}
 
                         <div className="button-group">
                             <button 
