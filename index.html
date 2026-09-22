@@ -291,7 +291,32 @@
     }
     try {
         const response = await fetch(TEMPLATE_PDF_URL);
-        const blob = await response.blob();
+        const arrayBuffer = await response.arrayBuffer();
+        const pdfDoc = await PDFDocument.load(arrayBuffer);
+        const form = pdfDoc.getForm();
+        
+        // Auto-fill standard text fields, skip Text1 (rich text)
+        const fieldMap = {
+            'Job-Code': jobCode,
+            'Job Address': jobAddress,
+            'City State Zip': cityStateZip,
+            'Lock Box': lockBox,
+            'Super Name': superName,
+            'Super Phone': superPhone,
+            'Super Email': superEmail
+        };
+        
+        Object.entries(fieldMap).forEach(([fieldName, value]) => {
+            try {
+                const field = form.getFieldMaybe(fieldName);
+                if (field) field.setText(value || '');
+            } catch (e) {
+                // Field not found or cannot be filled - skip silently
+            }
+        });
+        
+        const pdfBytes = await pdfDoc.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -300,9 +325,9 @@
         URL.revokeObjectURL(url);
         
         setCurrentPO(`${jobCode}_SubcontractorScope`);
-        setMessage('PDF downloaded. Fill in manually and upload completed form.');
+        setMessage('PDF downloaded with job & supervisor details filled. Manually complete remaining fields.');
     } catch (error) {
-        setMessage('Error downloading PDF: ' + error.message);
+        setMessage('Error generating PDF: ' + error.message);
     }
 };
 
