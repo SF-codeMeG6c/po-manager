@@ -225,9 +225,29 @@
                 setJobAddress(job.address);
                 setCityStateZip(job.cityStateZip);
                 setLockBox(job.lockBox);
+                
+                // If job has id, use it; otherwise find it by code
                 if (job.id) {
                     setCurrentJobId(job.id);
                     loadJobForms(job.id);
+                } else if (job.code && user) {
+                    // Find job by code in jobs collection
+                    db.collection('jobs').where('userId', '==', user.uid)
+                      .where('code', '==', job.code)
+                      .limit(1)
+                      .get()
+                      .then(snapshot => {
+                          if (!snapshot.empty) {
+                              const jobId = snapshot.docs[0].id;
+                              setCurrentJobId(jobId);
+                              loadJobForms(jobId);
+                          } else {
+                              setMessage('Job not found in database');
+                          }
+                      })
+                      .catch(error => {
+                          setMessage('Error loading job: ' + error.message);
+                      });
                 }
             };
 
