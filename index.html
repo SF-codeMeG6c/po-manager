@@ -284,12 +284,38 @@
                 }
             };
 
+          const getNextPONumber = async () => {
+    if (!user || !currentJobId) {
+        setMessage('Error: Job not selected');
+        return null;
+    }
+    try {
+        const jobDoc = await db.collection('jobs').doc(currentJobId).get();
+        const currentCounter = (jobDoc.data()?.poCounter || 0) + 1;
+        
+        // Update counter in Firebase
+        await db.collection('jobs').doc(currentJobId).update({
+            poCounter: currentCounter
+        });
+        
+        // Format: JobCode-001
+        const poNumber = `${jobCode}-${String(currentCounter).padStart(3, '0')}`;
+        return poNumber;
+    } catch (error) {
+        setMessage('Error generating PO number: ' + error.message);
+        return null;
+    }
+};
+
           const handleGeneratePDF = async () => {
     if (!jobCode || !superName) {
         setMessage('Select job and supervisor first');
         return;
     }
     try {
+        const poNumber = await getNextPONumber();
+        if (!poNumber) return;
+        
         const response = await fetch(TEMPLATE_PDF_URL);
         const arrayBuffer = await response.arrayBuffer();
         const pdfDoc = await PDFDocument.load(arrayBuffer);
@@ -301,6 +327,7 @@
             { text: jobAddress, x: 369, y: 671 },
             { text: cityStateZip, x: 126, y: 653 },
             { text: lockBox, x: 360, y: 653 },
+            { text: poNumber, x: 486, y: 653 },
             { text: superName, x: 81, y: 635 },
             { text: superPhone, x: 495, y: 635 },
             { text: superEmail, x: 243, y: 635 }
@@ -322,12 +349,12 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${jobCode}_SubcontractorScope.pdf`;
+        a.download = `${poNumber}.pdf`;
         a.click();
         URL.revokeObjectURL(url);
         
-        setCurrentPO(`${jobCode}_SubcontractorScope`);
-        setMessage('PDF downloaded with job & supervisor details filled.');
+        setCurrentPO(poNumber);
+        setMessage(`PDF downloaded - PO#: ${poNumber}`);
     } catch (error) {
         setMessage('Error generating PDF: ' + error.message);
     }
