@@ -39,9 +39,6 @@
         .status-completed { background: #c8e6c9; color: #2e7d32; }
         .status-in-progress { background: #fff9c4; color: #f57f17; }
         
-        .upload-area { border: 2px dashed #ccc; border-radius: 4px; padding: 20px; text-align: center; margin: 15px 0; background: #fafafa; }
-        .upload-area:hover { border-color: #0066cc; background: #f0f8ff; }
-        .upload-area input[type="file"] { display: none; }
         
         .button-group { display: flex; gap: 8px; margin-top: 8px; }
         .button-group button { margin: 0; }
@@ -64,10 +61,8 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const { useState, useEffect } = React;
         const { PDFDocument } = PDFLib;
 
@@ -110,7 +105,6 @@
             const [selectedJobIndex, setSelectedJobIndex] = useState('');
             const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
 
-            const [selectedPDF, setSelectedPDF] = useState(null);
             const [uploadLoading, setUploadLoading] = useState(false);
             const [jobForms, setJobForms] = useState([]);
             const [editingFormId, setEditingFormId] = useState(null);
@@ -502,7 +496,7 @@
                             subCode: record.subCode,
                             contractAmount: record.contractAmount,
                             category: record.category,
-                            pdfUrl: record.pdfUrl
+                            scope: record.scope || ''
                         });
                     }
                 }
@@ -531,103 +525,33 @@
                             subCode: record.subCode,
                             contractAmount: record.contractAmount,
                             category: record.category,
-                            pdfUrl: record.pdfUrl
+                            scope: record.scope || ''
                         });
                     }
                 }
             };
 
-            const loadPOFromSaved = (pdfUrl) => {
-                if (pdfUrl) {
-                    window.open(pdfUrl);
-                    setMessage('Opened saved PO. Edit and upload new version if needed.');
-                }
-            };
-
-            const extractTextFromPDF = async (file) => {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = async (e) => {
-                        try {
-                            const pdf = await pdfjsLib.getDocument({ data: e.target.result }).promise;
-                            const page = await pdf.getPage(1);
-                            const annotations = await page.getAnnotations();
-
-                            // PDF form field name -> app field
-                            const fieldMap = {
-                                'Subcontractor': 'subName',
-                                'Category': 'category',
-                                'Contact': 'contact',
-                                'Phone': 'phone',
-                                'Email_2': 'email',
-                                'Sub Code': 'subCode',
-                                'Contract Amount': 'contractAmount'
-                            };
-
-                            const extracted = {};
-                            annotations.forEach(a => {
-                                const key = fieldMap[a.fieldName];
-                                if (key && a.fieldValue) {
-                                    extracted[key] = String(a.fieldValue).trim();
-                                }
-                            });
-
-                            console.log('Extracted form fields:', extracted);
-                            resolve(extracted);
-                        } catch (error) {
-                            reject(error);
-                        }
-                    };
-                    reader.readAsArrayBuffer(file);
+            const handleUseTemplate = (t) => {
+                setEditingPO(null);
+                setFormMetadata({
+                    subName: t.subName || '', category: t.category || '', contact: t.contact || '',
+                    phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
+                    contractAmount: t.contractAmount || '', scope: t.scope || ''
                 });
-            };
-
-            const handlePDFSelect = async (e) => {
-                const file = e.target.files[0];
-                if (file && file.type === 'application/pdf') {
-                    setSelectedPDF(file);
-                    try {
-                        const extracted = await extractTextFromPDF(file);
-                        setFormMetadata({
-                            subName: extracted.subName || '',
-                            category: extracted.category || '',
-                            contact: extracted.contact || '',
-                            phone: extracted.phone || '',
-                            email: extracted.email || '',
-                            subCode: extracted.subCode || '',
-                            contractAmount: extracted.contractAmount || ''
-                        });
-                        setMessage('PDF selected and data extracted: ' + file.name);
-                    } catch (error) {
-                        setMessage('PDF selected but extraction failed: ' + error.message + ' (you can still save)');
-                        setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
-                    }
-                } else {
-                    setMessage('Error: Please select a PDF file');
-                }
+                setMessage(`Template loaded: ${t.subName} | ${t.category}`);
+                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
             };
 
             const handleSaveTemplate = async () => {
-                if (!user || !selectedPDF) {
-                    setMessage('Please select a PDF');
-                    return;
-                }
+                if (!user) return;
                 if (!formMetadata.subName || !formMetadata.category) {
-                    setMessage('Sub Name and Category required');
+                    setMessage('Subcontractor and Category required');
                     return;
                 }
-                
                 setUploadLoading(true);
                 try {
-                    const timestamp = Date.now();
-                    const fileRef = storage.ref(`formTemplates/${user.uid}/${timestamp}_${selectedPDF.name}`);
-                    await fileRef.put(selectedPDF);
-                    const downloadURL = await fileRef.getDownloadURL();
-                    
-                    await db.collection('formLibrary').add({
+                    const templateData = {
                         userId: user.uid,
-                        fileName: selectedPDF.name,
-                        pdfUrl: downloadURL,
                         subName: formMetadata.subName,
                         category: formMetadata.category,
                         contact: formMetadata.contact,
@@ -635,17 +559,22 @@
                         email: formMetadata.email,
                         subCode: formMetadata.subCode,
                         contractAmount: formMetadata.contractAmount,
-                        dateCreated: new Date()
-                    });
-                    
-                    setMessage('Template saved successfully');
-                    setSelectedPDF(null);
-                    setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
-                    setUploadLoading(false);
+                        scope: formMetadata.scope || '',
+                        dateUpdated: new Date()
+                    };
+                    // Same sub + category already saved? Update it instead of adding a duplicate
+                    const existing = formLibraryData.find(f => f.subName === formMetadata.subName && f.category === formMetadata.category);
+                    if (existing) {
+                        await db.collection('formLibrary').doc(existing.id).update(templateData);
+                        setMessage('Template updated');
+                    } else {
+                        await db.collection('formLibrary').add({ ...templateData, dateCreated: new Date() });
+                        setMessage('Template saved');
+                    }
                 } catch (error) {
                     setMessage('Error saving template: ' + error.message);
-                    setUploadLoading(false);
                 }
+                setUploadLoading(false);
             };
 
             const handleEditPO = (form) => {
@@ -876,6 +805,9 @@
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
                         </button>
+                        <button className="btn-secondary" onClick={handleSaveTemplate} disabled={uploadLoading} style={{ marginTop: '8px' }}>
+                            Save as Template
+                        </button>
                         {editingPO && (
                             <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
                         )}
@@ -925,10 +857,10 @@
                                 </div>
                                 <button 
                                     className="btn-primary" 
-                                    onClick={() => loadPOFromSaved(categoryPreview.pdfUrl)}
+                                    onClick={() => handleUseTemplate(categoryPreview)}
                                     style={{ width: '100%' }}
                                 >
-                                    Open This PO
+                                    Use This Template
                                 </button>
                             </div>
                         )}
@@ -978,48 +910,13 @@
                                 </div>
                                 <button 
                                     className="btn-primary" 
-                                    onClick={() => loadPOFromSaved(subPreview.pdfUrl)}
+                                    onClick={() => handleUseTemplate(subPreview)}
                                     style={{ width: '100%' }}
                                 >
-                                    Open This PO
+                                    Use This Template
                                 </button>
                             </div>
                         )}
-                    </div>
-
-                    <div className="section">
-                        <div className="section-title">UPLOAD & SAVE COMPLETED FORM</div>
-                        
-                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px', borderLeft: '3px solid #0066cc' }}>
-                            Current Job: <strong>{jobCode || '(none selected)'}</strong>
-                        </div>
-
-                        <div className="form-group">
-                            <label>Select Completed PDF</label>
-                            <div className="upload-area" onClick={() => document.getElementById('pdfInput').click()}>
-                                <input 
-                                    id="pdfInput"
-                                    type="file" 
-                                    accept=".pdf" 
-                                    onChange={handlePDFSelect}
-                                />
-                                {selectedPDF ? (
-                                    <div style={{ color: '#0066cc', fontWeight: 500 }}>✓ {selectedPDF.name}</div>
-                                ) : (
-                                    <div style={{ color: '#999' }}>Click to upload or drag PDF here</div>
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="button-group">
-                            <button 
-                                className="btn-primary" 
-                                onClick={handleSaveTemplate}
-                                disabled={!selectedPDF || uploadLoading}
-                            >
-                                {uploadLoading ? 'Saving...' : 'Save as Template'}
-                            </button>
-                        </div>
                     </div>
 
                     {currentJobId && jobForms.length > 0 && (
