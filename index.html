@@ -379,6 +379,10 @@
         const pdfDoc = await PDFDocument.load(arrayBuffer);
         const form = pdfDoc.getForm();
 
+        // Amount always shown with a single $ (typed with or without one)
+        const amountNoSign = (formMetadata.contractAmount || '').trim().replace(/^\$+/, '').trim();
+        const amountDisplay = amountNoSign ? `$${amountNoSign}` : '';
+
         // PDF form field name -> value
         const values = {
             'Job Code': jobCode,
@@ -395,7 +399,7 @@
             'Email_2': formMetadata.email,
             'Sub Code': formMetadata.subCode,
             'Category': formMetadata.category,
-            'Contract Amount': formMetadata.contractAmount,
+            'Contract Amount': amountDisplay,
             'Text1': formMetadata.scope
         };
         // Match on name with extra spaces ignored (e.g. "City  State  Zip")
@@ -412,7 +416,7 @@
         const d = new Date();
         const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
         const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
-        const fileName = `${clean(formMetadata.category)}_${clean(formMetadata.subName)}_$${clean(formMetadata.contractAmount)}_${poNumber}_${dateStr}.pdf`;
+        const fileName = `${clean(formMetadata.category)}_${clean(formMetadata.subName)}_$${clean(amountNoSign)}_${poNumber}_${dateStr}.pdf`;
 
         const fileRef = storage.ref(`jobForms/${currentJobId}/${Date.now()}_${fileName}`);
         await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }));
@@ -575,6 +579,19 @@
                     setMessage('Error saving template: ' + error.message);
                 }
                 setUploadLoading(false);
+            };
+
+            const handleDeleteTemplate = async (t) => {
+                if (!window.confirm(`Delete template ${t.subName} | ${t.category}?`)) return;
+                try {
+                    await db.collection('formLibrary').doc(t.id).delete();
+                    if (t.pdfUrl) {
+                        try { await storage.refFromURL(t.pdfUrl).delete(); } catch (e) { console.log('Old template file not removed:', e.message); }
+                    }
+                    setMessage('Template deleted');
+                } catch (error) {
+                    setMessage('Error deleting template: ' + error.message);
+                }
             };
 
             const handleEditPO = (form) => {
@@ -980,6 +997,44 @@
                                             </td>
                                         </tr>
                                     ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {formLibraryData.length > 0 && (
+                        <div className="section">
+                            <div className="section-title">TEMPLATE LIBRARY</div>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Category</th>
+                                        <th>Subcontractor</th>
+                                        <th>Contract Amount</th>
+                                        <th>Last Updated</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {[...formLibraryData]
+                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
+                                        .map(t => {
+                                            const d = t.dateUpdated || t.dateCreated;
+                                            return (
+                                                <tr key={t.id}>
+                                                    <td>{t.category}</td>
+                                                    <td>{t.subName}</td>
+                                                    <td>{t.contractAmount || '-'}</td>
+                                                    <td>{d && d.toDate ? d.toDate().toLocaleDateString() : '-'}</td>
+                                                    <td>
+                                                        <div className="button-group" style={{ gap: '4px' }}>
+                                                            <button className="btn-secondary btn-sm" onClick={() => handleUseTemplate(t)}>Use</button>
+                                                            <button className="btn-danger btn-sm" onClick={() => handleDeleteTemplate(t)}>Delete</button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
                                 </tbody>
                             </table>
                         </div>
