@@ -808,6 +808,9 @@
                         <button className="btn-secondary" onClick={handleSaveTemplate} disabled={uploadLoading} style={{ marginTop: '8px' }}>
                             Save as Template
                         </button>
+                        <button className="btn-secondary" onClick={async () => { await handleSaveTemplate(); await handleGeneratePDF(); }} disabled={uploadLoading || !currentJobId} style={{ marginTop: '8px' }}>
+                            {editingPO ? 'Save Changes + Update Template' : 'Save to Job + Template'}
+                        </button>
                         {editingPO && (
                             <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
                         )}
