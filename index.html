@@ -128,6 +128,7 @@
                 contractAmount: '',
                 scope: ''
             });
+            const [editingPO, setEditingPO] = useState(null); // tracker row being edited
 
             // Search by Category
             const [selectedCategory, setSelectedCategory] = useState('');
@@ -376,7 +377,7 @@
     }
     setUploadLoading(true);
     try {
-        const poNumber = await getNextPONumber();
+        const poNumber = editingPO ? editingPO.poNumber : await getNextPONumber();
         if (!poNumber) { setUploadLoading(false); return; }
 
         const response = await fetch(TEMPLATE_PDF_URL);
@@ -423,7 +424,7 @@
         await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }));
         const downloadURL = await fileRef.getDownloadURL();
 
-        await db.collection('jobs').doc(currentJobId).collection('forms').add({
+        const poData = {
             fileName: fileName,
             pdfUrl: downloadURL,
             poNumber: poNumber,
@@ -435,15 +436,23 @@
             subCode: formMetadata.subCode,
             contractAmount: formMetadata.contractAmount,
             scope: formMetadata.scope || '',
-            notes: '',
-            status: 'In Progress',
-            dateCreated: new Date(),
             dateUpdated: new Date()
-        });
+        };
+        const formsRef = db.collection('jobs').doc(currentJobId).collection('forms');
+
+        if (editingPO) {
+            // Replace existing PO: update same row (notes/status kept), remove old file
+            await formsRef.doc(editingPO.id).update(poData);
+            try { await storage.refFromURL(editingPO.pdfUrl).delete(); } catch (e) { console.log('Old file not removed:', e.message); }
+            setEditingPO(null);
+            setMessage(`PO updated: ${fileName}`);
+        } else {
+            await formsRef.add({ ...poData, notes: '', status: 'In Progress', dateCreated: new Date() });
+            setMessage(`PO created and saved to job: ${fileName}`);
+        }
 
         setCurrentPO(poNumber);
         setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
-        setMessage(`PO created and saved to job: ${fileName}`);
     } catch (error) {
         setMessage('Error creating PO: ' + error.message);
     }
@@ -639,6 +648,23 @@
                 }
             };
 
+            const handleEditPO = (form) => {
+                setEditingPO(form);
+                setFormMetadata({
+                    subName: form.subName || '', category: form.category || '', contact: form.contact || '',
+                    phone: form.phone || '', email: form.email || '', subCode: form.subCode || '',
+                    contractAmount: form.contractAmount || '', scope: form.scope || ''
+                });
+                setMessage(`Editing PO ${form.poNumber}`);
+                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
+            };
+
+            const handleCancelEditPO = () => {
+                setEditingPO(null);
+                setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
+                setMessage('');
+            };
+
             const handleEditForm = (form) => {
                 setEditingFormId(form.id);
                 setEditFormData({ notes: form.notes || '', status: form.status || 'In Progress' });
@@ -823,11 +849,12 @@
                         <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>
                     </div>
 
-                    <div className="section">
+                    <div className="section" id="generate-po-section">
                         <div className="section-title">GENERATE PO</div>
                         <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px' }}>
                             Job: {jobCode || '(none)'} | Super: {superName || '(none)'}<br/>
                             {currentPO && <strong>Last PO: {currentPO}</strong>}
+                            {editingPO && <div style={{ color: '#cc6600', fontWeight: 600, marginTop: '4px' }}>Editing PO: {editingPO.poNumber}</div>}
                         </div>
                         <div className="form-group"><label>Subcontractor</label>
                             <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
@@ -847,8 +874,11 @@
                             <textarea rows="8" value={formMetadata.scope || ''} onChange={e => setFormMetadata({ ...formMetadata, scope: e.target.value })} /></div>
 
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
-                            {uploadLoading ? 'Saving...' : 'Create PO & Save to Job'}
+                            {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
                         </button>
+                        {editingPO && (
+                            <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
+                        )}
                     </div>
 
                     <div className="section">
@@ -1043,6 +1073,7 @@
                                                         </>
                                                     ) : (
                                                         <>
+                                                            {form.poNumber && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
                                                             <button className="btn-secondary btn-sm" onClick={() => handleEditForm(form)}>Edit</button>
                                                             <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
                                                             <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>
