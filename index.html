@@ -69,7 +69,7 @@
     <script type="text/babel">
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const { useState, useEffect } = React;
-        const { PDFDocument, rgb } = PDFLib;
+        const { PDFDocument } = PDFLib;
 
         const firebaseConfig = {
             apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
@@ -125,7 +125,8 @@
                 phone: '',
                 email: '',
                 subCode: '',
-                contractAmount: ''
+                contractAmount: '',
+                scope: ''
             });
 
             // Search by Category
@@ -365,56 +366,88 @@
 };
 
           const handleGeneratePDF = async () => {
-    if (!jobCode || !superName) {
+    if (!jobCode || !superName || !currentJobId) {
         setMessage('Select job and supervisor first');
         return;
     }
+    if (!formMetadata.subName || !formMetadata.category) {
+        setMessage('Subcontractor and Category required');
+        return;
+    }
+    setUploadLoading(true);
     try {
         const poNumber = await getNextPONumber();
-        if (!poNumber) return;
-        
+        if (!poNumber) { setUploadLoading(false); return; }
+
         const response = await fetch(TEMPLATE_PDF_URL);
         const arrayBuffer = await response.arrayBuffer();
         const pdfDoc = await PDFDocument.load(arrayBuffer);
-        const page = pdfDoc.getPages()[0];
-        
-        // Draw text directly on PDF using coordinates (bypasses form field issues)
-        const data = [
-            { text: jobCode, x: 81, y: 671 },
-            { text: jobAddress, x: 369, y: 671 },
-            { text: cityStateZip, x: 126, y: 653 },
-            { text: lockBox, x: 360, y: 653 },
-            { text: poNumber, x: 486, y: 653 },
-            { text: superName, x: 81, y: 635 },
-            { text: superPhone, x: 495, y: 635 },
-            { text: superEmail, x: 243, y: 635 }
-        ];
-        
-        data.forEach(item => {
-            if (item.text) {
-                page.drawText(item.text, {
-                    x: item.x,
-                    y: item.y,
-                    size: 11,
-                    color: rgb(0, 0, 0)
-                });
+        const form = pdfDoc.getForm();
+
+        // PDF form field name -> value
+        const values = {
+            'Job Code': jobCode,
+            'Job Address': jobAddress,
+            'City State Zip': cityStateZip,
+            'Lock Box': lockBox,
+            'PO': poNumber,
+            'Super': superName,
+            'Email': superEmail,
+            'Super Phone': superPhone,
+            'Subcontractor': formMetadata.subName,
+            'Contact': formMetadata.contact,
+            'Phone': formMetadata.phone,
+            'Email_2': formMetadata.email,
+            'Sub Code': formMetadata.subCode,
+            'Category': formMetadata.category,
+            'Contract Amount': formMetadata.contractAmount,
+            'Text1': formMetadata.scope
+        };
+        // Match on name with extra spaces ignored (e.g. "City  State  Zip")
+        form.getFields().forEach(field => {
+            const name = field.getName().replace(/\s+/g, ' ').trim();
+            if (values[name] !== undefined && field.setText) {
+                field.setText(values[name] || '');
             }
         });
-        
+
         const pdfBytes = await pdfDoc.save();
-        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${poNumber}.pdf`;
-        a.click();
-        URL.revokeObjectURL(url);
-        
+
+        // File name built from form data
+        const d = new Date();
+        const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
+        const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+        const fileName = `${clean(formMetadata.category)}_${clean(formMetadata.subName)}_$${clean(formMetadata.contractAmount)}_${poNumber}_${dateStr}.pdf`;
+
+        const fileRef = storage.ref(`jobForms/${currentJobId}/${Date.now()}_${fileName}`);
+        await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }));
+        const downloadURL = await fileRef.getDownloadURL();
+
+        await db.collection('jobs').doc(currentJobId).collection('forms').add({
+            fileName: fileName,
+            pdfUrl: downloadURL,
+            poNumber: poNumber,
+            subName: formMetadata.subName,
+            category: formMetadata.category,
+            contact: formMetadata.contact,
+            phone: formMetadata.phone,
+            email: formMetadata.email,
+            subCode: formMetadata.subCode,
+            contractAmount: formMetadata.contractAmount,
+            scope: formMetadata.scope || '',
+            notes: '',
+            status: 'In Progress',
+            dateCreated: new Date(),
+            dateUpdated: new Date()
+        });
+
         setCurrentPO(poNumber);
-        setMessage(`PDF downloaded - PO#: ${poNumber}`);
+        setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
+        setMessage(`PO created and saved to job: ${fileName}`);
     } catch (error) {
-        setMessage('Error generating PDF: ' + error.message);
+        setMessage('Error creating PO: ' + error.message);
     }
+    setUploadLoading(false);
 };
 
             const getUniqueCategories = () => {
@@ -602,49 +635,6 @@
                     setUploadLoading(false);
                 } catch (error) {
                     setMessage('Error saving template: ' + error.message);
-                    setUploadLoading(false);
-                }
-            };
-
-            const handleSaveToJob = async () => {
-                if (!user || !selectedPDF || !currentJobId) {
-                    setMessage('Select a job and PDF');
-                    return;
-                }
-                if (!formMetadata.subName || !formMetadata.category) {
-                    setMessage('Sub Name and Category required');
-                    return;
-                }
-                
-                setUploadLoading(true);
-                try {
-                    const timestamp = Date.now();
-                    const fileRef = storage.ref(`jobForms/${currentJobId}/${timestamp}_${selectedPDF.name}`);
-                    await fileRef.put(selectedPDF);
-                    const downloadURL = await fileRef.getDownloadURL();
-                    
-                    await db.collection('jobs').doc(currentJobId).collection('forms').add({
-                        fileName: selectedPDF.name,
-                        pdfUrl: downloadURL,
-                        subName: formMetadata.subName,
-                        category: formMetadata.category,
-                        contact: formMetadata.contact,
-                        phone: formMetadata.phone,
-                        email: formMetadata.email,
-                        subCode: formMetadata.subCode,
-                        contractAmount: formMetadata.contractAmount,
-                        notes: '',
-                        status: 'In Progress',
-                        dateCreated: new Date(),
-                        dateUpdated: new Date()
-                    });
-                    
-                    setMessage('Form saved to job successfully');
-                    setSelectedPDF(null);
-                    setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
-                    setUploadLoading(false);
-                } catch (error) {
-                    setMessage('Error saving to job: ' + error.message);
                     setUploadLoading(false);
                 }
             };
@@ -839,7 +829,26 @@
                             Job: {jobCode || '(none)'} | Super: {superName || '(none)'}<br/>
                             {currentPO && <strong>Last PO: {currentPO}</strong>}
                         </div>
-                        <button className="btn-primary" onClick={handleGeneratePDF}>Generate & Download PDF</button>
+                        <div className="form-group"><label>Subcontractor</label>
+                            <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
+                        <div className="form-group"><label>Contact</label>
+                            <input value={formMetadata.contact || ''} onChange={e => setFormMetadata({ ...formMetadata, contact: e.target.value })} /></div>
+                        <div className="form-group"><label>Phone</label>
+                            <input value={formMetadata.phone || ''} onChange={e => setFormMetadata({ ...formMetadata, phone: e.target.value })} /></div>
+                        <div className="form-group"><label>Email</label>
+                            <input value={formMetadata.email || ''} onChange={e => setFormMetadata({ ...formMetadata, email: e.target.value })} /></div>
+                        <div className="form-group"><label>Sub Code</label>
+                            <input value={formMetadata.subCode || ''} onChange={e => setFormMetadata({ ...formMetadata, subCode: e.target.value })} /></div>
+                        <div className="form-group"><label>Category</label>
+                            <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
+                        <div className="form-group"><label>Contract Amount</label>
+                            <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
+                        <div className="form-group"><label>Scope of Work</label>
+                            <textarea rows="8" value={formMetadata.scope || ''} onChange={e => setFormMetadata({ ...formMetadata, scope: e.target.value })} /></div>
+
+                        <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
+                            {uploadLoading ? 'Saving...' : 'Create PO & Save to Job'}
+                        </button>
                     </div>
 
                     <div className="section">
@@ -979,13 +988,6 @@
                                 disabled={!selectedPDF || uploadLoading}
                             >
                                 {uploadLoading ? 'Saving...' : 'Save as Template'}
-                            </button>
-                            <button 
-                                className="btn-primary" 
-                                onClick={handleSaveToJob}
-                                disabled={!selectedPDF || !currentJobId || uploadLoading}
-                            >
-                                {uploadLoading ? 'Saving...' : 'Save to This Job'}
                             </button>
                         </div>
                     </div>
