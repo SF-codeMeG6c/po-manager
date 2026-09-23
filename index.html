@@ -509,63 +509,28 @@
                         try {
                             const pdf = await pdfjsLib.getDocument({ data: e.target.result }).promise;
                             const page = await pdf.getPage(1);
-                            const textContent = await page.getTextContent();
-                            const items = textContent.items;
+                            const annotations = await page.getAnnotations();
 
-                            // Field coordinates in PDF points
-                            const fields = {
-                                subName: { x: 90, y: 639, name: 'Subcontractor Name' },
-                                category: { x: 504, y: 603, name: 'Category' },
-                                contact: { x: 297, y: 639, name: 'Contact' },
-                                phone: { x: 432, y: 639, name: 'Phone' },
-                                email: { x: 72, y: 603, name: 'Email' },
-                                subCode: { x: 342, y: 603, name: 'Sub Code' },
-                                contractAmount: { x: 90, y: 72, name: 'Contract Amount' }
+                            // PDF form field name -> app field
+                            const fieldMap = {
+                                'Subcontractor': 'subName',
+                                'Category': 'category',
+                                'Contact': 'contact',
+                                'Phone': 'phone',
+                                'Email_2': 'email',
+                                'Sub Code': 'subCode',
+                                'Contract Amount': 'contractAmount'
                             };
 
                             const extracted = {};
-                            const tolerance = 80; // pixel tolerance for matching position
-
-                            // Debug: log all text items found
-                            console.log('=== PDF Text Items Found ===');
-                            items.forEach((item, idx) => {
-                                if (item.str && item.str.trim()) {
-                                    const x = item.x !== undefined ? item.x.toFixed(0) : 'undefined';
-                                    const y = item.y !== undefined ? item.y.toFixed(0) : 'undefined';
-                                    console.log(`Item ${idx}: "${item.str}" at x=${x}, y=${y}`);
-                                }
-                            });
-                            console.log('=== Target Field Coordinates ===');
-                            Object.keys(fields).forEach(key => {
-                                const field = fields[key];
-                                console.log(`${field.name}: x=${field.x}, y=${field.y}`);
-                            });
-
-                            // For each field, find text closest to the specified coordinates
-                            Object.keys(fields).forEach(key => {
-                                const field = fields[key];
-                                let closestItem = null;
-                                let closestDistance = Infinity;
-
-                                items.forEach(item => {
-                                    if (item.str && item.str.trim() && item.x !== undefined && item.y !== undefined) {
-                                        const distance = Math.abs(item.x - field.x) + Math.abs(item.y - field.y);
-                                        if (distance < closestDistance) {
-                                            closestDistance = distance;
-                                            closestItem = item;
-                                        }
-                                    }
-                                });
-
-                                extracted[key] = closestItem ? closestItem.str.trim() : '';
-                                if (closestItem) {
-                                    const dist = closestDistance !== Infinity ? closestDistance.toFixed(0) : 'N/A';
-                                    console.log(`${field.name}: found "${closestItem.str}" at distance ${dist}`);
-                                } else {
-                                    console.log(`${field.name}: NOT FOUND`);
+                            annotations.forEach(a => {
+                                const key = fieldMap[a.fieldName];
+                                if (key && a.fieldValue) {
+                                    extracted[key] = String(a.fieldValue).trim();
                                 }
                             });
 
+                            console.log('Extracted form fields:', extracted);
                             resolve(extracted);
                         } catch (error) {
                             reject(error);
