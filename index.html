@@ -575,37 +575,26 @@
                 });
             };
 
-            const extractFromFilename = (filename) => {
-                // Pattern: {Category}_{SubName}_{Amount}_{POID}_{Date}.pdf
-                // Example: CAB_CQ-Construction_$23,133.45_Stark.W.2602-003_9-22-26.pdf
-                const nameParts = filename.replace('.pdf', '').split('_');
-                
-                return {
-                    subName: nameParts[1] || '',
-                    category: nameParts[0] || '',
-                    contact: '',
-                    phone: '',
-                    email: '',
-                    subCode: '',
-                    contractAmount: nameParts[2] || '' // The dollar amount
-                };
-            };
-
-            const handlePDFSelect = (e) => {
+            const handlePDFSelect = async (e) => {
                 const file = e.target.files[0];
                 if (file && file.type === 'application/pdf') {
                     setSelectedPDF(file);
-                    const extracted = extractFromFilename(file.name);
-                    setFormMetadata({
-                        subName: extracted.subName,
-                        category: extracted.category,
-                        contact: extracted.contact,
-                        phone: extracted.phone,
-                        email: extracted.email,
-                        subCode: extracted.subCode,
-                        contractAmount: extracted.contractAmount
-                    });
-                    setMessage('PDF selected and data extracted from filename: ' + file.name);
+                    try {
+                        const extracted = await extractTextFromPDF(file);
+                        setFormMetadata({
+                            subName: extracted.subName || '',
+                            category: extracted.category || '',
+                            contact: extracted.contact || '',
+                            phone: extracted.phone || '',
+                            email: extracted.email || '',
+                            subCode: extracted.subCode || '',
+                            contractAmount: extracted.contractAmount || ''
+                        });
+                        setMessage('PDF selected and data extracted: ' + file.name);
+                    } catch (error) {
+                        setMessage('PDF selected but extraction failed: ' + error.message + ' (you can still save)');
+                        setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '' });
+                    }
                 } else {
                     setMessage('Error: Please select a PDF file');
                 }
