@@ -117,7 +117,7 @@
                 scope: ''
             });
             const [editingPO, setEditingPO] = useState(null); // tracker row being edited
-            const [listening, setListening] = useState(false);
+            const [listening, setListening] = useState(null); // 'scope' or a tracker row id
             const recognitionRef = React.useRef(null);
 
             // Search by Category
@@ -598,9 +598,12 @@
                 }
             };
 
-            // Voice to text for Scope of Work (Chrome/Edge)
-            const toggleVoice = () => {
-                if (listening) { recognitionRef.current && recognitionRef.current.stop(); return; }
+            // Voice to text (Chrome/Edge). target = 'scope' or a tracker row id; onText gets each spoken phrase
+            const toggleVoice = (target, onText) => {
+                if (listening) {
+                    recognitionRef.current && recognitionRef.current.stop();
+                    if (listening === target) return;
+                }
                 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SR) { setMessage('Voice input not supported in this browser (use Chrome or Edge)'); return; }
                 const rec = new SR();
@@ -612,19 +615,43 @@
                     for (let i = e.resultIndex; i < e.results.length; i++) {
                         if (e.results[i].isFinal) text += e.results[i][0].transcript;
                     }
-                    if (text) {
-                        setFormMetadata(prev => {
-                            const cur = prev.scope || '';
-                            const sep = cur && !cur.endsWith('\n') && !cur.endsWith(' ') ? ' ' : '';
-                            return { ...prev, scope: cur + sep + text.trim() };
-                        });
-                    }
+                    if (text) onText(text.trim());
                 };
                 rec.onerror = (e) => { setMessage('Voice input error: ' + e.error); };
-                rec.onend = () => setListening(false);
+                rec.onend = () => setListening(prev => (prev === target ? null : prev));
                 recognitionRef.current = rec;
                 rec.start();
-                setListening(true);
+                setListening(target);
+            };
+
+            const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
+
+            // Capitalize line starts in a textbox as you type, without moving the cursor
+            const capInPlace = (el) => {
+                const fixed = capLines(el.value);
+                if (fixed !== el.value) {
+                    const start = el.selectionStart, end = el.selectionEnd;
+                    el.value = fixed;
+                    el.setSelectionRange(start, end);
+                }
+                return fixed;
+            };
+
+            const addText = (cur, text) => {
+                cur = cur || '';
+                const sep = cur && !cur.endsWith('\n') && !cur.endsWith(' ') ? ' ' : '';
+                return capLines(cur + sep + text);
+            };
+
+            const toggleScopeVoice = () => toggleVoice('scope', text =>
+                setFormMetadata(prev => ({ ...prev, scope: addText(prev.scope, text) })));
+
+            const toggleNotesVoice = (form) => {
+                let notes = form.notes || '';
+                toggleVoice(form.id, text => {
+                    notes = addText(notes, text);
+                    handleUpdateForm(form.id, { notes });
+                });
             };
 
             const handleEditPO = (form) => {
@@ -842,10 +869,10 @@
                         <div className="form-group"><label>Contract Amount</label>
                             <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
                         <div className="form-group"><label>Scope of Work
-                            <button type="button" className={listening ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ width: 'auto', marginLeft: '10px' }}>
-                                {listening ? '■ Stop' : '🎤 Voice'}
+                            <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
+                                {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
                             </button></label>
-                            <textarea rows="8" value={formMetadata.scope || ''} onChange={e => setFormMetadata({ ...formMetadata, scope: e.target.value })} /></div>
+                            <textarea rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
 
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
@@ -986,15 +1013,20 @@
                                                 <tr key={form.id}>
                                                     <td>{form.fileName}</td>
                                                     <td>
-                                                        <input
+                                                        <textarea
                                                             key={form.id + (form.notes || '')}
+                                                            rows="2"
                                                             defaultValue={form.notes || ''}
                                                             title={form.notes || ''}
                                                             placeholder="Add notes..."
+                                                            onInput={e => capInPlace(e.target)}
                                                             onBlur={e => { if (e.target.value !== (form.notes || '')) handleUpdateForm(form.id, { notes: e.target.value }); }}
-                                                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
                                                             style={{ margin: 0 }}
                                                         />
+                                                        <button type="button" className={listening === form.id ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'}
+                                                            onClick={() => toggleNotesVoice(form)} style={{ width: 'auto', marginTop: '4px' }}>
+                                                            {listening === form.id ? '■ Stop' : '🎤'}
+                                                        </button>
                                                     </td>
                                                     <td>
                                                         <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
