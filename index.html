@@ -122,6 +122,7 @@
             const scopeRef = React.useRef(null);
             const noteRef = React.useRef(null);
             const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
+            const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
 
             // Search by Category
             const [selectedCategory, setSelectedCategory] = useState('');
@@ -416,7 +417,36 @@
             }
         });
 
+        // Add attachment pages after the PO page, in list order
+        for (const att of attachments) {
+            const bytes = att.file ? await att.file.arrayBuffer() : await (await fetch(att.url)).arrayBuffer();
+            if (att.type === 'application/pdf') {
+                const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+                try { src.getForm().flatten(); } catch (e) { /* no form fields */ }
+                const pages = await pdfDoc.copyPages(src, src.getPageIndices());
+                pages.forEach(p => pdfDoc.addPage(p));
+            } else {
+                const img = att.type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+                const page = pdfDoc.addPage([612, 792]); // letter size
+                const scale = Math.min(540 / img.width, 720 / img.height, 1);
+                const w = img.width * scale, h = img.height * scale;
+                page.drawImage(img, { x: (612 - w) / 2, y: (792 - h) / 2, width: w, height: h });
+            }
+        }
+
         const pdfBytes = await pdfDoc.save();
+
+        // Save new attachment files so Edit PO can rebuild with them
+        const savedAttachments = [];
+        for (const att of attachments) {
+            if (att.file) {
+                const attRef = storage.ref(`jobForms/${currentJobId}/att_${Date.now()}_${att.name}`);
+                await attRef.put(att.file);
+                savedAttachments.push({ name: att.name, type: att.type, url: await attRef.getDownloadURL() });
+            } else {
+                savedAttachments.push({ name: att.name, type: att.type, url: att.url });
+            }
+        }
 
         // File name built from form data
         const d = new Date();
@@ -441,6 +471,7 @@
             contractAmount: formMetadata.contractAmount,
             scope: formMetadata.scope || '',
             header: header,
+            attachments: savedAttachments,
             dateUpdated: new Date()
         };
         const formsRef = db.collection('jobs').doc(currentJobId).collection('forms');
@@ -449,6 +480,13 @@
             // Replace existing PO: update same row (notes/status kept), remove old file
             await formsRef.doc(editingPO.id).update(poData);
             try { await storage.refFromURL(editingPO.pdfUrl).delete(); } catch (e) { console.log('Old file not removed:', e.message); }
+            // Remove attachment files that were taken off this PO
+            const keptUrls = savedAttachments.map(a => a.url);
+            for (const old of (editingPO.attachments || [])) {
+                if (!keptUrls.includes(old.url)) {
+                    try { await storage.refFromURL(old.url).delete(); } catch (e) { console.log('Old attachment not removed:', e.message); }
+                }
+            }
             setEditingPO(null);
             setMessage(`PO updated: ${fileName}`);
         } else {
@@ -458,6 +496,7 @@
 
         setCurrentPO(poNumber);
         setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
+        setAttachments([]);
     } catch (error) {
         setMessage('Error creating PO: ' + error.message);
     }
@@ -544,6 +583,7 @@
 
             const handleUseTemplate = (t) => {
                 setEditingPO(null);
+                setAttachments([]);
                 setFormMetadata({
                     subName: t.subName || '', category: t.category || '', contact: t.contact || '',
                     phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
@@ -677,6 +717,7 @@
 
             const handleEditPO = (form) => {
                 setEditingPO(form);
+                setAttachments(form.attachments || []);
                 setFormMetadata({
                     subName: form.subName || '', category: form.category || '', contact: form.contact || '',
                     phone: form.phone || '', email: form.email || '', subCode: form.subCode || '',
@@ -686,8 +727,30 @@
                 document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
             };
 
+            const handleAddAttachments = (e) => {
+                const allowed = ['application/pdf', 'image/png', 'image/jpeg'];
+                const files = Array.from(e.target.files || []);
+                const bad = files.filter(f => !allowed.includes(f.type));
+                if (bad.length) setMessage('Skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', '));
+                setAttachments(prev => [...prev, ...files.filter(f => allowed.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }))]);
+                e.target.value = '';
+            };
+
+            const moveAttachment = (i, dir) => {
+                setAttachments(prev => {
+                    const list = [...prev];
+                    const j = i + dir;
+                    if (j < 0 || j >= list.length) return prev;
+                    [list[i], list[j]] = [list[j], list[i]];
+                    return list;
+                });
+            };
+
+            const removeAttachment = (i) => setAttachments(prev => prev.filter((_, k) => k !== i));
+
             const handleCancelEditPO = () => {
                 setEditingPO(null);
+                setAttachments([]);
                 setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
                 setMessage('');
             };
@@ -894,6 +957,25 @@
                                 {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
                             </button></label>
                             <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
+
+                        <div className="form-group">
+                            <label>Attachments (added after the PO page)
+                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', cursor: 'pointer' }}>
+                                    + Add Files
+                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={handleAddAttachments} style={{ display: 'none' }} />
+                                </label>
+                            </label>
+                            {attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
+                            {attachments.map((att, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
+                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
+                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}</span>
+                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, -1)} disabled={i === 0}>↑</button>
+                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, 1)} disabled={i === attachments.length - 1}>↓</button>
+                                    <button type="button" className="btn-danger btn-sm" style={{ width: 'auto' }} onClick={() => removeAttachment(i)}>✕</button>
+                                </div>
+                            ))}
+                        </div>
 
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
