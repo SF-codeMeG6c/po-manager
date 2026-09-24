@@ -824,6 +824,9 @@
                             {currentPO && <strong>Last PO: {currentPO}</strong>}
                             {editingPO && <div style={{ color: '#cc6600', fontWeight: 600, marginTop: '4px' }}>Editing PO: {editingPO.poNumber}</div>}
                         </div>
+                        <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginBottom: '15px' }}>
+                            New Blank PO
+                        </button>
                         <div className="form-group"><label>Subcontractor</label>
                             <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
                         <div className="form-group"><label>Contact</label>
