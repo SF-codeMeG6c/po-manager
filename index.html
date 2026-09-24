@@ -119,6 +119,9 @@
             const [editingPO, setEditingPO] = useState(null); // tracker row being edited
             const [listening, setListening] = useState(null); // 'scope' or a tracker row id
             const recognitionRef = React.useRef(null);
+            const scopeRef = React.useRef(null);
+            const noteRef = React.useRef(null);
+            const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
 
             // Search by Category
             const [selectedCategory, setSelectedCategory] = useState('');
@@ -637,21 +640,39 @@
                 return fixed;
             };
 
-            const addText = (cur, text) => {
-                cur = cur || '';
-                const sep = cur && !cur.endsWith('\n') && !cur.endsWith(' ') ? ' ' : '';
-                return capLines(cur + sep + text);
+            // Put spoken text where the cursor is in a textbox; returns new text + cursor spot
+            const insertAtCursor = (el, text) => {
+                const cur = el.value || '';
+                const pos = el.selectionStart ?? cur.length;
+                const before = cur.slice(0, pos), after = cur.slice(pos);
+                const sepBefore = before && !/[\s]$/.test(before) ? ' ' : '';
+                const sepAfter = after && !/^[\s]/.test(after) ? ' ' : '';
+                const value = capLines(before + sepBefore + text + sepAfter + after);
+                return { value, pos: (before + sepBefore + text).length };
             };
 
-            const toggleScopeVoice = () => toggleVoice('scope', text =>
-                setFormMetadata(prev => ({ ...prev, scope: addText(prev.scope, text) })));
+            const voiceInto = (ref, setText) => (text) => {
+                const el = ref.current;
+                if (!el) return;
+                const { value, pos } = insertAtCursor(el, text);
+                setText(value);
+                setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+            };
 
-            const toggleNotesVoice = (form) => {
-                let notes = form.notes || '';
-                toggleVoice(form.id, text => {
-                    notes = addText(notes, text);
-                    handleUpdateForm(form.id, { notes });
-                });
+            const toggleScopeVoice = () => toggleVoice('scope',
+                voiceInto(scopeRef, v => setFormMetadata(prev => ({ ...prev, scope: v }))));
+
+            const toggleNoteVoice = () => toggleVoice('note',
+                voiceInto(noteRef, v => setNoteModal(prev => prev ? { ...prev, text: v } : prev)));
+
+            const closeNoteModal = () => {
+                if (listening === 'note' && recognitionRef.current) recognitionRef.current.stop();
+                setNoteModal(null);
+            };
+
+            const saveNoteModal = async () => {
+                await handleUpdateForm(noteModal.form.id, { notes: noteModal.text });
+                closeNoteModal();
             };
 
             const handleEditPO = (form) => {
@@ -872,7 +893,7 @@
                             <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
                                 {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
                             </button></label>
-                            <textarea rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
+                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
 
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
@@ -1013,19 +1034,11 @@
                                                 <tr key={form.id}>
                                                     <td>{form.fileName}</td>
                                                     <td>
-                                                        <textarea
-                                                            key={form.id + (form.notes || '')}
-                                                            rows="2"
-                                                            defaultValue={form.notes || ''}
+                                                        <button type="button" className="btn-secondary btn-sm"
+                                                            onClick={() => setNoteModal({ form, text: form.notes || '' })}
                                                             title={form.notes || ''}
-                                                            placeholder="Add notes..."
-                                                            onInput={e => capInPlace(e.target)}
-                                                            onBlur={e => { if (e.target.value !== (form.notes || '')) handleUpdateForm(form.id, { notes: e.target.value }); }}
-                                                            style={{ margin: 0 }}
-                                                        />
-                                                        <button type="button" className={listening === form.id ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'}
-                                                            onClick={() => toggleNotesVoice(form)} style={{ width: 'auto', marginTop: '4px' }}>
-                                                            {listening === form.id ? '■ Stop' : '🎤'}
+                                                            style={{ width: 'auto', textAlign: 'left', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            📝 {form.notes ? form.notes.split('\n')[0] : 'Add note'}
                                                         </button>
                                                     </td>
                                                     <td>
@@ -1052,6 +1065,32 @@
                                         })}
                                 </tbody>
                             </table>
+                        </div>
+                    )}
+
+                    {noteModal && (
+                        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+                            <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+                                <div style={{ fontWeight: 700, marginBottom: '4px' }}>Notes</div>
+                                <div style={{ fontSize: '12px', color: '#666', marginBottom: '10px', wordBreak: 'break-all' }}>{noteModal.form.fileName}</div>
+                                <textarea
+                                    ref={noteRef}
+                                    rows="15"
+                                    autoFocus
+                                    value={noteModal.text}
+                                    onChange={e => { const v = capInPlace(e.target); setNoteModal(prev => ({ ...prev, text: v })); }}
+                                    placeholder="Type or use Voice..."
+                                    style={{ width: '100%' }}
+                                />
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                    <button type="button" className={listening === 'note' ? 'btn-danger' : 'btn-secondary'} onClick={toggleNoteVoice} style={{ width: 'auto' }}>
+                                        {listening === 'note' ? '■ Stop' : '🎤 Voice'}
+                                    </button>
+                                    <div style={{ flex: 1 }} />
+                                    <button type="button" className="btn-secondary" onClick={closeNoteModal} style={{ width: 'auto' }}>Cancel</button>
+                                    <button type="button" className="btn-primary" onClick={saveNoteModal} style={{ width: 'auto' }}>Save</button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
