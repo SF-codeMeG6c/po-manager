@@ -35,9 +35,6 @@
         th { background: #f5f5f5; padding: 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
         td { padding: 10px; border-bottom: 1px solid #eee; }
         tr:hover { background: #fafafa; }
-        .status-badge { padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; }
-        .status-completed { background: #c8e6c9; color: #2e7d32; }
-        .status-in-progress { background: #fff9c4; color: #f57f17; }
         
         
         .button-group { display: flex; gap: 8px; margin-top: 8px; }
@@ -447,7 +444,7 @@
             setEditingPO(null);
             setMessage(`PO updated: ${fileName}`);
         } else {
-            await formsRef.add({ ...poData, notes: '', status: 'In Progress', dateCreated: new Date() });
+            await formsRef.add({ ...poData, notes: '', status: 'Pending', dateCreated: new Date() });
             setMessage(`PO created and saved to job: ${fileName}`);
         }
 
@@ -972,24 +969,18 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {Object.entries(
-                                        jobForms.reduce((groups, f) => {
-                                            const cat = f.category || 'Other';
-                                            (groups[cat] = groups[cat] || []).push(f);
-                                            return groups;
-                                        }, {})
-                                    ).sort(([a], [b]) => a.localeCompare(b)).map(([cat, forms]) => (
-                                        <React.Fragment key={cat}>
-                                            <tr>
-                                                <td colSpan="4" style={{ background: '#e8f0fa', fontWeight: 700, color: '#0066cc' }}>{cat}</td>
-                                            </tr>
-                                            {forms.sort((a, b) => (a.fileName || '').localeCompare(b.fileName || '')).map(form => (
+                                    {[...jobForms]
+                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
+                                        .map(form => {
+                                            const isComplete = form.status === 'Complete' || form.status === 'Completed';
+                                            return (
                                                 <tr key={form.id}>
                                                     <td>{form.fileName}</td>
                                                     <td>
                                                         <input
                                                             key={form.id + (form.notes || '')}
                                                             defaultValue={form.notes || ''}
+                                                            title={form.notes || ''}
                                                             placeholder="Add notes..."
                                                             onBlur={e => { if (e.target.value !== (form.notes || '')) handleUpdateForm(form.id, { notes: e.target.value }); }}
                                                             onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
@@ -997,14 +988,16 @@
                                                         />
                                                     </td>
                                                     <td>
-                                                        <select
-                                                            value={form.status || 'In Progress'}
-                                                            onChange={e => handleUpdateForm(form.id, { status: e.target.value })}
-                                                            style={{ margin: 0 }}
-                                                        >
-                                                            <option>In Progress</option>
-                                                            <option>Completed</option>
-                                                        </select>
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
+                                                            <input type="radio" name={'status-' + form.id} checked={!isComplete}
+                                                                onChange={() => handleUpdateForm(form.id, { status: 'Pending' })} style={{ width: 'auto', margin: 0 }} />
+                                                            Pending
+                                                        </label>
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
+                                                            <input type="radio" name={'status-' + form.id} checked={isComplete}
+                                                                onChange={() => handleUpdateForm(form.id, { status: 'Complete' })} style={{ width: 'auto', margin: 0 }} />
+                                                            Complete
+                                                        </label>
                                                     </td>
                                                     <td>
                                                         <div className="button-group" style={{ gap: '4px' }}>
@@ -1014,9 +1007,8 @@
                                                         </div>
                                                     </td>
                                                 </tr>
-                                            ))}
-                                        </React.Fragment>
-                                    ))}
+                                            );
+                                        })}
                                 </tbody>
                             </table>
                         </div>
