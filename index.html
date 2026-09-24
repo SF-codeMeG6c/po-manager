@@ -357,7 +357,11 @@
 };
 
           const handleGeneratePDF = async () => {
-    if (!jobCode || !superName || !currentJobId) {
+    // Editing a PO that has its own saved header: use it, no job/super selection needed
+    const header = (editingPO && editingPO.header) ? editingPO.header : {
+        jobCode, jobAddress, cityStateZip, lockBox, superName, superEmail, superPhone
+    };
+    if (!currentJobId || !header.jobCode || !header.superName) {
         setMessage('Select job and supervisor first');
         return;
     }
@@ -384,14 +388,14 @@
 
         // PDF form field name -> value
         const values = {
-            'Job Code': jobCode,
-            'Job Address': jobAddress,
-            'City State Zip': cityStateZip,
-            'Lock Box': lockBox,
+            'Job Code': header.jobCode,
+            'Job Address': header.jobAddress,
+            'City State Zip': header.cityStateZip,
+            'Lock Box': header.lockBox,
             'PO': poNumber,
-            'Super': superName,
-            'Email': superEmail,
-            'Super Phone': superPhone,
+            'Super': header.superName,
+            'Email': header.superEmail,
+            'Super Phone': header.superPhone,
             'Subcontractor': formMetadata.subName,
             'Contact': formMetadata.contact,
             'Phone': formMetadata.phone,
@@ -433,6 +437,7 @@
             subCode: formMetadata.subCode,
             contractAmount: formMetadata.contractAmount,
             scope: formMetadata.scope || '',
+            header: header,
             dateUpdated: new Date()
         };
         const formsRef = db.collection('jobs').doc(currentJobId).collection('forms');
@@ -848,6 +853,7 @@
                         {editingPO && (
                             <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
                         )}
+                        {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
                     </div>
 
                     <div className="section">
@@ -1052,7 +1058,6 @@
                         </div>
                     )}
 
-                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
                 </div>
             );
         }
