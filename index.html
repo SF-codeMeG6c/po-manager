@@ -43,7 +43,6 @@
         .button-group { display: flex; gap: 8px; margin-top: 8px; }
         .button-group button { margin: 0; }
         
-        .edit-row input, .edit-row select, .edit-row textarea { width: 100%; margin: 0; }
     </style>
 </head>
 <body>
@@ -107,8 +106,6 @@
 
             const [uploadLoading, setUploadLoading] = useState(false);
             const [jobForms, setJobForms] = useState([]);
-            const [editingFormId, setEditingFormId] = useState(null);
-            const [editFormData, setEditFormData] = useState({});
 
             // Phase 4: PDF Metadata & Search
             const [formLibraryData, setFormLibraryData] = useState([]);
@@ -123,6 +120,8 @@
                 scope: ''
             });
             const [editingPO, setEditingPO] = useState(null); // tracker row being edited
+            const [listening, setListening] = useState(false);
+            const recognitionRef = React.useRef(null);
 
             // Search by Category
             const [selectedCategory, setSelectedCategory] = useState('');
@@ -379,8 +378,11 @@
         const pdfDoc = await PDFDocument.load(arrayBuffer);
         const form = pdfDoc.getForm();
 
-        // Amount always shown with a single $ (typed with or without one)
-        const amountNoSign = (formMetadata.contractAmount || '').trim().replace(/^\$+/, '').trim();
+        // Amount always shown as $12,345.00 (typed with or without $ or commas)
+        const rawAmount = (formMetadata.contractAmount || '').replace(/[^0-9.]/g, '');
+        const amountNoSign = rawAmount && !isNaN(parseFloat(rawAmount))
+            ? parseFloat(rawAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : '';
         const amountDisplay = amountNoSign ? `$${amountNoSign}` : '';
 
         // PDF form field name -> value
@@ -594,6 +596,35 @@
                 }
             };
 
+            // Voice to text for Scope of Work (Chrome/Edge)
+            const toggleVoice = () => {
+                if (listening) { recognitionRef.current && recognitionRef.current.stop(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setMessage('Voice input not supported in this browser (use Chrome or Edge)'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let text = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) {
+                        if (e.results[i].isFinal) text += e.results[i][0].transcript;
+                    }
+                    if (text) {
+                        setFormMetadata(prev => {
+                            const cur = prev.scope || '';
+                            const sep = cur && !cur.endsWith('\n') && !cur.endsWith(' ') ? ' ' : '';
+                            return { ...prev, scope: cur + sep + text.trim() };
+                        });
+                    }
+                };
+                rec.onerror = (e) => { setMessage('Voice input error: ' + e.error); };
+                rec.onend = () => setListening(false);
+                recognitionRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+
             const handleEditPO = (form) => {
                 setEditingPO(form);
                 setFormMetadata({
@@ -611,22 +642,11 @@
                 setMessage('');
             };
 
-            const handleEditForm = (form) => {
-                setEditingFormId(form.id);
-                setEditFormData({ notes: form.notes || '', status: form.status || 'In Progress' });
-            };
-
-            const handleSaveFormEdit = async (formId) => {
+            // Save notes/status straight from the tracker row
+            const handleUpdateForm = async (formId, fields) => {
                 if (!currentJobId) return;
-                
                 try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
-                        notes: editFormData.notes,
-                        status: editFormData.status,
-                        dateUpdated: new Date()
-                    });
-                    setEditingFormId(null);
-                    setMessage('Form updated');
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({ ...fields, dateUpdated: new Date() });
                 } catch (error) {
                     setMessage('Error updating form: ' + error.message);
                 }
@@ -816,7 +836,10 @@
                             <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
                         <div className="form-group"><label>Contract Amount</label>
                             <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
-                        <div className="form-group"><label>Scope of Work</label>
+                        <div className="form-group"><label>Scope of Work
+                            <button type="button" className={listening ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ width: 'auto', marginLeft: '10px' }}>
+                                {listening ? '■ Stop' : '🎤 Voice'}
+                            </button></label>
                             <textarea rows="8" value={formMetadata.scope || ''} onChange={e => setFormMetadata({ ...formMetadata, scope: e.target.value })} /></div>
 
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
@@ -949,53 +972,50 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {jobForms.map(form => (
-                                        <tr key={form.id} className={editingFormId === form.id ? 'edit-row' : ''}>
-                                            <td>{form.fileName}</td>
-                                            <td>
-                                                {editingFormId === form.id ? (
-                                                    <textarea 
-                                                        value={editFormData.notes}
-                                                        onChange={e => setEditFormData({...editFormData, notes: e.target.value})}
-                                                        placeholder="Add notes..."
-                                                    />
-                                                ) : (
-                                                    form.notes || '-'
-                                                )}
-                                            </td>
-                                            <td>
-                                                {editingFormId === form.id ? (
-                                                    <select 
-                                                        value={editFormData.status}
-                                                        onChange={e => setEditFormData({...editFormData, status: e.target.value})}
-                                                    >
-                                                        <option>In Progress</option>
-                                                        <option>Completed</option>
-                                                    </select>
-                                                ) : (
-                                                    <span className={`status-badge status-${form.status.toLowerCase().replace(' ', '-')}`}>
-                                                        {form.status}
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td>
-                                                <div className="button-group" style={{ gap: '4px' }}>
-                                                    {editingFormId === form.id ? (
-                                                        <>
-                                                            <button className="btn-primary btn-sm" onClick={() => handleSaveFormEdit(form.id)}>Save</button>
-                                                            <button className="btn-secondary btn-sm" onClick={() => setEditingFormId(null)}>Cancel</button>
-                                                        </>
-                                                    ) : (
-                                                        <>
+                                    {Object.entries(
+                                        jobForms.reduce((groups, f) => {
+                                            const cat = f.category || 'Other';
+                                            (groups[cat] = groups[cat] || []).push(f);
+                                            return groups;
+                                        }, {})
+                                    ).sort(([a], [b]) => a.localeCompare(b)).map(([cat, forms]) => (
+                                        <React.Fragment key={cat}>
+                                            <tr>
+                                                <td colSpan="4" style={{ background: '#e8f0fa', fontWeight: 700, color: '#0066cc' }}>{cat}</td>
+                                            </tr>
+                                            {forms.sort((a, b) => (a.fileName || '').localeCompare(b.fileName || '')).map(form => (
+                                                <tr key={form.id}>
+                                                    <td>{form.fileName}</td>
+                                                    <td>
+                                                        <input
+                                                            key={form.id + (form.notes || '')}
+                                                            defaultValue={form.notes || ''}
+                                                            placeholder="Add notes..."
+                                                            onBlur={e => { if (e.target.value !== (form.notes || '')) handleUpdateForm(form.id, { notes: e.target.value }); }}
+                                                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                                                            style={{ margin: 0 }}
+                                                        />
+                                                    </td>
+                                                    <td>
+                                                        <select
+                                                            value={form.status || 'In Progress'}
+                                                            onChange={e => handleUpdateForm(form.id, { status: e.target.value })}
+                                                            style={{ margin: 0 }}
+                                                        >
+                                                            <option>In Progress</option>
+                                                            <option>Completed</option>
+                                                        </select>
+                                                    </td>
+                                                    <td>
+                                                        <div className="button-group" style={{ gap: '4px' }}>
                                                             {form.poNumber && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
-                                                            <button className="btn-secondary btn-sm" onClick={() => handleEditForm(form)}>Edit</button>
                                                             <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
                                                             <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            </td>
-                                        </tr>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </React.Fragment>
                                     ))}
                                 </tbody>
                             </table>
