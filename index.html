@@ -1111,7 +1111,8 @@
                                     {[...jobForms]
                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
                                         .map(form => {
-                                            const isComplete = form.status === 'Complete' || form.status === 'Completed';
+                                            const status = (form.status === 'Complete' || form.status === 'Completed') ? 'Complete'
+                                                : form.status === 'Revised' ? 'Revised' : 'Pending';
                                             return (
                                                 <tr key={form.id}>
                                                     <td>{form.fileName}</td>
@@ -1125,14 +1126,19 @@
                                                     </td>
                                                     <td>
                                                         <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={!isComplete}
+                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Pending'}
                                                                 onChange={() => handleUpdateForm(form.id, { status: 'Pending' })} style={{ width: 'auto', margin: 0 }} />
                                                             Pending
                                                         </label>
                                                         <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={isComplete}
+                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Complete'}
                                                                 onChange={() => handleUpdateForm(form.id, { status: 'Complete' })} style={{ width: 'auto', margin: 0 }} />
                                                             Complete
+                                                        </label>
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
+                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Revised'}
+                                                                onChange={() => handleUpdateForm(form.id, { status: 'Revised' })} style={{ width: 'auto', margin: 0 }} />
+                                                            Revised
                                                         </label>
                                                     </td>
                                                     <td>
