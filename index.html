@@ -182,6 +182,17 @@
                 }
             };
 
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
             const handleSignUp = async () => {
                 setAuthError('');
                 try {
@@ -726,6 +737,9 @@
                         <button className="btn-secondary" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
                             {authMode === 'login' ? 'Need account?' : 'Have account?'}
                         </button>
+                        {authMode === 'login' && (
+                            <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        )}
                         {authError && <div className="error">{authError}</div>}
                     </div>
                 );
