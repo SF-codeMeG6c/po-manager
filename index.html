@@ -126,13 +126,24 @@
             const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
             const [sendingId, setSendingId] = useState(null); // PO being emailed
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
+            const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
 
             useEffect(() => {
-                auth.onAuthStateChanged(currentUser => {
+                auth.onAuthStateChanged(async currentUser => {
                     setUser(currentUser);
-                    if (currentUser) {
-                        loadDefaults(currentUser.uid);
-                        loadFormLibraryData(currentUser.uid);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        if (snap.exists && snap.data().active === true) {
+                            setProfile({ uid: currentUser.uid, ...snap.data() });
+                            loadDefaults(currentUser.uid);
+                            loadFormLibraryData(currentUser.uid);
+                        } else {
+                            setProfile(false);
+                        }
+                    } catch (err) {
+                        setProfile(false);
                     }
                 });
             }, []);
@@ -757,6 +768,20 @@
                             <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
                         )}
                         {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) {
+                return <div className="section">Loading...</div>;
+            }
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <div className="section-title">ACCOUNT NOT SET UP</div>
+                        <p>You're signed in as {user.email}, but your account hasn't been given access yet. Contact an admin.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
                     </div>
                 );
             }
