@@ -137,6 +137,7 @@
                         const snap = await db.collection('users').doc(currentUser.uid).get();
                         if (snap.exists && snap.data().active === true) {
                             setProfile({ uid: currentUser.uid, ...snap.data() });
+                            loadJobs(currentUser.uid, snap.data().role);
                             loadDefaults(currentUser.uid);
                             loadFormLibraryData(currentUser.uid);
                         } else {
@@ -158,12 +159,25 @@
                 });
             };
 
+            // Job list: all jobs, or only assigned jobs for Supers. Archived jobs are hidden.
+            const loadJobs = (uid, role) => {
+                let query = db.collection('jobs');
+                if (role === 'super') query = query.where('assignedSupers', 'array-contains', uid);
+                query.onSnapshot(snapshot => {
+                    const jobs = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (d.archived === true) return;
+                        jobs.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', lockBox: d.lockBox || '' });
+                    });
+                    jobs.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobLibrary(jobs);
+                }, error => console.error('Job list error:', error));
+            };
+
             const loadDefaults = (uid) => {
                 db.collection('poManagerData').doc(uid).onSnapshot(doc => {
                     if (doc.exists) {
-                        if (doc.data().jobLibrary) {
-                            setJobLibrary(doc.data().jobLibrary);
-                        }
                         if (doc.data().supervisorLibrary) {
                             setSupervisorLibrary(doc.data().supervisorLibrary);
                         }
@@ -265,13 +279,6 @@
                         dateCreated: new Date()
                     });
                     
-                    const newJob = { id: jobDocRef.id, code: jobCode, address: jobAddress, cityStateZip, lockBox };
-                    const updatedJobs = [...jobLibrary, newJob];
-                    await db.collection('poManagerData').doc(user.uid).set(
-                        { jobLibrary: updatedJobs },
-                        { merge: true }
-                    );
-                    
                     setMessage('Job saved');
                     setJobCode('');
                     setJobAddress('');
@@ -314,13 +321,12 @@
             };
 
             const handleDeleteJob = async (index) => {
-                const updatedJobs = jobLibrary.filter((_, i) => i !== index);
+                const job = jobLibrary[index];
+                if (!job || !job.id) return;
+                if (!window.confirm(`Archive job ${job.code}? It will be hidden from the list. Its POs and files are kept.`)) return;
                 try {
-                    await db.collection('poManagerData').doc(user.uid).set(
-                        { jobLibrary: updatedJobs },
-                        { merge: true }
-                    );
-                    setMessage('Job deleted');
+                    await db.collection('jobs').doc(job.id).update({ archived: true });
+                    setMessage('Job archived');
                 } catch (error) {
                     setMessage('Error: ' + error.message);
                 }
@@ -846,7 +852,7 @@
                                         style={{ width: 'auto', padding: '8px 12px' }}
                                         disabled={selectedJobIndex === ''}
                                     >
-                                        (Delete)
+                                        (Archive)
                                     </button>
                                 </div>
                             </div>
