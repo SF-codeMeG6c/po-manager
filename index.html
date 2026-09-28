@@ -130,6 +130,7 @@
             const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
             const [usersList, setUsersList] = useState([]);
             const [userEdits, setUserEdits] = useState({}); // uid -> { role, active } not yet saved
+            const [supersList, setSupersList] = useState([]); // active users with the Super role
 
             useEffect(() => {
                 if (!showUsers) return;
@@ -156,6 +157,7 @@
                             setProfile({ uid: currentUser.uid, ...snap.data() });
                             loadJobs(currentUser.uid, snap.data().role);
                             loadSupervisors();
+                            if (['owner', 'admin', 'estimator'].includes(snap.data().role)) loadSupers();
                             loadFormLibraryData(currentUser.uid);
                         } else if (!snap.exists) {
                             // New person: create their own record as pending (no access until approved)
@@ -199,11 +201,21 @@
                     snapshot.forEach(doc => {
                         const d = doc.data();
                         if (d.archived === true) return;
-                        jobs.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', lockBox: d.lockBox || '' });
+                        jobs.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', lockBox: d.lockBox || '', assignedSupers: d.assignedSupers || [] });
                     });
                     jobs.sort((a, b) => a.code.localeCompare(b.code));
                     setJobLibrary(jobs);
                 }, error => console.error('Job list error:', error));
+            };
+
+            // Users with the Super role (for assigning to jobs)
+            const loadSupers = () => {
+                db.collection('users').where('role', '==', 'super').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => { if (doc.data().active === true) list.push({ id: doc.id, name: doc.data().name || doc.data().email }); });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setSupersList(list);
+                }, error => console.error('Supers list error:', error));
             };
 
             // Company-wide Supervisor list, sorted by name
@@ -278,6 +290,19 @@
             };
 
             const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
+            const canEditJobs = !!profile && ['owner', 'admin', 'estimator'].includes(profile.role);
+
+            const handleToggleSuper = async (superId, checked) => {
+                if (!currentJobId) return;
+                const FV = firebase.firestore.FieldValue;
+                try {
+                    await db.collection('jobs').doc(currentJobId).update({
+                        assignedSupers: checked ? FV.arrayUnion(superId) : FV.arrayRemove(superId)
+                    });
+                } catch (error) {
+                    setMessage('Error assigning Super: ' + error.message);
+                }
+            };
 
             const handleSaveUser = async (u) => {
                 const edit = userEdits[u.id] || {};
@@ -976,6 +1001,27 @@
                                 </div>
                             </div>
                         )}
+
+                        {canEditJobs && currentJobId && (() => {
+                            const job = jobLibrary.find(j => j.id === currentJobId);
+                            if (!job) return null;
+                            return (
+                                <div className="form-group">
+                                    <label>Assigned Supers ({job.code})</label>
+                                    {supersList.length === 0
+                                        ? <div style={{ fontSize: '13px', color: '#888' }}>No active Supers yet. Set someone's role to Super in Users.</div>
+                                        : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
+                                            {supersList.map(sup => (
+                                                <label key={sup.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
+                                                    <input type="checkbox" checked={job.assignedSupers.includes(sup.id)}
+                                                        onChange={e => handleToggleSuper(sup.id, e.target.checked)} />
+                                                    {sup.name}
+                                                </label>
+                                            ))}
+                                          </div>}
+                                </div>
+                            );
+                        })()}
 
                         <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>
                     </div>
