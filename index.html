@@ -127,6 +127,23 @@
             const [sendingId, setSendingId] = useState(null); // PO being emailed
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
+            const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
+            const [usersList, setUsersList] = useState([]);
+            const [userEdits, setUserEdits] = useState({}); // uid -> { role, active } not yet saved
+
+            useEffect(() => {
+                if (!showUsers) return;
+                const unsub = db.collection('users').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    list.sort((a, b) => {
+                        const ap = a.role === 'pending' ? 0 : 1, bp = b.role === 'pending' ? 0 : 1;
+                        return ap !== bp ? ap - bp : (a.name || '').localeCompare(b.name || '');
+                    });
+                    setUsersList(list);
+                }, error => console.error('Users list error:', error));
+                return () => unsub();
+            }, [showUsers]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -257,6 +274,21 @@
                     setAuthMode('login');
                 } catch (error) {
                     setAuthError(error.message);
+                }
+            };
+
+            const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
+
+            const handleSaveUser = async (u) => {
+                const edit = userEdits[u.id] || {};
+                const role = edit.role !== undefined ? edit.role : u.role;
+                const active = edit.active !== undefined ? edit.active : u.active === true;
+                try {
+                    await db.collection('users').doc(u.id).update({ role, active, updatedAt: new Date() });
+                    setUserEdits(prev => { const next = { ...prev }; delete next[u.id]; return next; });
+                    setMessage(`Saved ${u.name || u.email}: ${role}${active ? '' : ' (inactive)'}`);
+                } catch (error) {
+                    setMessage('Error saving user: ' + error.message);
                 }
             };
 
@@ -818,10 +850,73 @@
 
             return (
                 <div>
+                    {isAdminUser && showUsers && (
+                        <div className="section">
+                            <div className="section-title">USERS</div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                                <thead>
+                                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
+                                        <th style={{ padding: '6px' }}>Name</th>
+                                        <th style={{ padding: '6px' }}>Email</th>
+                                        <th style={{ padding: '6px' }}>Role</th>
+                                        <th style={{ padding: '6px' }}>Active</th>
+                                        <th style={{ padding: '6px' }}></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {usersList.map(u => {
+                                        const isMe = u.id === user.uid;
+                                        const edit = userEdits[u.id] || {};
+                                        const role = edit.role !== undefined ? edit.role : u.role;
+                                        const active = edit.active !== undefined ? edit.active : u.active === true;
+                                        const changed = edit.role !== undefined || edit.active !== undefined;
+                                        return (
+                                            <tr key={u.id} style={{ borderBottom: '1px solid #eee', background: u.role === 'pending' ? '#fff7e6' : 'transparent' }}>
+                                                <td style={{ padding: '6px' }}>
+                                                    {u.name}{isMe ? ' (you)' : ''}
+                                                    {u.role === 'pending' && <div style={{ fontSize: '11px', color: '#cc6600' }}>Waiting for access</div>}
+                                                </td>
+                                                <td style={{ padding: '6px' }}>{u.email}</td>
+                                                <td style={{ padding: '6px' }}>
+                                                    <select value={role} disabled={isMe}
+                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
+                                                        <option value="pending">Pending</option>
+                                                        <option value="owner">Owner</option>
+                                                        <option value="admin">Admin</option>
+                                                        <option value="estimator">Estimator</option>
+                                                        <option value="super">Super</option>
+                                                        <option value="office">Office</option>
+                                                    </select>
+                                                </td>
+                                                <td style={{ padding: '6px' }}>
+                                                    <input type="checkbox" checked={active} disabled={isMe}
+                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
+                                                </td>
+                                                <td style={{ padding: '6px' }}>
+                                                    {!isMe && (
+                                                        <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
+                                                            disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
                     <div className="section">
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                             <div className="section-title">JOB DETAILS</div>
-                            <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                {isAdminUser && (
+                                    <button className="btn-secondary" onClick={() => setShowUsers(!showUsers)} style={{ width: 'auto' }}>
+                                        {showUsers ? 'Hide Users' : 'Users'}
+                                    </button>
+                                )}
+                                <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
+                            </div>
                         </div>
 
                         <div className="form-group">
