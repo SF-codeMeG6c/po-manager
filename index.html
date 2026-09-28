@@ -140,8 +140,22 @@
                             loadJobs(currentUser.uid, snap.data().role);
                             loadSupervisors();
                             loadFormLibraryData(currentUser.uid);
+                        } else if (!snap.exists) {
+                            // New person: create their own record as pending (no access until approved)
+                            try {
+                                await db.collection('users').doc(currentUser.uid).set({
+                                    name: currentUser.displayName || currentUser.email || '',
+                                    email: currentUser.email || '',
+                                    role: 'pending',
+                                    active: false,
+                                    requestedAt: new Date()
+                                });
+                                setProfile('pending');
+                            } catch (createErr) {
+                                setProfile(false);
+                            }
                         } else {
-                            setProfile(false);
+                            setProfile(snap.data().role === 'pending' ? 'pending' : false);
                         }
                     } catch (err) {
                         setProfile(false);
@@ -782,11 +796,21 @@
                 return <div className="section">Loading...</div>;
             }
 
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">WAITING FOR APPROVAL</div>
+                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
             if (profile === false) {
                 return (
                     <div className="section">
                         <div className="section-title">ACCOUNT NOT SET UP</div>
-                        <p>You're signed in as {user.email}, but your account hasn't been given access yet. Contact an admin.</p>
+                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
                         <button className="btn-secondary" onClick={handleLogout}>Logout</button>
                     </div>
                 );
