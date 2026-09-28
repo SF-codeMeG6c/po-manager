@@ -131,6 +131,8 @@
             const [usersList, setUsersList] = useState([]);
             const [userEdits, setUserEdits] = useState({}); // uid -> { role, active } not yet saved
             const [supersList, setSupersList] = useState([]); // active users with the Super role
+            const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
+            const [secretInput, setSecretInput] = useState('');
 
             useEffect(() => {
                 if (!showUsers) return;
@@ -158,6 +160,13 @@
                             loadJobs(currentUser.uid, snap.data().role);
                             loadSupervisors();
                             if (['owner', 'admin', 'estimator'].includes(snap.data().role)) loadSupers();
+                            if (['owner', 'admin'].includes(snap.data().role)) {
+                                db.collection('settings').doc('app').onSnapshot(doc => {
+                                    const d = doc.exists ? (doc.data().msSecretExpires || '') : '';
+                                    setSecretExpires(d);
+                                    setSecretInput(d);
+                                }, error => console.error('Settings error:', error));
+                            }
                             loadFormLibraryData(currentUser.uid);
                         } else if (!snap.exists) {
                             // New person: create their own record as pending (no access until approved)
@@ -252,6 +261,37 @@
 
             const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
             const canEditJobs = !!profile && ['owner', 'admin', 'estimator'].includes(profile.role);
+
+            const handleSaveSecretDate = async () => {
+                try {
+                    await db.collection('settings').doc('app').set({ msSecretExpires: secretInput }, { merge: true });
+                    setMessage('Secret expiration date saved');
+                } catch (error) {
+                    setMessage('Error saving date: ' + error.message);
+                }
+            };
+
+            const secretDaysLeft = secretExpires
+                ? Math.ceil((new Date(secretExpires + 'T00:00:00') - new Date()) / 86400000)
+                : null;
+
+            const renewalText = `I need to renew the Microsoft sign-in client secret for my Freeman Job Tools web app. It expires on ${secretExpires}.
+
+Setup:
+- Web app: PO Manager, hosted on Netlify (charming-griffin-e1112f.netlify.app), code on GitHub (po-manager/index.html)
+- Firebase project: po-project-ea1ca. Sign-in uses Firebase Authentication with the Microsoft provider.
+- Microsoft Entra app registration: "Freeman Job Tools" (single tenant), tenant ID 977675c3-2808-4305-ac2e-f4418dc1d69c
+- Redirect URI: https://po-project-ea1ca.firebaseapp.com/__/auth/handler
+- Current client secret description: "Firebase"
+
+Please walk me through this one step at a time:
+1. Create a new client secret in Entra (App registrations > Freeman Job Tools > Certificates & secrets), 24 months.
+2. Paste the new secret Value into Firebase (Authentication > Sign-in method > Microsoft > Application secret) and save.
+3. Test Microsoft sign-in in a private/incognito window.
+4. Update the expiration date in the PO Manager app (Users screen > secret expires date).
+5. Only after the test works, delete the old secret in Entra.
+
+I prefer plain, brief instructions, one step at a time.`;
 
             const handleToggleSuper = async (superId, checked) => {
                 if (!currentJobId) return;
@@ -830,6 +870,26 @@
 
             return (
                 <div>
+                    {isAdminUser && secretDaysLeft !== null && secretDaysLeft <= 60 && (
+                        <div style={{ background: secretDaysLeft < 0 ? '#fdecea' : '#fff7e6', border: '1px solid ' + (secretDaysLeft < 0 ? '#d93025' : '#f0a020'), borderRadius: '6px', padding: '12px 16px', marginBottom: '16px', fontSize: '14px' }}>
+                            <strong>
+                                {secretDaysLeft < 0
+                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
+                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
+                            </strong>
+                            <div style={{ marginTop: '8px' }}>
+                                <button className="btn-secondary" style={{ width: 'auto', padding: '4px 12px' }}
+                                    onClick={() => navigator.clipboard.writeText(renewalText).then(() => setMessage('Renewal instructions copied. Paste them into a new Claude chat.'), () => setMessage('Copy failed. Select the text below and copy it.'))}>
+                                    Copy renewal instructions
+                                </button>
+                            </div>
+                            <details style={{ marginTop: '8px' }}>
+                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
+                                <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px', background: '#fff', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}>{renewalText}</pre>
+                            </details>
+                        </div>
+                    )}
+
                     {isAdminUser && showUsers && (
                         <div className="section">
                             <div className="section-title">USERS</div>
@@ -883,6 +943,12 @@
                                     })}
                                 </tbody>
                             </table>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px', fontSize: '14px' }}>
+                                <span>Microsoft sign-in secret expires:</span>
+                                <input type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} style={{ width: 'auto' }} />
+                                <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
+                                    disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
+                            </div>
                         </div>
                     )}
 
