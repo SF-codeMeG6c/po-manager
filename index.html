@@ -863,6 +863,16 @@
                 );
             }
 
+            if (profile && profile.role === 'office') {
+                return (
+                    <div className="section">
+                        <div className="section-title">PO MANAGER</div>
+                        <p>Signed in as {user.email}. PO Manager isn't included in your access. The dashboard is coming soon.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
             if (profile === false) {
                 return (
                     <div className="section">
@@ -944,6 +954,7 @@
                             </div>
                         </div>
 
+                        {canEditJobs && (<>
                         <div className="form-group">
                             <label>Job Code</label>
                             <input value={jobCode} onChange={e => setJobCode(e.target.value)} placeholder="Stark W 2602" />
@@ -960,6 +971,7 @@
                             <label>Lock Box</label>
                             <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
                         </div>
+                        </>)}
 
                         {jobLibrary.length > 0 && (
                             <div className="form-group">
@@ -985,7 +997,7 @@
                                     >
                                         (Load)
                                     </button>
-                                    <button 
+                                    {canEditJobs && <button 
                                         className="btn-secondary" 
                                         onClick={() => {
                                             if (selectedJobIndex !== '') {
@@ -997,7 +1009,7 @@
                                         disabled={selectedJobIndex === ''}
                                     >
                                         (Archive)
-                                    </button>
+                                    </button>}
                                 </div>
                             </div>
                         )}
@@ -1023,7 +1035,7 @@
                             );
                         })()}
 
-                        <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>
+                        {canEditJobs && <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>}
                     </div>
 
                     <div className="section">
@@ -1053,7 +1065,7 @@
                                     >
                                         (Load)
                                     </button>
-                                    <button 
+                                    {canEditJobs && <button 
                                         className="btn-secondary" 
                                         onClick={() => {
                                             if (selectedSupervisorIndex !== '') {
@@ -1065,7 +1077,7 @@
                                         disabled={selectedSupervisorIndex === ''}
                                     >
                                         (Delete)
-                                    </button>
+                                    </button>}
                                 </div>
                             </div>
                         )}
@@ -1083,7 +1095,7 @@
                             <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
                         </div>
 
-                        <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>
+                        {canEditJobs && <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>}
                     </div>
 
                     <div className="section" id="generate-po-section">
@@ -1138,9 +1150,9 @@
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
                         </button>
-                        <button className="btn-secondary" onClick={async () => { await handleSaveTemplate(); await handleGeneratePDF(); }} disabled={uploadLoading || !currentJobId} style={{ marginTop: '8px' }}>
+                        {canEditJobs && <button className="btn-secondary" onClick={async () => { await handleSaveTemplate(); await handleGeneratePDF(); }} disabled={uploadLoading || !currentJobId} style={{ marginTop: '8px' }}>
                             {editingPO ? 'Save Changes + Update Template' : 'Create PO & Save to Template + Job'}
-                        </button>
+                        </button>}
                         {editingPO && (
                             <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
                         )}
@@ -1295,7 +1307,7 @@
                                                     <td>
                                                         <div className="button-group" style={{ gap: '4px' }}>
                                                             <button className="btn-secondary btn-sm" onClick={() => handleUseTemplate(t)}>Use</button>
-                                                            <button className="btn-danger btn-sm" onClick={() => handleDeleteTemplate(t)}>Delete</button>
+                                                            {canEditJobs && <button className="btn-danger btn-sm" onClick={() => handleDeleteTemplate(t)}>Delete</button>}
                                                         </div>
                                                     </td>
                                                 </tr>
