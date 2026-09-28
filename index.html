@@ -239,51 +239,12 @@
                 });
             };
 
-            const handleLogin = async () => {
-                setAuthError('');
-                try {
-                    await auth.signInWithEmailAndPassword(email, password);
-                    setEmail('');
-                    setPassword('');
-                } catch (error) {
-                    setAuthError(error.message);
-                }
-            };
-
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
                 try {
                     const provider = new firebase.auth.OAuthProvider('microsoft.com');
                     provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
                     await auth.signInWithPopup(provider);
-                } catch (error) {
-                    if (error.code !== 'auth/account-exists-with-different-credential') {
-                        setAuthError(error.message);
-                        return;
-                    }
-                    // One-time link: this email already has a password login
-                    if (!email || !password) {
-                        setAuthError('This email already has a password login. Enter your email and password above, then click Sign in with Microsoft again to link them (one time only).');
-                        return;
-                    }
-                    try {
-                        const result = await auth.signInWithEmailAndPassword(email, password);
-                        await result.user.linkWithCredential(error.credential);
-                        setEmail('');
-                        setPassword('');
-                    } catch (linkError) {
-                        setAuthError(linkError.message);
-                    }
-                }
-            };
-
-            const handleSignUp = async () => {
-                setAuthError('');
-                try {
-                    await auth.createUserWithEmailAndPassword(email, password);
-                    setEmail('');
-                    setPassword('');
-                    setAuthMode('login');
                 } catch (error) {
                     setAuthError(error.message);
                 }
@@ -826,24 +787,8 @@
             if (!user) {
                 return (
                     <div className="section">
-                        <div className="section-title">{authMode === 'login' ? 'LOGIN' : 'SIGN UP'}</div>
-                        <div className="form-group">
-                            <label>Email</label>
-                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" />
-                        </div>
-                        <div className="form-group">
-                            <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} />
-                        </div>
-                        <button className="btn-primary" onClick={authMode === 'login' ? handleLogin : handleSignUp}>
-                            {authMode === 'login' ? 'Login' : 'Sign Up'}
-                        </button>
-                        <button className="btn-secondary" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
-                            {authMode === 'login' ? 'Need account?' : 'Have account?'}
-                        </button>
-                        {authMode === 'login' && (
-                            <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
-                        )}
+                        <div className="section-title">LOGIN</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
                         {authError && <div className="error">{authError}</div>}
                     </div>
                 );
