@@ -510,10 +510,11 @@
             dateUpdated: new Date()
         };
         const formsRef = db.collection('jobs').doc(currentJobId).collection('forms');
+        const byMe = { uid: user.uid, name: (profile && profile.name) || user.email };
 
         if (editingPO) {
             // Replace existing PO: update same row (notes/status kept), remove old file
-            await formsRef.doc(editingPO.id).update(poData);
+            await formsRef.doc(editingPO.id).update({ ...poData, editedBy: byMe, editedAt: new Date() });
             try { await storage.refFromURL(editingPO.pdfUrl).delete(); } catch (e) { console.log('Old file not removed:', e.message); }
             // Remove attachment files that were taken off this PO
             const keptUrls = savedAttachments.map(a => a.url);
@@ -525,7 +526,7 @@
             setEditingPO(null);
             setMessage(`PO updated: ${fileName}`);
         } else {
-            await formsRef.add({ ...poData, notes: '', status: 'Pending', dateCreated: new Date() });
+            await formsRef.add({ ...poData, notes: '', status: 'Pending', dateCreated: new Date(), createdBy: byMe });
             setMessage(`PO created and saved to job: ${fileName}`);
         }
 
@@ -1001,7 +1002,17 @@
                                                 : form.status === 'Revised' ? 'Revised' : 'Pending';
                                             return (
                                                 <tr key={form.id}>
-                                                    <td>{form.fileName}</td>
+                                                    <td>
+                                                        {form.fileName}
+                                                        {(form.createdBy || form.editedBy) && (
+                                                            <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+                                                                {[
+                                                                    form.createdBy && `Created by ${form.createdBy.name}`,
+                                                                    form.editedBy && `Edited by ${form.editedBy.name} ${form.editedAt && form.editedAt.toDate ? form.editedAt.toDate().toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : ''}`
+                                                                ].filter(Boolean).join(' · ')}
+                                                            </div>
+                                                        )}
+                                                    </td>
                                                     <td>
                                                         <button type="button" className="btn-secondary btn-sm"
                                                             onClick={() => setNoteModal({ form, text: form.notes || '' })}
