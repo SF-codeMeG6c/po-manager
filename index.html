@@ -150,7 +150,7 @@
             }, []);
 
             const loadFormLibraryData = (uid) => {
-                db.collection('formLibrary').where('userId', '==', uid).onSnapshot(snapshot => {
+                db.collection('formLibrary').onSnapshot(snapshot => {
                     const forms = [];
                     snapshot.forEach(doc => {
                         forms.push({ id: doc.id, ...doc.data() });
