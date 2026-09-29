@@ -10,15 +10,24 @@
         .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
         h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
         .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
-        .section { margin-bottom: 30px; padding-bottom: 20px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
         p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        input, select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        .hint { font-size: 11px; color: #888; margin-top: 3px; }
         button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; }
         .btn-primary:hover { background: #0052a3; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -52,11 +61,42 @@
         const db = firebase.firestore();
 
         const GPM_ROLES = ['owner', 'admin', 'estimator'];
+        const DEFAULT_DATE_NOTE = 'or 5 days after permit issued';
+
+        // Money/percent fields: typed as text, saved as numbers
+        const NUMBER_FIELDS = ['settlementAmount', 'deductible', 'paFeePct', 'dwellingTotal', 'otherStructuresTotal', 'codeUpgradeTotal'];
+
+        const BLANK_INPUTS = {
+            settlementAmount: '', settlementDate: '', deductible: '', paFeePct: '10',
+            dwellingTotal: '', otherStructuresTotal: '', codeUpgradeTotal: '',
+            agreementDate: '',
+            startDate: '', startNote: DEFAULT_DATE_NOTE,
+            completionDate: '', completionNote: DEFAULT_DATE_NOTE
+        };
+
+        // "$1,234.56" or "1234.56" -> 1234.56 ; blank -> null
+        const toNumber = (t) => {
+            const s = String(t ?? '').replace(/[^0-9.]/g, '');
+            if (!s) return null;
+            const n = parseFloat(s);
+            return isNaN(n) ? null : n;
+        };
+        const fmtMoney = (n) => n === null || n === undefined ? '' :
+            Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         function GPMApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
             const [authError, setAuthError] = useState('');
+
+            const [jobs, setJobs] = useState([]);
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobId, setJobId] = useState('');
+            const [inputs, setInputs] = useState(BLANK_INPUTS);
+            const [dirty, setDirty] = useState(false);
+            const [lastSaved, setLastSaved] = useState(null); // { name, at }
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -78,6 +118,21 @@
                 });
             }, []);
 
+            // Job list (read-only, same jobs as PO Manager)
+            useEffect(() => {
+                if (!profile) return;
+                const unsub = db.collection('jobs').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', archived: d.archived === true });
+                    });
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                }, error => setMessage('Error loading jobs: ' + error.message));
+                return () => unsub();
+            }, [profile]);
+
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
                 try {
@@ -90,6 +145,57 @@
             };
 
             const handleLogout = () => auth.signOut();
+
+            // Pick a job: load its saved GPM inputs, or start blank
+            const handlePickJob = async (id) => {
+                if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
+                setJobId(id);
+                setDirty(false);
+                setMessage('');
+                setLastSaved(null);
+                if (!id) { setInputs(BLANK_INPUTS); return; }
+                try {
+                    const snap = await db.collection('gpm').doc(id).get();
+                    if (!snap.exists) { setInputs(BLANK_INPUTS); return; }
+                    const d = snap.data();
+                    const loaded = { ...BLANK_INPUTS };
+                    Object.keys(BLANK_INPUTS).forEach(k => {
+                        if (d[k] === undefined || d[k] === null) return;
+                        loaded[k] = NUMBER_FIELDS.includes(k) && k !== 'paFeePct' ? fmtMoney(d[k]) : String(d[k]);
+                    });
+                    setInputs(loaded);
+                    if (d.updatedAt) setLastSaved({ name: d.updatedBy?.name || '', at: d.updatedAt.toDate() });
+                } catch (error) {
+                    setMessage('Error loading GPM data: ' + error.message);
+                }
+            };
+
+            const setField = (k, v) => { setInputs(prev => ({ ...prev, [k]: v })); setDirty(true); };
+
+            const handleSave = async () => {
+                if (!jobId) return;
+                const job = jobs.find(j => j.id === jobId);
+                const data = {};
+                Object.keys(BLANK_INPUTS).forEach(k => {
+                    data[k] = NUMBER_FIELDS.includes(k) ? toNumber(inputs[k]) : (inputs[k] || '').trim();
+                });
+                const byMe = { uid: user.uid, name: profile.name || user.email };
+                setSaving(true);
+                try {
+                    await db.collection('gpm').doc(jobId).set({
+                        ...data,
+                        jobCode: job ? job.code : '',
+                        updatedBy: byMe,
+                        updatedAt: new Date()
+                    }, { merge: true });
+                    setDirty(false);
+                    setLastSaved({ name: byMe.name, at: new Date() });
+                    setMessage('Saved');
+                } catch (error) {
+                    setMessage('Error saving: ' + error.message);
+                }
+                setSaving(false);
+            };
 
             if (!user) {
                 return (
@@ -115,12 +221,82 @@
                 );
             }
 
+            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
+
+            const field = (k, labelText, hint, type = 'text') => (
+                <div className="form-group">
+                    <label>{labelText}</label>
+                    <input type={type} value={inputs[k]} onChange={e => setField(k, e.target.value)} />
+                    {hint && <div className="hint">{hint}</div>}
+                </div>
+            );
+
             return (
-                <div className="section">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <p style={{ margin: 0 }}>Signed in as {profile.name || user.email} ({profile.role})</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                <div>
+                    <div className="section">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                            <p style={{ margin: 0 }}>Signed in as {profile.name || user.email} ({profile.role})</p>
+                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        </div>
+
+                        <div className="section-title">JOB</div>
+                        <div className="form-group">
+                            <select value={jobId} onChange={e => handlePickJob(e.target.value)}>
+                                <option value="">-- Pick a job --</option>
+                                {visibleJobs.map(j => (
+                                    <option key={j.id} value={j.id}>{j.code}{j.address ? ' - ' + j.address : ''}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} style={{ width: 'auto' }} />
+                            Show archived jobs
+                        </label>
                     </div>
+
+                    {jobId && (<>
+                        <div className="section">
+                            <div className="section-title">SETTLEMENT</div>
+                            <div className="grid">
+                                {field('settlementAmount', 'Settlement amount', 'Total Insurance Obligated to pay, from the statement')}
+                                {field('settlementDate', 'Settlement date', null, 'date')}
+                                {field('deductible', 'Deductible', 'Enter as a positive number')}
+                                {field('paFeePct', 'PA fee %', 'Enter 10 for 10%. Enter 0 if no PA.')}
+                            </div>
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">XACTIMATE TOTALS</div>
+                            <div className="grid">
+                                {field('dwellingTotal', 'Dwelling estimate (Replacement Cost Value)')}
+                                {field('otherStructuresTotal', 'Other structures estimate')}
+                                {field('codeUpgradeTotal', 'Code upgrade estimate')}
+                            </div>
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">COVER PAGE DATES</div>
+                            <div className="grid">
+                                {field('agreementDate', 'Agreement date', 'Used for both "agreement dated" lines', 'date')}
+                                <div />
+                                {field('startDate', 'Proposed start date', null, 'date')}
+                                {field('startNote', 'Text after start date')}
+                                {field('completionDate', 'Proposed completion date', null, 'date')}
+                                {field('completionNote', 'Text after completion date')}
+                            </div>
+                        </div>
+
+                        <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
+                            {saving ? 'Saving...' : 'Save'}
+                        </button>
+                        {lastSaved && (
+                            <div className="hint" style={{ textAlign: 'center', marginTop: '8px' }}>
+                                Last saved by {lastSaved.name} {lastSaved.at.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                            </div>
+                        )}
+                    </>)}
+
+                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
                 </div>
             );
         }
