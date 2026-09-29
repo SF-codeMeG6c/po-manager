@@ -264,20 +264,48 @@
         const NOTES_ANCHOR = 'Net Claim'; // notes block is measured from this row
 
         // Notes block placement (points; 72 = 1 inch). Column positions are from the left edge of the Xactimate labels.
-        const DEFAULT_PLACEMENT = { gap: 85, amountRight: 52, labelLeft: 62, lineHeight: 12 };
+        const DEFAULT_PLACEMENT = { gap: 85, amountRight: 59, labelLeft: 69, lineHeight: 14 };
         const NOTE_FONT_SIZE = 12;
 
+        // Cover page: text written on the blank underline after each label (same font/size as the cover text)
+        const COVER_FIELDS = [
+            { prefix: 'Addendum to the agreement dated', key: 'agreementDate', name: 'Agreement date' },
+            { prefix: 'Proposed start date', key: 'startText', name: 'Proposed start date' },
+            { prefix: 'Proposed completion date', key: 'completionText', name: 'Proposed completion date' },
+            { prefix: 'Start and completion dates are dictated by paragraph 18 of contract dated', key: 'agreementDate', name: 'Contract dated (paragraph 18)' }
+        ];
+        const COVER_TEXT_INDENT = 20; // points into the underline
+
         // bytes: Uint8Array of the Xactimate PDF. notes: { lines: [{amount, label}], placement } or null.
+        // cover: { agreementDate, startText, completionText } (ready-to-print text) or null.
         // Returns { bytes, report } ; report = [{ heading, page, done: [], missing: [] }]
-        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs, notes) => {
+        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs, notes, cover) => {
             const reader = await pdfjs.getDocument({ data: bytes.slice() }).promise;
             const report = [];
             const edits = []; // { pageIndex, x, y, size, width, to, bold }
             let anchor = null; // { pageIndex, x, y, entry } for the notes block
+            const coverWrites = []; // { pageIndex, x, y, size, prefix, text }
+            let coverEntry = null;
 
             for (let p = 1; p <= reader.numPages; p++) {
                 const content = await (await reader.getPage(p)).getTextContent();
                 const items = content.items.filter(it => typeof it.str === 'string' && it.str.trim());
+
+                // Cover page (first page with the agreement line)
+                if (cover && !coverEntry && items.some(it => it.str.trim().startsWith(COVER_FIELDS[0].prefix))) {
+                    coverEntry = { heading: 'Cover page', page: p, done: [], missing: [] };
+                    COVER_FIELDS.forEach(f => {
+                        const it = items.find(i => i.str.trim().startsWith(f.prefix));
+                        if (!it) { coverEntry.missing.push(f.name + ' line not found'); return; }
+                        const text = (cover[f.key] || '').trim();
+                        if (!text) { coverEntry.missing.push(f.name + ' is blank'); return; }
+                        const t = it.transform;
+                        coverWrites.push({ pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, prefix: f.prefix, text });
+                        coverEntry.done.push(f.name + ': ' + text);
+                    });
+                    report.push(coverEntry);
+                }
+
                 const heading = SUMMARY_PAGES.find(h => items.some(it => it.str.trim() === h));
                 if (!heading) continue;
                 const entry = { heading, page: p, done: [], missing: [] };
@@ -292,7 +320,8 @@
                 });
                 report.push(entry);
             }
-            if (!report.length) throw new Error('No Xactimate summary pages found (looked for: ' + SUMMARY_PAGES.join(', ') + ').');
+            if (!report.some(e => SUMMARY_PAGES.includes(e.heading))) throw new Error('No Xactimate summary pages found (looked for: ' + SUMMARY_PAGES.join(', ') + ').');
+            if (cover && !coverEntry) report.unshift({ heading: 'Cover page', page: 0, done: [], missing: ['Cover page not found (no "' + COVER_FIELDS[0].prefix + '" line)'] });
 
             const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
             const regular = await doc.embedFont(PDFLib.StandardFonts.TimesRoman);
@@ -303,6 +332,12 @@
                 // Cover the old label (a little padding for descenders), then write the new one on the same baseline
                 page.drawRectangle({ x: e.x - 0.5, y: e.y - e.size * 0.25, width: e.width + 1, height: e.size * 1.2, color: PDFLib.rgb(1, 1, 1) });
                 page.drawText(e.to, { x: e.x, y: e.y, size: e.size, font: e.bold ? bold : regular, color: PDFLib.rgb(0, 0, 0) });
+            });
+
+            // Cover page: write just past the label, on the underline
+            coverWrites.forEach(c => {
+                const x = c.x + regular.widthOfTextAtSize(c.prefix + ' ', c.size) + COVER_TEXT_INDENT;
+                pages[c.pageIndex].drawText(c.text, { x, y: c.y + 1, size: c.size, font: regular, color: PDFLib.rgb(0, 0, 0) });
             });
 
             // Notes block: in-page text, Times-Roman 10 (amounts right-aligned, labels left-aligned) under the Net Claim row.
@@ -798,7 +833,13 @@
                                 try {
                                     const bytes = new Uint8Array(await pdfFile.arrayBuffer());
                                     const notesText = notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
-                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib, { lines: parseNotes(notesText), placement: layout.placement });
+                                    const dateAndNote = (d, n) => [fmtDate(d), (n || '').trim()].filter(Boolean).join(' ');
+                                    const cover = {
+                                        agreementDate: fmtDate(inputs.agreementDate),
+                                        startText: inputs.startDate ? dateAndNote(inputs.startDate, inputs.startNote) : '',
+                                        completionText: inputs.completionDate ? dateAndNote(inputs.completionDate, inputs.completionNote) : ''
+                                    };
+                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib, { lines: parseNotes(notesText), placement: layout.placement }, cover);
                                     const url = URL.createObjectURL(new Blob([out.bytes], { type: 'application/pdf' }));
                                     const a = document.createElement('a');
                                     a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
@@ -813,7 +854,7 @@
                             return (
                                 <div className="section">
                                     <div className="section-title">XACTIMATE PDF</div>
-                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. Relabels the summary pages and adds the summary notes (as shown above) to the Dwelling summary page. The file stays on your computer; nothing is uploaded.</p>
+                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. Fills in the cover page dates, relabels the summary pages, and adds the summary notes (as shown above) to the Dwelling summary page. The file stays on your computer; nothing is uploaded.</p>
                                     <input type="file" accept="application/pdf" onChange={e => { setPdfFile(e.target.files[0] || null); setPdfReport(null); }} />
                                     <button className="btn-primary" style={{ marginTop: '10px' }} onClick={makePdf} disabled={!pdfFile || pdfBusy}>
                                         {pdfBusy ? 'Working...' : 'Create CES PDF'}
@@ -822,8 +863,8 @@
                                     {pdfReport && (
                                         <div style={{ marginTop: '10px', fontSize: '13px' }}>
                                             {pdfReport.map(e => (
-                                                <div key={e.page} style={{ marginBottom: '6px' }}>
-                                                    <strong>{e.heading}</strong> (page {e.page}):{' '}
+                                                <div key={e.heading + e.page} style={{ marginBottom: '6px' }}>
+                                                    <strong>{e.heading}</strong>{e.page ? ` (page ${e.page})` : ''}:{' '}
                                                     {e.done.length ? e.done.join('; ') : 'nothing changed'}
                                                     {e.missing.length > 0 && <div style={{ color: '#d32f2f' }}>Not found: {e.missing.join(', ')}</div>}
                                                 </div>
