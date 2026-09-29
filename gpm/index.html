@@ -91,7 +91,7 @@
         const IN_HOUSE_LABOR_PCT = 0.135;
         const TARGET_GPM = 0.28;
 
-        const $ = (n) => (n < 0 ? '($' + fmtMoney(-n) + ')' : '$' + fmtMoney(n));
+        const $ = (n) => { const v = Math.round(n * 100) / 100 || 0; return v < 0 ? '($' + fmtMoney(-v) + ')' : '$' + fmtMoney(v); }; // || 0 turns -0 into 0
         const pct = (n) => (n * 100).toFixed(1) + '%';
 
         // All GPM math in one place. Returns null until settlement and estimate are entered.
@@ -606,7 +606,7 @@
                                 <div className="section">
                                     <div className="section-title">SUMMARY NOTES ({r.over ? 'over settlement' : 'under settlement'})</div>
                                     <textarea value={text} onChange={e => setNotesEdit(e.target.value)} rows={Math.max(8, text.split('\n').length + 1)}
-                                        style={{ width: '100%', fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 16, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', whiteSpace: 'pre' }} />
+                                        style={{ width: '100%', fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', whiteSpace: 'pre' }} />
                                     <div className="hint">Edits here are for this copy only and are not saved. Changing the numbers above rebuilds the notes unless you've edited them.</div>
                                     <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
                                         <button className="btn-primary" style={{ width: 'auto' }} onClick={copy}>Copy notes</button>
@@ -661,7 +661,7 @@
                                             <div style={{ fontWeight: 600, margin: '15px 0 5px', fontSize: '13px' }}>
                                                 Preview ({layoutTab === 'over' ? 'over' : 'under'} settlement, using this job's numbers)
                                             </div>
-                                            <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 16, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
+                                            <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
                                                 {buildNotes(layoutDraft[layoutTab], r, inputs) || '(empty)'}
                                             </pre>
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
