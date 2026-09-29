@@ -27,6 +27,9 @@
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #f5f5f5; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 8px 10px; border-bottom: 1px solid #eee; }
         @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -84,6 +87,38 @@
         const fmtMoney = (n) => n === null || n === undefined ? '' :
             Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+        // Company-wide rates (fixed, not per job)
+        const IN_HOUSE_LABOR_PCT = 0.135;
+        const TARGET_GPM = 0.28;
+
+        const $ = (n) => (n < 0 ? '($' + fmtMoney(-n) + ')' : '$' + fmtMoney(n));
+        const pct = (n) => (n * 100).toFixed(1) + '%';
+
+        // All GPM math in one place. Returns null until settlement and estimate are entered.
+        const calcGPM = (inputs, poTotal) => {
+            const settlement = toNumber(inputs.settlementAmount) || 0;
+            const deductible = toNumber(inputs.deductible) || 0;
+            const pa = (toNumber(inputs.paFeePct) || 0) / 100;
+            const ce = (toNumber(inputs.dwellingTotal) || 0) + (toNumber(inputs.otherStructuresTotal) || 0) + (toNumber(inputs.codeUpgradeTotal) || 0);
+            if (!settlement || !ce) return null;
+
+            const netSettlement = settlement - deductible;
+            const settlementPAFee = netSettlement * pa;
+            const settlementAfterPA = netSettlement - settlementPAFee;
+            const over = ce > netSettlement;
+            // PA fee: on net settlement when over, on Customer Estimate when under
+            const paFee = over ? settlementPAFee : ce * pa;
+            const sellingPrice = ce - paFee;
+            const inHouseLabor = sellingPrice * IN_HOUSE_LABOR_PCT;
+            const jobCost = poTotal + inHouseLabor;
+            const grossProfit = sellingPrice - jobCost;
+            const gpm = sellingPrice ? grossProfit / sellingPrice : 0;
+            const difference = sellingPrice - settlementAfterPA; // + customer pays extra, - customer credit
+
+            return { settlement, deductible, pa, ce, netSettlement, settlementPAFee, settlementAfterPA, over,
+                     paFee, sellingPrice, poTotal, inHouseLabor, jobCost, grossProfit, gpm, difference };
+        };
+
         function GPMApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
@@ -97,6 +132,25 @@
             const [lastSaved, setLastSaved] = useState(null); // { name, at }
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
+            const [pos, setPos] = useState([]);              // this job's POs from PO Manager (read-only)
+            const [excludedPoIds, setExcludedPoIds] = useState([]);
+
+            // Live, read-only list of the picked job's POs
+            useEffect(() => {
+                setPos([]);
+                if (!jobId) return;
+                const unsub = db.collection('jobs').doc(jobId).collection('forms').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                                    status: d.status || 'Pending', amount: toNumber(d.contractAmount) });
+                    });
+                    list.sort((a, b) => a.category.localeCompare(b.category) || a.poNumber.localeCompare(b.poNumber));
+                    setPos(list);
+                }, error => setMessage('Error loading POs: ' + error.message));
+                return () => unsub();
+            }, [jobId]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -153,11 +207,13 @@
                 setDirty(false);
                 setMessage('');
                 setLastSaved(null);
+                setExcludedPoIds([]);
                 if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
                     const snap = await db.collection('gpm').doc(id).get();
                     if (!snap.exists) { setInputs(BLANK_INPUTS); return; }
                     const d = snap.data();
+                    setExcludedPoIds(Array.isArray(d.excludedPoIds) ? d.excludedPoIds : []);
                     const loaded = { ...BLANK_INPUTS };
                     Object.keys(BLANK_INPUTS).forEach(k => {
                         if (d[k] === undefined || d[k] === null) return;
@@ -172,6 +228,11 @@
 
             const setField = (k, v) => { setInputs(prev => ({ ...prev, [k]: v })); setDirty(true); };
 
+            const toggleInclude = (poId, include) => {
+                setExcludedPoIds(prev => include ? prev.filter(id => id !== poId) : [...prev, poId]);
+                setDirty(true);
+            };
+
             const handleSave = async () => {
                 if (!jobId) return;
                 const job = jobs.find(j => j.id === jobId);
@@ -184,6 +245,7 @@
                 try {
                     await db.collection('gpm').doc(jobId).set({
                         ...data,
+                        excludedPoIds,
                         jobCode: job ? job.code : '',
                         updatedBy: byMe,
                         updatedAt: new Date()
@@ -285,6 +347,85 @@
                                 {field('completionNote', 'Text after completion date')}
                             </div>
                         </div>
+
+                        <div className="section">
+                            <div className="section-title">POs ({pos.length})</div>
+                            {pos.length === 0
+                                ? <p style={{ color: '#888' }}>No POs on this job yet.</p>
+                                : <div style={{ overflowX: 'auto' }}>
+                                    <table>
+                                        <thead>
+                                            <tr><th>Include</th><th>PO</th><th>Category</th><th>Subcontractor</th><th>Status</th><th style={{ textAlign: 'right' }}>Amount</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            {pos.map(po => {
+                                                const included = !excludedPoIds.includes(po.id);
+                                                const bad = po.amount === null;
+                                                return (
+                                                    <tr key={po.id} style={{ color: included ? '#333' : '#aaa' }}>
+                                                        <td><input type="checkbox" checked={included} onChange={e => toggleInclude(po.id, e.target.checked)} style={{ width: 'auto' }} /></td>
+                                                        <td>{po.poNumber}</td>
+                                                        <td>{po.category}</td>
+                                                        <td>{po.subName}</td>
+                                                        <td>{po.status}</td>
+                                                        <td style={{ textAlign: 'right', color: bad ? '#d32f2f' : undefined, fontWeight: bad ? 600 : undefined }}>
+                                                            {bad ? 'No amount' : $(po.amount)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                  </div>}
+                        </div>
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return (
+                                <div className="section">
+                                    <div className="section-title">RESULTS</div>
+                                    <p style={{ color: '#888' }}>Enter the settlement amount and Xactimate totals to see results.</p>
+                                </div>
+                            );
+                            const onTarget = r.gpm >= TARGET_GPM;
+                            const row = (label, value, strong) => (
+                                <tr style={strong ? { fontWeight: 700 } : undefined}>
+                                    <td>{label}</td><td style={{ textAlign: 'right' }}>{value}</td>
+                                </tr>
+                            );
+                            return (
+                                <div className="section">
+                                    <div className="section-title">RESULTS ({r.over ? 'over settlement' : 'under settlement'})</div>
+                                    <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '15px' }}>
+                                        <div style={{ flex: 1, minWidth: '200px', padding: '15px', borderRadius: '6px', background: onTarget ? '#e8f5e9' : '#fdecea', border: '1px solid ' + (onTarget ? '#388e3c' : '#d32f2f') }}>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>GPM</div>
+                                            <div style={{ fontSize: '28px', fontWeight: 700, color: onTarget ? '#2e7d32' : '#c62828' }}>{pct(r.gpm)}</div>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>
+                                                Target {pct(TARGET_GPM)} ({r.gpm - TARGET_GPM >= 0 ? '+' : ''}{((r.gpm - TARGET_GPM) * 100).toFixed(1)} pts)
+                                            </div>
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: '200px', padding: '15px', borderRadius: '6px', background: '#f9f9f9', border: '1px solid #ddd' }}>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>{r.difference >= 0 ? 'Customer pays extra' : 'Customer credit'}</div>
+                                            <div style={{ fontSize: '28px', fontWeight: 700 }}>{$(Math.abs(r.difference))}</div>
+                                        </div>
+                                    </div>
+                                    <table>
+                                        <tbody>
+                                            {row('Net settlement (settlement - deductible)', $(r.netSettlement))}
+                                            {row('Settlement after PA fee', $(r.settlementAfterPA))}
+                                            {row('Customer Estimate (dwelling + other structures + code upgrade)', $(r.ce))}
+                                            {row(`PA fee - courtesy discount (${pct(r.pa)} of ${r.over ? 'net settlement' : 'Customer Estimate'})`, $(-r.paFee))}
+                                            {row('Selling price (amount due Freeman Restoration)', $(r.sellingPrice), true)}
+                                            {row(`POs included (${pos.filter(p => !excludedPoIds.includes(p.id)).length} of ${pos.length})`, $(r.poTotal))}
+                                            {row(`In-house labor (${pct(IN_HOUSE_LABOR_PCT)} of selling price)`, $(r.inHouseLabor))}
+                                            {row('Job cost', $(r.jobCost), true)}
+                                            {row('Gross profit', $(r.grossProfit), true)}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            );
+                        })()}
 
                         <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
                             {saving ? 'Saving...' : 'Save'}
