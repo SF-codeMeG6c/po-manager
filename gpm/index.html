@@ -46,6 +46,8 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
@@ -237,6 +239,54 @@
                 .join('\n');
         };
 
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // ---------- Xactimate PDF: relabel summary pages ----------
+        // Summary pages are found by heading; labels by exact text. New text is drawn in the same
+        // Times font and size, over a white box that covers the old label.
+        const SUMMARY_PAGES = ['Summary for Dwelling', 'Summary for Other Structures', 'Summary for Code Upgrade'];
+        const RELABELS = [
+            { from: 'Line Item Total', to: 'Retail Line Item Total', bold: false, pages: SUMMARY_PAGES },
+            { from: 'Less Deductible', to: 'Less Courtesy Discount', bold: false, pages: ['Summary for Dwelling'] },
+            { from: 'Net Claim', to: 'Due Freeman Restoration', bold: true, pages: SUMMARY_PAGES }
+        ];
+
+        // bytes: Uint8Array of the Xactimate PDF. Returns { bytes, report } ; report = [{ heading, page, done: [], missing: [] }]
+        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs) => {
+            const reader = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+            const report = [];
+            const edits = []; // { pageIndex, x, y, size, width, to, bold }
+
+            for (let p = 1; p <= reader.numPages; p++) {
+                const content = await (await reader.getPage(p)).getTextContent();
+                const items = content.items.filter(it => typeof it.str === 'string' && it.str.trim());
+                const heading = SUMMARY_PAGES.find(h => items.some(it => it.str.trim() === h));
+                if (!heading) continue;
+                const entry = { heading, page: p, done: [], missing: [] };
+                RELABELS.filter(r => r.pages.includes(heading)).forEach(r => {
+                    const it = items.find(i => i.str.trim() === r.from);
+                    if (!it) { entry.missing.push(r.from); return; }
+                    const t = it.transform;
+                    edits.push({ pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, width: it.width, to: r.to, bold: r.bold });
+                    entry.done.push(r.from + ' → ' + r.to);
+                });
+                report.push(entry);
+            }
+            if (!report.length) throw new Error('No Xactimate summary pages found (looked for: ' + SUMMARY_PAGES.join(', ') + ').');
+
+            const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+            const regular = await doc.embedFont(PDFLib.StandardFonts.TimesRoman);
+            const bold = await doc.embedFont(PDFLib.StandardFonts.TimesRomanBold);
+            const pages = doc.getPages();
+            edits.forEach(e => {
+                const page = pages[e.pageIndex];
+                // Cover the old label (a little padding for descenders), then write the new one on the same baseline
+                page.drawRectangle({ x: e.x - 0.5, y: e.y - e.size * 0.25, width: e.width + 1, height: e.size * 1.2, color: PDFLib.rgb(1, 1, 1) });
+                page.drawText(e.to, { x: e.x, y: e.y, size: e.size, font: e.bold ? bold : regular, color: PDFLib.rgb(0, 0, 0) });
+            });
+            return { bytes: await doc.save(), report };
+        };
+
         function GPMApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
@@ -257,6 +307,9 @@
             const [layoutInfo, setLayoutInfo] = useState(null);     // { name, at } of last layout save
             const [layoutDraft, setLayoutDraft] = useState(null);   // layout being edited; null = editor closed
             const [layoutTab, setLayoutTab] = useState('over');
+            const [pdfFile, setPdfFile] = useState(null);     // Xactimate PDF picked for relabeling (stays in the browser)
+            const [pdfBusy, setPdfBusy] = useState(false);
+            const [pdfReport, setPdfReport] = useState(null); // what was changed / not found
 
             useEffect(() => {
                 if (!profile) return;
@@ -372,6 +425,8 @@
                 setLastSaved(null);
                 setExcludedPoIds([]);
                 setNotesEdit(null);
+                setPdfFile(null);
+                setPdfReport(null);
                 if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
                     const snap = await db.collection('gpm').doc(id).get();
@@ -670,6 +725,54 @@
                                                 <div style={{ flex: 1 }} />
                                                 <button className="btn-secondary" onClick={() => { if (window.confirm('Put both layouts back to the original wording? (Not saved until you click Save layout.)')) setLayoutDraft(JSON.parse(JSON.stringify(DEFAULT_LAYOUT))); }}>Reset to default</button>
                                             </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
+                            const job = jobs.find(j => j.id === jobId);
+                            const d = new Date();
+                            const fileName = `CES_$${fmtMoney(r.sellingPrice)}_${(job ? job.code : '').trim()}_${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}.pdf`;
+                            const makePdf = async () => {
+                                setPdfBusy(true);
+                                setPdfReport(null);
+                                try {
+                                    const bytes = new Uint8Array(await pdfFile.arrayBuffer());
+                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib);
+                                    const url = URL.createObjectURL(new Blob([out.bytes], { type: 'application/pdf' }));
+                                    const a = document.createElement('a');
+                                    a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+                                    setTimeout(() => URL.revokeObjectURL(url), 10000);
+                                    setPdfReport(out.report);
+                                    setMessage(out.report.some(e => e.missing.length) ? 'PDF created, but some labels were not found (see below)' : 'PDF created: ' + fileName);
+                                } catch (error) {
+                                    setMessage('Error creating PDF: ' + error.message);
+                                }
+                                setPdfBusy(false);
+                            };
+                            return (
+                                <div className="section">
+                                    <div className="section-title">XACTIMATE PDF</div>
+                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. The file stays on your computer; nothing is uploaded.</p>
+                                    <input type="file" accept="application/pdf" onChange={e => { setPdfFile(e.target.files[0] || null); setPdfReport(null); }} />
+                                    <button className="btn-primary" style={{ marginTop: '10px' }} onClick={makePdf} disabled={!pdfFile || pdfBusy}>
+                                        {pdfBusy ? 'Working...' : 'Create CES PDF'}
+                                    </button>
+                                    <div className="hint" style={{ textAlign: 'center', marginTop: '4px' }}>Downloads as {fileName}</div>
+                                    {pdfReport && (
+                                        <div style={{ marginTop: '10px', fontSize: '13px' }}>
+                                            {pdfReport.map(e => (
+                                                <div key={e.page} style={{ marginBottom: '6px' }}>
+                                                    <strong>{e.heading}</strong> (page {e.page}):{' '}
+                                                    {e.done.length ? e.done.join('; ') : 'nothing changed'}
+                                                    {e.missing.length > 0 && <div style={{ color: '#d32f2f' }}>Not found: {e.missing.join(', ')}</div>}
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
                                 </div>
