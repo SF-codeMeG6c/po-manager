@@ -216,7 +216,9 @@
                 paOnly: l.paOnly === true,
                 itemsOnly: l.itemsOnly === true
             })) : fallback;
-            return { over: side(d && d.over, DEFAULT_LAYOUT.over), under: side(d && d.under, DEFAULT_LAYOUT.under) };
+            const placement = { ...DEFAULT_PLACEMENT };
+            if (d && d.placement) Object.keys(DEFAULT_PLACEMENT).forEach(k => { if (typeof d.placement[k] === 'number') placement[k] = d.placement[k]; });
+            return { over: side(d && d.over, DEFAULT_LAYOUT.over), under: side(d && d.under, DEFAULT_LAYOUT.under), placement };
         };
 
         // 'YYYY-MM-DD' -> 'MM/DD/YYYY'
@@ -225,23 +227,31 @@
             return m ? `${m[2]}/${m[3]}/${m[1]}` : '';
         };
 
-        // Build the notes text: amount <tab> label, one line each
-        const buildNotes = (layoutLines, r, inputs) => {
+        // Build the notes as lines of { amount, label } (text, ready to print)
+        const buildNoteLines = (layoutLines, r, inputs) => {
             const amounts = noteAmounts(r, inputs);
             const paText = (Math.round(r.pa * 1000) / 10) + '%';
             return layoutLines
                 .filter(l => !(l.paOnly && r.pa === 0) && !(l.itemsOnly && r.customerItems === 0))
-                .map(l => {
-                    const amt = l.amount ? $(Math.round(amounts[l.amount] * 100) / 100) : '';
-                    const label = (l.label || '').replace('{date}', fmtDate(inputs.settlementDate)).replace('{pa}', paText);
-                    return amt || label ? `${amt}\t${label}` : '';
-                })
-                .join('\n');
+                .map(l => ({
+                    amount: l.amount ? $(Math.round(amounts[l.amount] * 100) / 100) : '',
+                    label: (l.label || '').replace('{date}', fmtDate(inputs.settlementDate)).replace('{pa}', paText)
+                }));
         };
+
+        // Notes as text: amount <tab> label, one line each
+        const buildNotes = (layoutLines, r, inputs) =>
+            buildNoteLines(layoutLines, r, inputs).map(l => l.amount || l.label ? `${l.amount}\t${l.label}` : '').join('\n');
+
+        // Notes text (possibly edited in the box) back to lines: split each line at the first tab
+        const parseNotes = (text) => text.split('\n').map(line => {
+            const i = line.indexOf('\t');
+            return i < 0 ? { amount: '', label: line.trim() } : { amount: line.slice(0, i).trim(), label: line.slice(i + 1).trim() };
+        });
 
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-        // ---------- Xactimate PDF: relabel summary pages ----------
+        // ---------- Xactimate PDF: relabel summary pages + notes block ----------
         // Summary pages are found by heading; labels by exact text. New text is drawn in the same
         // Times font and size, over a white box that covers the old label.
         const SUMMARY_PAGES = ['Summary for Dwelling', 'Summary for Other Structures', 'Summary for Code Upgrade'];
@@ -250,12 +260,79 @@
             { from: 'Less Deductible', to: 'Less Courtesy Discount', bold: false, pages: ['Summary for Dwelling'] },
             { from: 'Net Claim', to: 'Due Freeman Restoration', bold: true, pages: SUMMARY_PAGES }
         ];
+        const NOTES_PAGE = 'Summary for Dwelling';
+        const NOTES_ANCHOR = 'Net Claim'; // notes block is measured from this row
 
-        // bytes: Uint8Array of the Xactimate PDF. Returns { bytes, report } ; report = [{ heading, page, done: [], missing: [] }]
-        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs) => {
+        // Notes block placement (points; 72 = 1 inch). Column positions are from the left edge of the Xactimate labels.
+        const DEFAULT_PLACEMENT = { gap: 85, amountRight: 62, labelLeft: 72, lineHeight: 12 };
+        const NOTE_FONT_SIZE = 10;
+
+        // One editable FreeText comment holding a column of lines (right or left aligned), Times-Roman 10
+        const addColumnComment = (PL, doc, page, font, lines, { x, align, firstBaseline, lineHeight, name }) => {
+            const size = NOTE_FONT_SIZE, pad = 2;
+            const widths = lines.map(t => t ? font.widthOfTextAtSize(t, size) : 0);
+            const w = Math.max(20, ...widths) + pad * 2;
+            const ascent = font.heightAtSize(size, { descender: false });
+            const h = pad * 2 + ascent + (lines.length - 1) * lineHeight + size * 0.25;
+            const left = align === 'right' ? x - w + pad : x - pad;
+            const top = firstBaseline + pad + ascent;
+            const rect = [left, top - h, left + w, top];
+
+            // Appearance: what every viewer shows
+            let ops = 'q BT 0 g /TiRo ' + size + ' Tf\n';
+            lines.forEach((t, i) => {
+                if (!t) return;
+                const tx = align === 'right' ? w - pad - widths[i] : pad;
+                const ty = h - pad - ascent - i * lineHeight;
+                ops += `1 0 0 1 ${tx.toFixed(2)} ${ty.toFixed(2)} Tm ${font.encodeText(t).toString()} Tj\n`;
+            });
+            ops += 'ET Q';
+            const ap = doc.context.flateStream(ops, {
+                Type: 'XObject', Subtype: 'Form', BBox: [0, 0, w, h],
+                Resources: { Font: { TiRo: font.ref } }
+            });
+            const apRef = doc.context.register(ap);
+
+            // Rich text + default style so Acrobat keeps Times 10 when the comment is edited
+            const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const style = `font-size:${size}.0pt;text-align:${align};color:#000000;font-weight:normal;font-style:normal;font-family:Times-Roman,Times New Roman;font-stretch:normal;line-height:${lineHeight}pt`;
+            const rc = '<?xml version="1.0"?><body xmlns="http://www.w3.org/1999/xhtml" xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:APIVersion="Acrobat:11.0.0" xfa:spec="2.0.2" style="' + style + '">' +
+                lines.map(t => `<p dir="ltr">${t ? esc(t) : '&#160;'}</p>`).join('') + '</body>';
+
+            const annot = doc.context.obj({
+                Type: 'Annot', Subtype: 'FreeText',
+                Rect: rect, F: 4, Q: align === 'right' ? 2 : 0,
+                Contents: PL.PDFHexString.fromText(lines.join('\r')),
+                RC: PL.PDFHexString.fromText(rc),
+                DA: PL.PDFString.of(`0 g /TiRo ${size} Tf`),
+                DS: PL.PDFString.of(`font: ${size}pt Times-Roman,Times New Roman; text-align:${align}; color:#000000; line-height:${lineHeight}pt`),
+                BS: { W: 0 }, Border: [0, 0, 0],
+                T: PL.PDFHexString.fromText('GPM Tool'),
+                NM: PL.PDFHexString.fromText(name),
+                M: PL.PDFString.fromDate(new Date()),
+                AP: { N: apRef }
+            });
+            const annotRef = doc.context.register(annot);
+            const annots = page.node.lookup(PL.PDFName.of('Annots'));
+            if (annots instanceof PL.PDFArray) annots.push(annotRef);
+            else page.node.set(PL.PDFName.of('Annots'), doc.context.obj([annotRef]));
+
+            // Acrobat looks up /TiRo in the form resources when it redraws a comment
+            const acro = doc.catalog.getOrCreateAcroForm();
+            let dr = acro.dict.lookup(PL.PDFName.of('DR'));
+            if (!(dr instanceof PL.PDFDict)) { dr = doc.context.obj({}); acro.dict.set(PL.PDFName.of('DR'), dr); }
+            let fonts = dr.lookup(PL.PDFName.of('Font'));
+            if (!(fonts instanceof PL.PDFDict)) { fonts = doc.context.obj({}); dr.set(PL.PDFName.of('Font'), fonts); }
+            fonts.set(PL.PDFName.of('TiRo'), font.ref);
+        };
+
+        // bytes: Uint8Array of the Xactimate PDF. notes: { lines: [{amount, label}], placement } or null.
+        // Returns { bytes, report } ; report = [{ heading, page, done: [], missing: [] }]
+        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs, notes) => {
             const reader = await pdfjs.getDocument({ data: bytes.slice() }).promise;
             const report = [];
             const edits = []; // { pageIndex, x, y, size, width, to, bold }
+            let anchor = null; // { pageIndex, x, y, entry } for the notes block
 
             for (let p = 1; p <= reader.numPages; p++) {
                 const content = await (await reader.getPage(p)).getTextContent();
@@ -267,8 +344,10 @@
                     const it = items.find(i => i.str.trim() === r.from);
                     if (!it) { entry.missing.push(r.from); return; }
                     const t = it.transform;
-                    edits.push({ pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, width: it.width, to: r.to, bold: r.bold });
+                    const e = { pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, width: it.width, to: r.to, bold: r.bold };
+                    edits.push(e);
                     entry.done.push(r.from + ' → ' + r.to);
+                    if (heading === NOTES_PAGE && r.from === NOTES_ANCHOR && !anchor) anchor = { pageIndex: e.pageIndex, x: e.x, y: e.y, entry };
                 });
                 report.push(entry);
             }
@@ -284,6 +363,21 @@
                 page.drawRectangle({ x: e.x - 0.5, y: e.y - e.size * 0.25, width: e.width + 1, height: e.size * 1.2, color: PDFLib.rgb(1, 1, 1) });
                 page.drawText(e.to, { x: e.x, y: e.y, size: e.size, font: e.bold ? bold : regular, color: PDFLib.rgb(0, 0, 0) });
             });
+
+            // Notes block: two comments (amounts right-aligned, labels left-aligned) under the Net Claim row
+            if (notes && notes.lines.length) {
+                const dwelling = report.find(e => e.heading === NOTES_PAGE);
+                if (!anchor) {
+                    (dwelling || report[0]).missing.push('Notes block not placed (no "' + NOTES_ANCHOR + '" row on the Dwelling summary page)');
+                } else {
+                    const pl = { ...DEFAULT_PLACEMENT, ...(notes.placement || {}) };
+                    const opts = { firstBaseline: anchor.y - pl.gap, lineHeight: pl.lineHeight };
+                    const page = pages[anchor.pageIndex];
+                    addColumnComment(PDFLib, doc, page, regular, notes.lines.map(l => l.amount), { ...opts, x: anchor.x + pl.amountRight, align: 'right', name: 'gpm-notes-amounts' });
+                    addColumnComment(PDFLib, doc, page, regular, notes.lines.map(l => l.label), { ...opts, x: anchor.x + pl.labelLeft, align: 'left', name: 'gpm-notes-labels' });
+                    anchor.entry.done.push('Notes block added (' + notes.lines.length + ' lines)');
+                }
+            }
             return { bytes: await doc.save(), report };
         };
 
@@ -341,6 +435,7 @@
                 try {
                     await db.collection('gpmSettings').doc('notesLayout').set({
                         over: layoutDraft.over, under: layoutDraft.under,
+                        placement: { ...DEFAULT_PLACEMENT, ...(layoutDraft.placement || {}) },
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     });
@@ -719,6 +814,20 @@
                                             <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
                                                 {buildNotes(layoutDraft[layoutTab], r, inputs) || '(empty)'}
                                             </pre>
+                                            <div style={{ fontWeight: 600, margin: '15px 0 5px', fontSize: '13px' }}>PDF placement (both over and under)</div>
+                                            <div className="hint" style={{ marginBottom: '8px' }}>In points: 72 pt = 1 inch. Column positions are measured from the left edge of the Xactimate labels.</div>
+                                            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr' }}>
+                                                {[['gap', 'Space below Due Freeman row'], ['amountRight', 'Amounts column right edge'], ['labelLeft', 'Labels column start'], ['lineHeight', 'Line spacing']].map(([k, t]) => {
+                                                    const pl = { ...DEFAULT_PLACEMENT, ...(layoutDraft.placement || {}) };
+                                                    return (
+                                                        <div key={k} className="form-group">
+                                                            <label>{t}</label>
+                                                            <input type="number" step="1" value={pl[k]}
+                                                                onChange={e => { const v = parseFloat(e.target.value); setLayoutDraft(prev => ({ ...prev, placement: { ...DEFAULT_PLACEMENT, ...(prev.placement || {}), [k]: isNaN(v) ? DEFAULT_PLACEMENT[k] : v } })); }} />
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                                                 <button className="btn-primary" style={{ width: 'auto' }} onClick={saveLayout}>Save layout</button>
                                                 <button className="btn-secondary" onClick={() => setLayoutDraft(null)}>Cancel</button>
@@ -743,7 +852,8 @@
                                 setPdfReport(null);
                                 try {
                                     const bytes = new Uint8Array(await pdfFile.arrayBuffer());
-                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib);
+                                    const notesText = notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
+                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib, { lines: parseNotes(notesText), placement: layout.placement });
                                     const url = URL.createObjectURL(new Blob([out.bytes], { type: 'application/pdf' }));
                                     const a = document.createElement('a');
                                     a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
@@ -758,7 +868,7 @@
                             return (
                                 <div className="section">
                                     <div className="section-title">XACTIMATE PDF</div>
-                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. The file stays on your computer; nothing is uploaded.</p>
+                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. Relabels the summary pages and adds the summary notes (as shown above) to the Dwelling summary page. The file stays on your computer; nothing is uploaded.</p>
                                     <input type="file" accept="application/pdf" onChange={e => { setPdfFile(e.target.files[0] || null); setPdfReport(null); }} />
                                     <button className="btn-primary" style={{ marginTop: '10px' }} onClick={makePdf} disabled={!pdfFile || pdfBusy}>
                                         {pdfBusy ? 'Working...' : 'Create CES PDF'}
