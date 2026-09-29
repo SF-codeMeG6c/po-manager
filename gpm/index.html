@@ -67,11 +67,11 @@
         const DEFAULT_DATE_NOTE = 'or 5 days after permit issued';
 
         // Money/percent fields: typed as text, saved as numbers
-        const NUMBER_FIELDS = ['settlementAmount', 'deductible', 'paFeePct', 'dwellingTotal', 'otherStructuresTotal', 'codeUpgradeTotal'];
+        const NUMBER_FIELDS = ['settlementAmount', 'deductible', 'paFeePct', 'dwellingTotal', 'otherStructuresTotal', 'codeUpgradeTotal', 'customerItems'];
 
         const BLANK_INPUTS = {
             settlementAmount: '', settlementDate: '', deductible: '', paFeePct: '10',
-            dwellingTotal: '', otherStructuresTotal: '', codeUpgradeTotal: '',
+            dwellingTotal: '', otherStructuresTotal: '', codeUpgradeTotal: '', customerItems: '',
             agreementDate: '',
             startDate: '', startNote: DEFAULT_DATE_NOTE,
             completionDate: '', completionNote: DEFAULT_DATE_NOTE
@@ -100,6 +100,7 @@
             const deductible = toNumber(inputs.deductible) || 0;
             const pa = (toNumber(inputs.paFeePct) || 0) / 100;
             const ce = (toNumber(inputs.dwellingTotal) || 0) + (toNumber(inputs.otherStructuresTotal) || 0) + (toNumber(inputs.codeUpgradeTotal) || 0);
+            const customerItems = toNumber(inputs.customerItems) || 0;
             if (!settlement || !ce) return null;
 
             const netSettlement = settlement - deductible;
@@ -108,7 +109,7 @@
             const over = ce > netSettlement;
             // PA fee: on net settlement when over, on Customer Estimate when under
             const paFee = over ? settlementPAFee : ce * pa;
-            const sellingPrice = ce - paFee;
+            const sellingPrice = ce - paFee - customerItems; // amount due Freeman Restoration
             const inHouseLabor = sellingPrice * IN_HOUSE_LABOR_PCT;
             const jobCost = poTotal + inHouseLabor;
             const grossProfit = sellingPrice - jobCost;
@@ -116,7 +117,7 @@
             const difference = sellingPrice - settlementAfterPA; // + customer pays extra, - customer credit
 
             return { settlement, deductible, pa, ce, netSettlement, settlementPAFee, settlementAfterPA, over,
-                     paFee, sellingPrice, poTotal, inHouseLabor, jobCost, grossProfit, gpm, difference };
+                     paFee, customerItems, sellingPrice, poTotal, inHouseLabor, jobCost, grossProfit, gpm, difference };
         };
 
         function GPMApp() {
@@ -333,6 +334,7 @@
                                 {field('dwellingTotal', 'Dwelling estimate (Replacement Cost Value)')}
                                 {field('otherStructuresTotal', 'Other structures estimate')}
                                 {field('codeUpgradeTotal', 'Code upgrade estimate')}
+                                {field('customerItems', 'Items paid by customer', 'Enter as a positive number. Lowers the amount due Freeman.')}
                             </div>
                         </div>
 
@@ -416,6 +418,7 @@
                                             {row('Settlement after PA fee', $(r.settlementAfterPA))}
                                             {row('Customer Estimate (dwelling + other structures + code upgrade)', $(r.ce))}
                                             {row(`PA fee - courtesy discount (${pct(r.pa)} of ${r.over ? 'net settlement' : 'Customer Estimate'})`, $(-r.paFee))}
+                                            {row('Items paid by customer', $(-r.customerItems))}
                                             {row('Selling price (amount due Freeman Restoration)', $(r.sellingPrice), true)}
                                             {row(`POs included (${pos.filter(p => !excludedPoIds.includes(p.id)).length} of ${pos.length})`, $(r.poTotal))}
                                             {row(`In-house labor (${pct(IN_HOUSE_LABOR_PCT)} of selling price)`, $(r.inHouseLabor))}
