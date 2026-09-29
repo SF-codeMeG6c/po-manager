@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPM Tool - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GPM Tool</h1>
+        <p class="subtitle">Freeman Restoration starting-point Gross Produced Margin</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Same Firebase project as PO Manager
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        const GPM_ROLES = ['owner', 'admin', 'estimator'];
+
+        function GPMApp() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
+            const [authError, setAuthError] = useState('');
+
+            useEffect(() => {
+                auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        // Read-only check. New users get their pending record from PO Manager, not here.
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && GPM_ROLES.includes(d.role)) {
+                            setProfile({ uid: currentUser.uid, ...d });
+                        } else {
+                            setProfile(false);
+                        }
+                    } catch (err) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
+            const handleLogout = () => auth.signOut();
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">LOGIN</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) {
+                return <div className="section"><p>Loading...</p></div>;
+            }
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <div className="section-title">NO ACCESS</div>
+                        <p>Signed in as {user.email}. The GPM Tool is only for Owner, Admin and Estimator. Contact an admin if you need access.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="section">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <p style={{ margin: 0 }}>Signed in as {profile.name || user.email} ({profile.role})</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<GPMApp />, document.getElementById('app'));
+    </script>
+</body>
+</html>
