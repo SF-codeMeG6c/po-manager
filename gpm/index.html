@@ -120,6 +120,123 @@
                      paFee, customerItems, sellingPrice, poTotal, inHouseLabor, jobCost, grossProfit, gpm, difference };
         };
 
+
+        // ---------- Summary notes layout ----------
+        // Each line: amount = which number to show ('' = none), label = text. {date} = settlement date, {pa} = PA fee %.
+        // paOnly lines are left out when the PA fee is 0%. itemsOnly lines are left out when items paid by customer is 0.
+        // This is the starting layout. The saved company-wide layout (gpmSettings/notesLayout) replaces it once someone saves one.
+        const DEFAULT_LAYOUT = {
+            over: [
+                { amount: 'settlement', label: 'Settlement amount as of   {date}' },
+                { amount: 'deductible', label: 'Minus deductible' },
+                { amount: 'netSettlement', label: '' },
+                { amount: 'settlementPAFee', label: 'Minus {pa} PA Fee', paOnly: true },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: '', label: '' },
+                { amount: 'dwelling', label: 'Dwelling Estimate Amount' },
+                { amount: 'courtesyDiscount', label: 'Minus PA Fee - Courtesy Discount', paOnly: true },
+                { amount: 'dwellingMinusPA', label: 'Dwelling Estimate minus PA Fee', paOnly: true },
+                { amount: 'otherStructures', label: 'Other Structures Estimate Amount' },
+                { amount: 'codeUpgrade', label: 'Code Upgrade Estimate Amount' },
+                { amount: 'customerItems', label: 'Items paid by Customer in this estimate - deducted from this estimate', itemsOnly: true },
+                { amount: 'amountDue', label: 'Amount due Freeman Restoration' },
+                { amount: '', label: '' },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: 'amountDue', label: 'Amount Due Freeman Restoration Minus PA Fee' },
+                { amount: 'difference', label: 'Funds Customer to pay extra over settlement' }
+            ],
+            under: [
+                { amount: 'settlement', label: 'Settlement amount as of   {date}' },
+                { amount: 'deductible', label: 'Minus deductible' },
+                { amount: 'netSettlement', label: '' },
+                { amount: 'settlementPAFee', label: 'Minus {pa} PA Fee', paOnly: true },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: '', label: '' },
+                { amount: 'customerEstimate', label: 'Customer Estimate amount' },
+                { amount: 'courtesyDiscount', label: 'Minus PA Fee - Courtesy Discount', paOnly: true },
+                { amount: 'ceMinusPA', label: 'Customer Estimate minus PA Fee', paOnly: true },
+                { amount: 'customerItems', label: 'Items paid by Customer in this estimate - deducted from this estimate', itemsOnly: true },
+                { amount: 'amountDue', label: 'Estimate amount due Freeman Restoration less Customer Items' },
+                { amount: '', label: '' },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: 'amountDue', label: 'Amount Due Freeman Restoration Minus PA Fee' },
+                { amount: 'difference', label: 'Funds Customer to keep after PA Fee from settlement' }
+            ]
+        };
+
+        // The numbers a notes line can show (negatives print in parentheses)
+        const noteAmounts = (r, inputs) => {
+            const dwelling = toNumber(inputs.dwellingTotal) || 0;
+            return {
+                settlement: r.settlement,
+                deductible: -r.deductible,
+                netSettlement: r.netSettlement,
+                settlementPAFee: -r.settlementPAFee,
+                settlementAfterPA: r.settlementAfterPA,
+                dwelling,
+                otherStructures: toNumber(inputs.otherStructuresTotal) || 0,
+                codeUpgrade: toNumber(inputs.codeUpgradeTotal) || 0,
+                customerEstimate: r.ce,
+                courtesyDiscount: -r.paFee,
+                dwellingMinusPA: dwelling - r.paFee,
+                ceMinusPA: r.ce - r.paFee,
+                customerItems: -r.customerItems,
+                amountDue: r.sellingPrice,
+                difference: Math.abs(r.difference)
+            };
+        };
+
+        // Choices for the layout editor's Amount dropdown
+        const AMOUNT_OPTIONS = [
+            ['', 'None'],
+            ['settlement', 'Settlement'],
+            ['deductible', 'Deductible (minus)'],
+            ['netSettlement', 'Net settlement (settlement - deductible)'],
+            ['settlementPAFee', 'PA fee on net settlement (minus)'],
+            ['settlementAfterPA', 'Settlement minus PA fee'],
+            ['dwelling', 'Dwelling estimate'],
+            ['otherStructures', 'Other structures estimate'],
+            ['codeUpgrade', 'Code upgrade estimate'],
+            ['customerEstimate', 'Customer Estimate (all three)'],
+            ['courtesyDiscount', 'Courtesy discount / PA fee used (minus)'],
+            ['dwellingMinusPA', 'Dwelling estimate minus PA fee'],
+            ['ceMinusPA', 'Customer Estimate minus PA fee'],
+            ['customerItems', 'Items paid by customer (minus)'],
+            ['amountDue', 'Amount due Freeman (selling price)'],
+            ['difference', 'Difference (customer pays extra / keeps)']
+        ];
+
+        // Saved layout from Firestore -> safe layout (falls back to default)
+        const cleanLayout = (d) => {
+            const side = (arr, fallback) => Array.isArray(arr) ? arr.map(l => ({
+                amount: typeof l.amount === 'string' ? l.amount : '',
+                label: typeof l.label === 'string' ? l.label : '',
+                paOnly: l.paOnly === true,
+                itemsOnly: l.itemsOnly === true
+            })) : fallback;
+            return { over: side(d && d.over, DEFAULT_LAYOUT.over), under: side(d && d.under, DEFAULT_LAYOUT.under) };
+        };
+
+        // 'YYYY-MM-DD' -> 'MM/DD/YYYY'
+        const fmtDate = (d) => {
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
+            return m ? `${m[2]}/${m[3]}/${m[1]}` : '';
+        };
+
+        // Build the notes text: amount <tab> label, one line each
+        const buildNotes = (layoutLines, r, inputs) => {
+            const amounts = noteAmounts(r, inputs);
+            const paText = (Math.round(r.pa * 1000) / 10) + '%';
+            return layoutLines
+                .filter(l => !(l.paOnly && r.pa === 0) && !(l.itemsOnly && r.customerItems === 0))
+                .map(l => {
+                    const amt = l.amount ? $(Math.round(amounts[l.amount] * 100) / 100) : '';
+                    const label = (l.label || '').replace('{date}', fmtDate(inputs.settlementDate)).replace('{pa}', paText);
+                    return amt || label ? `${amt}\t${label}` : '';
+                })
+                .join('\n');
+        };
+
         function GPMApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
@@ -135,6 +252,51 @@
             const [message, setMessage] = useState('');
             const [pos, setPos] = useState([]);              // this job's POs from PO Manager (read-only)
             const [excludedPoIds, setExcludedPoIds] = useState([]);
+            const [notesEdit, setNotesEdit] = useState(null); // one-off edits to the notes (not saved); null = use generated
+            const [layout, setLayout] = useState(DEFAULT_LAYOUT);   // company-wide notes layout
+            const [layoutInfo, setLayoutInfo] = useState(null);     // { name, at } of last layout save
+            const [layoutDraft, setLayoutDraft] = useState(null);   // layout being edited; null = editor closed
+            const [layoutTab, setLayoutTab] = useState('over');
+
+            useEffect(() => {
+                if (!profile) return;
+                const unsub = db.collection('gpmSettings').doc('notesLayout').onSnapshot(doc => {
+                    if (doc.exists) {
+                        setLayout(cleanLayout(doc.data()));
+                        const d = doc.data();
+                        setLayoutInfo(d.updatedAt ? { name: (d.updatedBy && d.updatedBy.name) || '', at: d.updatedAt.toDate() } : null);
+                    } else {
+                        setLayout(DEFAULT_LAYOUT);
+                        setLayoutInfo(null);
+                    }
+                }, error => setMessage('Error loading notes layout: ' + error.message));
+                return () => unsub();
+            }, [profile]);
+
+            // Layout editor actions (work on the draft; nothing saved until Save layout)
+            const editLine = (i, changes) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: prev[layoutTab].map((l, k) => k === i ? { ...l, ...changes } : l) }));
+            const moveLine = (i, dir) => setLayoutDraft(prev => {
+                const list = [...prev[layoutTab]]; const j = i + dir;
+                if (j < 0 || j >= list.length) return prev;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...prev, [layoutTab]: list };
+            });
+            const removeLine = (i) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: prev[layoutTab].filter((_, k) => k !== i) }));
+            const addLine = (blank) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: [...prev[layoutTab], { amount: '', label: blank ? '' : 'New line', paOnly: false, itemsOnly: false }] }));
+
+            const saveLayout = async () => {
+                try {
+                    await db.collection('gpmSettings').doc('notesLayout').set({
+                        over: layoutDraft.over, under: layoutDraft.under,
+                        updatedBy: { uid: user.uid, name: profile.name || user.email },
+                        updatedAt: new Date()
+                    });
+                    setLayoutDraft(null);
+                    setMessage('Notes layout saved for all jobs');
+                } catch (error) {
+                    setMessage('Error saving notes layout: ' + error.message);
+                }
+            };
 
             // Live, read-only list of the picked job's POs
             useEffect(() => {
@@ -209,6 +371,7 @@
                 setMessage('');
                 setLastSaved(null);
                 setExcludedPoIds([]);
+                setNotesEdit(null);
                 if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
                     const snap = await db.collection('gpm').doc(id).get();
@@ -426,6 +589,89 @@
                                             {row('Gross profit', $(r.grossProfit), true)}
                                         </tbody>
                                     </table>
+                                </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
+                            const generated = buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
+                            const text = notesEdit !== null ? notesEdit : generated;
+                            const copy = () => navigator.clipboard.writeText(text).then(
+                                () => setMessage('Summary notes copied'),
+                                () => setMessage('Error: copy failed. Select the text and copy it.'));
+                            return (
+                                <div className="section">
+                                    <div className="section-title">SUMMARY NOTES ({r.over ? 'over settlement' : 'under settlement'})</div>
+                                    <textarea value={text} onChange={e => setNotesEdit(e.target.value)} rows={Math.max(8, text.split('\n').length + 1)}
+                                        style={{ width: '100%', fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 16, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', whiteSpace: 'pre' }} />
+                                    <div className="hint">Edits here are for this copy only and are not saved. Changing the numbers above rebuilds the notes unless you've edited them.</div>
+                                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                        <button className="btn-primary" style={{ width: 'auto' }} onClick={copy}>Copy notes</button>
+                                        {notesEdit !== null && <button className="btn-secondary" onClick={() => setNotesEdit(null)}>Reset to generated</button>}
+                                        <div style={{ flex: 1 }} />
+                                        {!layoutDraft && <button className="btn-secondary" onClick={() => { setLayoutDraft(JSON.parse(JSON.stringify(layout))); setLayoutTab(r.over ? 'over' : 'under'); }}>Edit notes layout</button>}
+                                    </div>
+                                    {layoutInfo && !layoutDraft && <div className="hint" style={{ textAlign: 'right', marginTop: '4px' }}>
+                                        Layout last changed by {layoutInfo.name} {layoutInfo.at.toLocaleDateString('en-US')}</div>}
+
+                                    {layoutDraft && (
+                                        <div style={{ marginTop: '15px', padding: '15px', border: '1px solid #0066cc', borderRadius: '6px', background: '#f7fbff' }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px' }}>Notes layout (applies to all jobs)</div>
+                                            <div className="hint" style={{ marginBottom: '10px' }}>{'{date}'} = settlement date, {'{pa}'} = PA fee %. Nothing changes until you click Save layout.</div>
+                                            <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                                                {['over', 'under'].map(t => (
+                                                    <button key={t} className={layoutTab === t ? 'btn-primary' : 'btn-secondary'} style={{ width: 'auto' }} onClick={() => setLayoutTab(t)}>
+                                                        {t === 'over' ? 'Over settlement' : 'Under settlement'}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div style={{ overflowX: 'auto' }}>
+                                            <table>
+                                                <thead>
+                                                    <tr><th>Amount</th><th>Label</th><th title="Hide when no PA fee">No PA: hide</th><th title="Hide when no customer items">No items: hide</th><th></th></tr>
+                                                </thead>
+                                                <tbody>
+                                                    {layoutDraft[layoutTab].map((l, i) => (
+                                                        <tr key={i}>
+                                                            <td style={{ minWidth: '190px' }}>
+                                                                <select value={l.amount} onChange={e => editLine(i, { amount: e.target.value })}>
+                                                                    {AMOUNT_OPTIONS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+                                                                </select>
+                                                            </td>
+                                                            <td style={{ minWidth: '240px' }}><input value={l.label} onChange={e => editLine(i, { label: e.target.value })} placeholder="(blank)" /></td>
+                                                            <td style={{ textAlign: 'center' }}><input type="checkbox" checked={l.paOnly} onChange={e => editLine(i, { paOnly: e.target.checked })} style={{ width: 'auto' }} /></td>
+                                                            <td style={{ textAlign: 'center' }}><input type="checkbox" checked={l.itemsOnly} onChange={e => editLine(i, { itemsOnly: e.target.checked })} style={{ width: 'auto' }} /></td>
+                                                            <td style={{ whiteSpace: 'nowrap' }}>
+                                                                <button className="btn-secondary" style={{ padding: '4px 8px' }} onClick={() => moveLine(i, -1)} disabled={i === 0}>↑</button>{' '}
+                                                                <button className="btn-secondary" style={{ padding: '4px 8px' }} onClick={() => moveLine(i, 1)} disabled={i === layoutDraft[layoutTab].length - 1}>↓</button>{' '}
+                                                                <button style={{ padding: '4px 8px', background: '#d32f2f', color: 'white' }} onClick={() => removeLine(i)}>✕</button>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                                <button className="btn-secondary" onClick={() => addLine(false)}>+ Add line</button>
+                                                <button className="btn-secondary" onClick={() => addLine(true)}>+ Blank line</button>
+                                            </div>
+                                            <div style={{ fontWeight: 600, margin: '15px 0 5px', fontSize: '13px' }}>
+                                                Preview ({layoutTab === 'over' ? 'over' : 'under'} settlement, using this job's numbers)
+                                            </div>
+                                            <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 16, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
+                                                {buildNotes(layoutDraft[layoutTab], r, inputs) || '(empty)'}
+                                            </pre>
+                                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                                <button className="btn-primary" style={{ width: 'auto' }} onClick={saveLayout}>Save layout</button>
+                                                <button className="btn-secondary" onClick={() => setLayoutDraft(null)}>Cancel</button>
+                                                <div style={{ flex: 1 }} />
+                                                <button className="btn-secondary" onClick={() => { if (window.confirm('Put both layouts back to the original wording? (Not saved until you click Save layout.)')) setLayoutDraft(JSON.parse(JSON.stringify(DEFAULT_LAYOUT))); }}>Reset to default</button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })()}
