@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PO Manager - Freeman Restoration</title>
+    <title>GPM Tool - Freeman Restoration</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
@@ -13,42 +13,33 @@
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
         .form-group { margin-bottom: 12px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        textarea { resize: vertical; min-height: 80px; }
-        input:focus, textarea:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
-        button { width: 100%; padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
-        .btn-primary { background: #0066cc; color: white; }
+        input, select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        .hint { font-size: 11px; color: #888; margin-top: 3px; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
         .btn-primary:hover { background: #0052a3; }
         .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
-        .btn-secondary:disabled { background: #e0e0e0; cursor: not-allowed; }
-        .btn-sm { width: auto; padding: 6px 10px; font-size: 12px; margin-right: 4px; }
-        .btn-danger { background: #d32f2f; color: white; }
-        .btn-danger:hover { background: #b71c1c; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
-        .success { color: #388e3c; font-size: 12px; margin-top: 5px; }
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
-        th { background: #f5f5f5; padding: 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
-        td { padding: 10px; border-bottom: 1px solid #eee; }
-        tr:hover { background: #fafafa; }
-        
-        
         .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
         .back-link:hover { text-decoration: underline; }
-        .button-group { display: flex; gap: 8px; margin-top: 8px; }
-        .button-group button { margin: 0; }
-        
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #f5f5f5; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+        @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
     <div class="container">
         <a href="/" class="back-link">&larr; Dashboard</a>
-        <h1>PO Manager</h1>
-        <p class="subtitle">Freeman Restoration Subcontractor Scope of Work</p>
+        <h1>GPM Tool</h1>
+        <p class="subtitle">Freeman Restoration starting-point Gross Produced Margin</p>
         <div id="app"></div>
     </div>
 
@@ -58,14 +49,13 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-functions-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
-        const { PDFDocument } = PDFLib;
 
+        // Same Firebase project as PO Manager
         const firebaseConfig = {
             apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
             authDomain: "po-project-ea1ca.firebaseapp.com",
@@ -74,82 +64,404 @@
             messagingSenderId: "589238434084",
             appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
         };
-
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
-        const storage = firebase.storage();
-        const functions = firebase.functions();
 
-        const TEMPLATE_PDF_URL = 'https://raw.githubusercontent.com/SF-codeMeG6c/po-manager/main/Sub_Spec_Blank_9-20-26_V2.pdf';
+        const GPM_ROLES = ['owner', 'admin', 'estimator'];
+        const DEFAULT_DATE_NOTE = 'or 5 days after permit issued';
 
-        function POApp() {
-            const [user, setUser] = useState(null);
-            const [email, setEmail] = useState('');
-            const [password, setPassword] = useState('');
-            const [authError, setAuthError] = useState('');
-            const [authMode, setAuthMode] = useState('login');
-            
-            const [jobCode, setJobCode] = useState('');
-            const [jobAddress, setJobAddress] = useState('');
-            const [cityStateZip, setCityStateZip] = useState('');
-            const [lockBox, setLockBox] = useState('');
-            const [superName, setSuperName] = useState('');
-            const [superPhone, setSuperPhone] = useState('');
-            const [superEmail, setSuperEmail] = useState('');
-            const [currentJobId, setCurrentJobId] = useState('');
-            
-            const [currentPO, setCurrentPO] = useState('');
-            const [message, setMessage] = useState('');
-            const [jobLibrary, setJobLibrary] = useState([]);
-            const [supervisorLibrary, setSupervisorLibrary] = useState([]);
-            const [selectedJobIndex, setSelectedJobIndex] = useState('');
-            const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
+        // Money/percent fields: typed as text, saved as numbers
+        const NUMBER_FIELDS = ['settlementAmount', 'deductible', 'paFeePct', 'dwellingTotal', 'otherStructuresTotal', 'codeUpgradeTotal', 'customerItems'];
 
-            const [uploadLoading, setUploadLoading] = useState(false);
-            const [jobForms, setJobForms] = useState([]);
+        const BLANK_INPUTS = {
+            settlementAmount: '', settlementDate: '', deductible: '', paFeePct: '10',
+            dwellingTotal: '', otherStructuresTotal: '', codeUpgradeTotal: '', customerItems: '',
+            agreementDate: '',
+            startDate: '', startNote: DEFAULT_DATE_NOTE,
+            completionDate: '', completionNote: DEFAULT_DATE_NOTE
+        };
 
-            // Phase 4: PDF Metadata & Search
-            const [formLibraryData, setFormLibraryData] = useState([]);
-            const [formMetadata, setFormMetadata] = useState({
-                subName: '',
-                category: '',
-                contact: '',
-                phone: '',
-                email: '',
-                subCode: '',
-                contractAmount: '',
-                scope: ''
+        // "$1,234.56" or "1234.56" -> 1234.56 ; blank -> null
+        const toNumber = (t) => {
+            const s = String(t ?? '').replace(/[^0-9.]/g, '');
+            if (!s) return null;
+            const n = parseFloat(s);
+            return isNaN(n) ? null : n;
+        };
+        const fmtMoney = (n) => n === null || n === undefined ? '' :
+            Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        // Company-wide rates (fixed, not per job)
+        const IN_HOUSE_LABOR_PCT = 0.135;
+        const TARGET_GPM = 0.28;
+
+        const $ = (n) => { const v = Math.round(n * 100) / 100 || 0; return v < 0 ? '($' + fmtMoney(-v) + ')' : '$' + fmtMoney(v); }; // || 0 turns -0 into 0
+        const pct = (n) => (n * 100).toFixed(1) + '%';
+
+        // All GPM math in one place. Returns null until settlement and estimate are entered.
+        const calcGPM = (inputs, poTotal) => {
+            const settlement = toNumber(inputs.settlementAmount) || 0;
+            const deductible = toNumber(inputs.deductible) || 0;
+            const pa = (toNumber(inputs.paFeePct) || 0) / 100;
+            const ce = (toNumber(inputs.dwellingTotal) || 0) + (toNumber(inputs.otherStructuresTotal) || 0) + (toNumber(inputs.codeUpgradeTotal) || 0);
+            const customerItems = toNumber(inputs.customerItems) || 0;
+            if (!settlement || !ce) return null;
+
+            const netSettlement = settlement - deductible;
+            const settlementPAFee = netSettlement * pa;
+            const settlementAfterPA = netSettlement - settlementPAFee;
+            const over = ce > netSettlement;
+            // PA fee: on net settlement when over, on Customer Estimate when under
+            const paFee = over ? settlementPAFee : ce * pa;
+            const sellingPrice = ce - paFee - customerItems; // amount due Freeman Restoration
+            const inHouseLabor = sellingPrice * IN_HOUSE_LABOR_PCT;
+            const jobCost = poTotal + inHouseLabor;
+            const grossProfit = sellingPrice - jobCost;
+            const gpm = sellingPrice ? grossProfit / sellingPrice : 0;
+            const difference = sellingPrice - settlementAfterPA; // + customer pays extra, - customer credit
+
+            return { settlement, deductible, pa, ce, netSettlement, settlementPAFee, settlementAfterPA, over,
+                     paFee, customerItems, sellingPrice, poTotal, inHouseLabor, jobCost, grossProfit, gpm, difference };
+        };
+
+
+        // ---------- Summary notes layout ----------
+        // Each line: amount = which number to show ('' = none), label = text. {date} = settlement date, {pa} = PA fee %.
+        // paOnly lines are left out when the PA fee is 0%. itemsOnly lines are left out when items paid by customer is 0.
+        // This is the starting layout. The saved company-wide layout (gpmSettings/notesLayout) replaces it once someone saves one.
+        const DEFAULT_LAYOUT = {
+            over: [
+                { amount: 'settlement', label: 'Settlement amount as of   {date}' },
+                { amount: 'deductible', label: 'Minus deductible' },
+                { amount: 'netSettlement', label: '' },
+                { amount: 'settlementPAFee', label: 'Minus {pa} PA Fee', paOnly: true },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: '', label: '' },
+                { amount: 'dwelling', label: 'Dwelling Estimate Amount' },
+                { amount: 'courtesyDiscount', label: 'Minus PA Fee - Courtesy Discount', paOnly: true },
+                { amount: 'dwellingMinusPA', label: 'Dwelling Estimate minus PA Fee', paOnly: true },
+                { amount: 'otherStructures', label: 'Other Structures Estimate Amount' },
+                { amount: 'codeUpgrade', label: 'Code Upgrade Estimate Amount' },
+                { amount: 'customerItems', label: 'Items paid by Customer in this estimate - deducted from this estimate', itemsOnly: true },
+                { amount: 'amountDue', label: 'Amount due Freeman Restoration' },
+                { amount: '', label: '' },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: 'amountDue', label: 'Amount Due Freeman Restoration Minus PA Fee' },
+                { amount: 'difference', label: 'Funds Customer to pay extra over settlement' }
+            ],
+            under: [
+                { amount: 'settlement', label: 'Settlement amount as of   {date}' },
+                { amount: 'deductible', label: 'Minus deductible' },
+                { amount: 'netSettlement', label: '' },
+                { amount: 'settlementPAFee', label: 'Minus {pa} PA Fee', paOnly: true },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: '', label: '' },
+                { amount: 'customerEstimate', label: 'Customer Estimate amount' },
+                { amount: 'courtesyDiscount', label: 'Minus PA Fee - Courtesy Discount', paOnly: true },
+                { amount: 'ceMinusPA', label: 'Customer Estimate minus PA Fee', paOnly: true },
+                { amount: 'customerItems', label: 'Items paid by Customer in this estimate - deducted from this estimate', itemsOnly: true },
+                { amount: 'amountDue', label: 'Estimate amount due Freeman Restoration less Customer Items' },
+                { amount: '', label: '' },
+                { amount: 'settlementAfterPA', label: 'Settlement amount minus PA Fee' },
+                { amount: 'amountDue', label: 'Amount Due Freeman Restoration Minus PA Fee' },
+                { amount: 'difference', label: 'Funds Customer to keep after PA Fee from settlement' }
+            ]
+        };
+
+        // The numbers a notes line can show (negatives print in parentheses)
+        const noteAmounts = (r, inputs) => {
+            const dwelling = toNumber(inputs.dwellingTotal) || 0;
+            return {
+                settlement: r.settlement,
+                deductible: -r.deductible,
+                netSettlement: r.netSettlement,
+                settlementPAFee: -r.settlementPAFee,
+                settlementAfterPA: r.settlementAfterPA,
+                dwelling,
+                otherStructures: toNumber(inputs.otherStructuresTotal) || 0,
+                codeUpgrade: toNumber(inputs.codeUpgradeTotal) || 0,
+                customerEstimate: r.ce,
+                courtesyDiscount: -r.paFee,
+                dwellingMinusPA: dwelling - r.paFee,
+                ceMinusPA: r.ce - r.paFee,
+                customerItems: -r.customerItems,
+                amountDue: r.sellingPrice,
+                difference: Math.abs(r.difference)
+            };
+        };
+
+        // Choices for the layout editor's Amount dropdown
+        const AMOUNT_OPTIONS = [
+            ['', 'None'],
+            ['settlement', 'Settlement'],
+            ['deductible', 'Deductible (minus)'],
+            ['netSettlement', 'Net settlement (settlement - deductible)'],
+            ['settlementPAFee', 'PA fee on net settlement (minus)'],
+            ['settlementAfterPA', 'Settlement minus PA fee'],
+            ['dwelling', 'Dwelling estimate'],
+            ['otherStructures', 'Other structures estimate'],
+            ['codeUpgrade', 'Code upgrade estimate'],
+            ['customerEstimate', 'Customer Estimate (all three)'],
+            ['courtesyDiscount', 'Courtesy discount / PA fee used (minus)'],
+            ['dwellingMinusPA', 'Dwelling estimate minus PA fee'],
+            ['ceMinusPA', 'Customer Estimate minus PA fee'],
+            ['customerItems', 'Items paid by customer (minus)'],
+            ['amountDue', 'Amount due Freeman (selling price)'],
+            ['difference', 'Difference (customer pays extra / keeps)']
+        ];
+
+        // Saved layout from Firestore -> safe layout (falls back to default)
+        const cleanLayout = (d) => {
+            const side = (arr, fallback) => Array.isArray(arr) ? arr.map(l => ({
+                amount: typeof l.amount === 'string' ? l.amount : '',
+                label: typeof l.label === 'string' ? l.label : '',
+                paOnly: l.paOnly === true,
+                itemsOnly: l.itemsOnly === true
+            })) : fallback;
+            const placement = { ...DEFAULT_PLACEMENT };
+            if (d && d.placement) Object.keys(DEFAULT_PLACEMENT).forEach(k => { if (typeof d.placement[k] === 'number') placement[k] = d.placement[k]; });
+            return { over: side(d && d.over, DEFAULT_LAYOUT.over), under: side(d && d.under, DEFAULT_LAYOUT.under), placement };
+        };
+
+        // 'YYYY-MM-DD' -> 'MM/DD/YYYY'
+        const fmtDate = (d) => {
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
+            return m ? `${m[2]}/${m[3]}/${m[1]}` : '';
+        };
+
+        // Build the notes as lines of { amount, label } (text, ready to print)
+        const buildNoteLines = (layoutLines, r, inputs) => {
+            const amounts = noteAmounts(r, inputs);
+            const paText = (Math.round(r.pa * 1000) / 10) + '%';
+            return layoutLines
+                .filter(l => !(l.paOnly && r.pa === 0) && !(l.itemsOnly && r.customerItems === 0))
+                .map(l => ({
+                    amount: l.amount ? $(Math.round(amounts[l.amount] * 100) / 100) : '',
+                    label: (l.label || '').replace('{date}', fmtDate(inputs.settlementDate)).replace('{pa}', paText)
+                }));
+        };
+
+        // Notes as text: amount <tab> label, one line each
+        const buildNotes = (layoutLines, r, inputs) =>
+            buildNoteLines(layoutLines, r, inputs).map(l => l.amount || l.label ? `${l.amount}\t${l.label}` : '').join('\n');
+
+        // Notes text (possibly edited in the box) back to lines: split each line at the first tab
+        const parseNotes = (text) => text.split('\n').map(line => {
+            const i = line.indexOf('\t');
+            return i < 0 ? { amount: '', label: line.trim() } : { amount: line.slice(0, i).trim(), label: line.slice(i + 1).trim() };
+        });
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // ---------- Xactimate PDF: relabel summary pages + notes block ----------
+        // Summary pages are found by heading; labels by exact text. New text is drawn in the same
+        // Times font and size, over a white box that covers the old label.
+        const SUMMARY_PAGES = ['Summary for Dwelling', 'Summary for Other Structures', 'Summary for Code Upgrade'];
+        const RELABELS = [
+            { from: 'Line Item Total', to: 'Retail Line Item Total', bold: false, pages: SUMMARY_PAGES },
+            { from: 'Less Deductible', to: 'Less Courtesy Discount', bold: false, pages: ['Summary for Dwelling'] },
+            { from: 'Net Claim', to: 'Due Freeman Restoration', bold: true, pages: SUMMARY_PAGES }
+        ];
+        const NOTES_PAGE = 'Summary for Dwelling';
+        const NOTES_ANCHOR = 'Net Claim'; // notes block is measured from this row
+
+        // Notes block placement (points; 72 = 1 inch). Column positions are from the left edge of the Xactimate labels.
+        const DEFAULT_PLACEMENT = { gap: 85, amountRight: 59, labelLeft: 69, lineHeight: 14 };
+        const NOTE_FONT_SIZE = 12;
+
+        // Cover page: text written on the blank underline after each label (same font/size as the cover text)
+        const COVER_FIELDS = [
+            { prefix: 'Addendum to the agreement dated', key: 'agreementDate', name: 'Agreement date' },
+            { prefix: 'Proposed start date', key: 'startText', name: 'Proposed start date' },
+            { prefix: 'Proposed completion date', key: 'completionText', name: 'Proposed completion date' },
+            { prefix: 'Start and completion dates are dictated by paragraph 18 of contract dated', key: 'agreementDate', name: 'Contract dated (paragraph 18)' }
+        ];
+        const COVER_TEXT_INDENT = 20; // points into the underline
+
+        // bytes: Uint8Array of the Xactimate PDF. notes: { lines: [{amount, label}], placement } or null.
+        // cover: { agreementDate, startText, completionText } (ready-to-print text) or null.
+        // Returns { bytes, report } ; report = [{ heading, page, done: [], missing: [] }]
+        const relabelXactimatePdf = async (bytes, PDFLib, pdfjs, notes, cover) => {
+            const reader = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+            const report = [];
+            const edits = []; // { pageIndex, x, y, size, width, to, bold }
+            let anchor = null; // { pageIndex, x, y, entry } for the notes block
+            const coverWrites = []; // { pageIndex, x, y, size, prefix, text }
+            let coverEntry = null;
+
+            for (let p = 1; p <= reader.numPages; p++) {
+                const content = await (await reader.getPage(p)).getTextContent();
+                const items = content.items.filter(it => typeof it.str === 'string' && it.str.trim());
+
+                // Cover page (first page with the agreement line)
+                if (cover && !coverEntry && items.some(it => it.str.trim().startsWith(COVER_FIELDS[0].prefix))) {
+                    coverEntry = { heading: 'Cover page', page: p, done: [], missing: [] };
+                    COVER_FIELDS.forEach(f => {
+                        const it = items.find(i => i.str.trim().startsWith(f.prefix));
+                        if (!it) { coverEntry.missing.push(f.name + ' line not found'); return; }
+                        const text = (cover[f.key] || '').trim();
+                        if (!text) { coverEntry.missing.push(f.name + ' is blank'); return; }
+                        const t = it.transform;
+                        coverWrites.push({ pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, prefix: f.prefix, text });
+                        coverEntry.done.push(f.name + ': ' + text);
+                    });
+                    report.push(coverEntry);
+                }
+
+                const heading = SUMMARY_PAGES.find(h => items.some(it => it.str.trim() === h));
+                if (!heading) continue;
+                const entry = { heading, page: p, done: [], missing: [] };
+                RELABELS.filter(r => r.pages.includes(heading)).forEach(r => {
+                    const it = items.find(i => i.str.trim() === r.from);
+                    if (!it) { entry.missing.push(r.from); return; }
+                    const t = it.transform;
+                    const e = { pageIndex: p - 1, x: t[4], y: t[5], size: Math.hypot(t[2], t[3]) || 10, width: it.width, to: r.to, bold: r.bold };
+                    edits.push(e);
+                    entry.done.push(r.from + ' → ' + r.to);
+                    if (heading === NOTES_PAGE && r.from === NOTES_ANCHOR && !anchor) anchor = { pageIndex: e.pageIndex, x: e.x, y: e.y, entry };
+                });
+                report.push(entry);
+            }
+            if (!report.some(e => SUMMARY_PAGES.includes(e.heading))) throw new Error('No Xactimate summary pages found (looked for: ' + SUMMARY_PAGES.join(', ') + ').');
+            if (cover && !coverEntry) report.unshift({ heading: 'Cover page', page: 0, done: [], missing: ['Cover page not found (no "' + COVER_FIELDS[0].prefix + '" line)'] });
+
+            const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+            const regular = await doc.embedFont(PDFLib.StandardFonts.TimesRoman);
+            const bold = await doc.embedFont(PDFLib.StandardFonts.TimesRomanBold);
+            const pages = doc.getPages();
+            edits.forEach(e => {
+                const page = pages[e.pageIndex];
+                // Cover the old label (a little padding for descenders), then write the new one on the same baseline
+                page.drawRectangle({ x: e.x - 0.5, y: e.y - e.size * 0.25, width: e.width + 1, height: e.size * 1.2, color: PDFLib.rgb(1, 1, 1) });
+                page.drawText(e.to, { x: e.x, y: e.y, size: e.size, font: e.bold ? bold : regular, color: PDFLib.rgb(0, 0, 0) });
             });
-            const [editingPO, setEditingPO] = useState(null); // tracker row being edited
-            const [listening, setListening] = useState(null); // 'scope' or a tracker row id
-            const recognitionRef = React.useRef(null);
-            const scopeRef = React.useRef(null);
-            const noteRef = React.useRef(null);
-            const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
-            const [sendingId, setSendingId] = useState(null); // PO being emailed
-            const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
-            const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
-            const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
-            const [usersList, setUsersList] = useState([]);
-            const [userEdits, setUserEdits] = useState({}); // uid -> { role, active } not yet saved
-            const [supersList, setSupersList] = useState([]); // active users with the Super role
-            const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
-            const [secretInput, setSecretInput] = useState('');
 
+            // Cover page: write just past the label, on the underline
+            coverWrites.forEach(c => {
+                const x = c.x + regular.widthOfTextAtSize(c.prefix + ' ', c.size) + COVER_TEXT_INDENT;
+                pages[c.pageIndex].drawText(c.text, { x, y: c.y + 1, size: c.size, font: regular, color: PDFLib.rgb(0, 0, 0) });
+            });
+
+            // Notes block: in-page text, Times-Roman 10 (amounts right-aligned, labels left-aligned) under the Net Claim row.
+            // Printed into the page like the relabels, so it never shifts. To change it, edit on the GPM page and create the PDF again.
+            if (notes && notes.lines.length) {
+                const dwelling = report.find(e => e.heading === NOTES_PAGE);
+                if (!anchor) {
+                    (dwelling || report[0]).missing.push('Notes block not placed (no "' + NOTES_ANCHOR + '" row on the Dwelling summary page)');
+                } else {
+                    const pl = { ...DEFAULT_PLACEMENT, ...(notes.placement || {}) };
+                    const page = pages[anchor.pageIndex];
+                    const size = NOTE_FONT_SIZE, black = PDFLib.rgb(0, 0, 0);
+                    notes.lines.forEach((l, i) => {
+                        const y = anchor.y - pl.gap - i * pl.lineHeight;
+                        if (l.amount) page.drawText(l.amount, { x: anchor.x + pl.amountRight - regular.widthOfTextAtSize(l.amount, size), y, size, font: regular, color: black });
+                        if (l.label) page.drawText(l.label, { x: anchor.x + pl.labelLeft, y, size, font: regular, color: black });
+                    });
+                    anchor.entry.done.push('Notes block added (' + notes.lines.length + ' lines)');
+                }
+            }
+            return { bytes: await doc.save(), report };
+        };
+
+        function GPMApp() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, false = no access, object = allowed
+            const [authError, setAuthError] = useState('');
+
+            const [jobs, setJobs] = useState([]);
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobId, setJobId] = useState('');
+            const [inputs, setInputs] = useState(BLANK_INPUTS);
+            const [dirty, setDirty] = useState(false);
+            const [lastSaved, setLastSaved] = useState(null); // { name, at }
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const [pos, setPos] = useState([]);              // this job's POs from PO Manager (read-only)
+            const [excludedPoIds, setExcludedPoIds] = useState([]);
+            const [notesEdit, setNotesEdit] = useState(null); // one-off edits to the notes (not saved); null = use generated
+            const [layout, setLayout] = useState(DEFAULT_LAYOUT);   // company-wide notes layout
+            const [layoutInfo, setLayoutInfo] = useState(null);     // { name, at } of last layout save
+            const [layoutDraft, setLayoutDraft] = useState(null);   // layout being edited; null = editor closed
+            const [layoutTab, setLayoutTab] = useState('over');
+            const [pdfFile, setPdfFile] = useState(null);     // Xactimate PDF picked for relabeling (stays in the browser)
+            const [pdfBusy, setPdfBusy] = useState(false);
+            const [pdfReport, setPdfReport] = useState(null); // what was changed / not found
+            const [showPlacement, setShowPlacement] = useState(false); // PDF placement settings collapsed by default
+            const [snapshots, setSnapshots] = useState([]);   // this job's saved snapshots, newest first
+            const [snapNote, setSnapNote] = useState('');
+            const [snapSaving, setSnapSaving] = useState(false);
+            const [openSnapId, setOpenSnapId] = useState(null);
+
+            // Live list of the picked job's snapshots (read-only once saved)
             useEffect(() => {
-                if (!showUsers) return;
-                const unsub = db.collection('users').onSnapshot(snapshot => {
+                setSnapshots([]);
+                if (!jobId) return;
+                const unsub = db.collection('gpm').doc(jobId).collection('snapshots').orderBy('savedAt', 'desc').onSnapshot(snapshot => {
                     const list = [];
                     snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
-                    list.sort((a, b) => {
-                        const ap = a.role === 'pending' ? 0 : 1, bp = b.role === 'pending' ? 0 : 1;
-                        return ap !== bp ? ap - bp : (a.name || '').localeCompare(b.name || '');
-                    });
-                    setUsersList(list);
-                }, error => console.error('Users list error:', error));
+                    setSnapshots(list);
+                }, error => setMessage('Error loading snapshots: ' + error.message));
                 return () => unsub();
-            }, [showUsers]);
+            }, [jobId]);
+
+            useEffect(() => {
+                if (!profile) return;
+                const unsub = db.collection('gpmSettings').doc('notesLayout').onSnapshot(doc => {
+                    if (doc.exists) {
+                        setLayout(cleanLayout(doc.data()));
+                        const d = doc.data();
+                        setLayoutInfo(d.updatedAt ? { name: (d.updatedBy && d.updatedBy.name) || '', at: d.updatedAt.toDate() } : null);
+                    } else {
+                        setLayout(DEFAULT_LAYOUT);
+                        setLayoutInfo(null);
+                    }
+                }, error => setMessage('Error loading notes layout: ' + error.message));
+                return () => unsub();
+            }, [profile]);
+
+            // Layout editor actions (work on the draft; nothing saved until Save layout)
+            const editLine = (i, changes) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: prev[layoutTab].map((l, k) => k === i ? { ...l, ...changes } : l) }));
+            const moveLine = (i, dir) => setLayoutDraft(prev => {
+                const list = [...prev[layoutTab]]; const j = i + dir;
+                if (j < 0 || j >= list.length) return prev;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...prev, [layoutTab]: list };
+            });
+            const removeLine = (i) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: prev[layoutTab].filter((_, k) => k !== i) }));
+            const addLine = (blank) => setLayoutDraft(prev => ({ ...prev, [layoutTab]: [...prev[layoutTab], { amount: '', label: blank ? '' : 'New line', paOnly: false, itemsOnly: false }] }));
+
+            const saveLayout = async () => {
+                try {
+                    await db.collection('gpmSettings').doc('notesLayout').set({
+                        over: layoutDraft.over, under: layoutDraft.under,
+                        placement: { ...DEFAULT_PLACEMENT, ...(layoutDraft.placement || {}) },
+                        updatedBy: { uid: user.uid, name: profile.name || user.email },
+                        updatedAt: new Date()
+                    });
+                    setLayoutDraft(null);
+                    setMessage('Notes layout saved for all jobs');
+                } catch (error) {
+                    setMessage('Error saving notes layout: ' + error.message);
+                }
+            };
+
+            // Live, read-only list of the picked job's POs
+            useEffect(() => {
+                setPos([]);
+                if (!jobId) return;
+                const unsub = db.collection('jobs').doc(jobId).collection('forms').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                                    status: d.status || 'Pending', amount: toNumber(d.contractAmount) });
+                    });
+                    list.sort((a, b) => a.category.localeCompare(b.category) || a.poNumber.localeCompare(b.poNumber));
+                    setPos(list);
+                }, error => setMessage('Error loading POs: ' + error.message));
+                return () => unsub();
+            }, [jobId]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -157,36 +469,13 @@
                     setProfile(null);
                     if (!currentUser) return;
                     try {
+                        // Read-only check. New users get their pending record from PO Manager, not here.
                         const snap = await db.collection('users').doc(currentUser.uid).get();
-                        if (snap.exists && snap.data().active === true) {
-                            setProfile({ uid: currentUser.uid, ...snap.data() });
-                            loadJobs(currentUser.uid, snap.data().role);
-                            loadSupervisors();
-                            if (['owner', 'admin', 'estimator'].includes(snap.data().role)) loadSupers();
-                            if (['owner', 'admin'].includes(snap.data().role)) {
-                                db.collection('settings').doc('app').onSnapshot(doc => {
-                                    const d = doc.exists ? (doc.data().msSecretExpires || '') : '';
-                                    setSecretExpires(d);
-                                    setSecretInput(d);
-                                }, error => console.error('Settings error:', error));
-                            }
-                            loadFormLibraryData(currentUser.uid);
-                        } else if (!snap.exists) {
-                            // New person: create their own record as pending (no access until approved)
-                            try {
-                                await db.collection('users').doc(currentUser.uid).set({
-                                    name: currentUser.displayName || currentUser.email || '',
-                                    email: currentUser.email || '',
-                                    role: 'pending',
-                                    active: false,
-                                    requestedAt: new Date()
-                                });
-                                setProfile('pending');
-                            } catch (createErr) {
-                                setProfile(false);
-                            }
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && GPM_ROLES.includes(d.role)) {
+                            setProfile({ uid: currentUser.uid, ...d });
                         } else {
-                            setProfile(snap.data().role === 'pending' ? 'pending' : false);
+                            setProfile(false);
                         }
                     } catch (err) {
                         setProfile(false);
@@ -194,62 +483,20 @@
                 });
             }, []);
 
-            const loadFormLibraryData = (uid) => {
-                db.collection('formLibrary').onSnapshot(snapshot => {
-                    const forms = [];
-                    snapshot.forEach(doc => {
-                        forms.push({ id: doc.id, ...doc.data() });
-                    });
-                    setFormLibraryData(forms);
-                });
-            };
-
-            // Job list: all jobs, or only assigned jobs for Supers. Archived jobs are hidden.
-            const loadJobs = (uid, role) => {
-                let query = db.collection('jobs');
-                if (role === 'super') query = query.where('assignedSupers', 'array-contains', uid);
-                query.onSnapshot(snapshot => {
-                    const jobs = [];
+            // Job list (read-only, same jobs as PO Manager)
+            useEffect(() => {
+                if (!profile) return;
+                const unsub = db.collection('jobs').onSnapshot(snapshot => {
+                    const list = [];
                     snapshot.forEach(doc => {
                         const d = doc.data();
-                        if (d.archived === true) return;
-                        jobs.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', lockBox: d.lockBox || '', assignedSupers: d.assignedSupers || [] });
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', archived: d.archived === true });
                     });
-                    jobs.sort((a, b) => a.code.localeCompare(b.code));
-                    setJobLibrary(jobs);
-                }, error => console.error('Job list error:', error));
-            };
-
-            // Users with the Super role (for assigning to jobs)
-            const loadSupers = () => {
-                db.collection('users').where('role', '==', 'super').onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => { if (doc.data().active === true) list.push({ id: doc.id, name: doc.data().name || doc.data().email }); });
-                    list.sort((a, b) => a.name.localeCompare(b.name));
-                    setSupersList(list);
-                }, error => console.error('Supers list error:', error));
-            };
-
-            // Company-wide Supervisor list, sorted by name
-            const loadSupervisors = () => {
-                db.collection('supervisors').onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
-                    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                    setSupervisorLibrary(list);
-                }, error => console.error('Supervisor list error:', error));
-            };
-
-            const loadJobForms = (jobId) => {
-                if (!user) return;
-                db.collection('jobs').doc(jobId).collection('forms').orderBy('dateCreated', 'desc').onSnapshot(snapshot => {
-                    const forms = [];
-                    snapshot.forEach(doc => {
-                        forms.push({ id: doc.id, ...doc.data() });
-                    });
-                    setJobForms(forms);
-                });
-            };
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                }, error => setMessage('Error loading jobs: ' + error.message));
+                return () => unsub();
+            }, [profile]);
 
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
@@ -262,581 +509,88 @@
                 }
             };
 
-            const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
-            const canEditJobs = !!profile && ['owner', 'admin', 'estimator'].includes(profile.role);
+            const handleLogout = () => auth.signOut();
 
-            const handleSaveSecretDate = async () => {
+            // Pick a job: load its saved GPM inputs, or start blank
+            const handlePickJob = async (id) => {
+                if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
+                setJobId(id);
+                setDirty(false);
+                setMessage('');
+                setLastSaved(null);
+                setExcludedPoIds([]);
+                setNotesEdit(null);
+                setPdfFile(null);
+                setPdfReport(null);
+                setSnapNote('');
+                setOpenSnapId(null);
+                if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
-                    await db.collection('settings').doc('app').set({ msSecretExpires: secretInput }, { merge: true });
-                    setMessage('Secret expiration date saved');
-                } catch (error) {
-                    setMessage('Error saving date: ' + error.message);
-                }
-            };
-
-            const secretDaysLeft = secretExpires
-                ? Math.ceil((new Date(secretExpires + 'T00:00:00') - new Date()) / 86400000)
-                : null;
-
-            const renewalText = `I need to renew the Microsoft sign-in client secret for my Freeman Job Tools web app. It expires on ${secretExpires}.
-
-Setup:
-- Web app: PO Manager, hosted on Netlify (charming-griffin-e1112f.netlify.app), code on GitHub (po-manager/index.html)
-- Firebase project: po-project-ea1ca. Sign-in uses Firebase Authentication with the Microsoft provider.
-- Microsoft Entra app registration: "Freeman Job Tools" (single tenant), tenant ID 977675c3-2808-4305-ac2e-f4418dc1d69c
-- Redirect URI: https://po-project-ea1ca.firebaseapp.com/__/auth/handler
-- Current client secret description: "Firebase"
-
-Please walk me through this one step at a time:
-1. Create a new client secret in Entra (App registrations > Freeman Job Tools > Certificates & secrets), 24 months.
-2. Paste the new secret Value into Firebase (Authentication > Sign-in method > Microsoft > Application secret) and save.
-3. Test Microsoft sign-in in a private/incognito window.
-4. Update the expiration date in the PO Manager app (Users screen > secret expires date).
-5. Only after the test works, delete the old secret in Entra.
-
-I prefer plain, brief instructions, one step at a time.`;
-
-            const handleToggleSuper = async (superId, checked) => {
-                if (!currentJobId) return;
-                const FV = firebase.firestore.FieldValue;
-                try {
-                    await db.collection('jobs').doc(currentJobId).update({
-                        assignedSupers: checked ? FV.arrayUnion(superId) : FV.arrayRemove(superId)
+                    const snap = await db.collection('gpm').doc(id).get();
+                    if (!snap.exists) { setInputs(BLANK_INPUTS); return; }
+                    const d = snap.data();
+                    setExcludedPoIds(Array.isArray(d.excludedPoIds) ? d.excludedPoIds : []);
+                    const loaded = { ...BLANK_INPUTS };
+                    Object.keys(BLANK_INPUTS).forEach(k => {
+                        if (d[k] === undefined || d[k] === null) return;
+                        loaded[k] = NUMBER_FIELDS.includes(k) && k !== 'paFeePct' ? fmtMoney(d[k]) : String(d[k]);
                     });
+                    setInputs(loaded);
+                    if (d.updatedAt) setLastSaved({ name: d.updatedBy?.name || '', at: d.updatedAt.toDate() });
                 } catch (error) {
-                    setMessage('Error assigning Super: ' + error.message);
+                    setMessage('Error loading GPM data: ' + error.message);
                 }
             };
 
-            const handleSaveUser = async (u) => {
-                const edit = userEdits[u.id] || {};
-                const role = edit.role !== undefined ? edit.role : u.role;
-                const active = edit.active !== undefined ? edit.active : u.active === true;
-                try {
-                    await db.collection('users').doc(u.id).update({ role, active, updatedAt: new Date() });
-                    setUserEdits(prev => { const next = { ...prev }; delete next[u.id]; return next; });
-                    setMessage(`Saved ${u.name || u.email}: ${role}${active ? '' : ' (inactive)'}`);
-                } catch (error) {
-                    setMessage('Error saving user: ' + error.message);
-                }
-            };
-
-            const handleLogout = async () => {
-                await auth.signOut();
-                setJobCode('');
-                setJobAddress('');
-                setCityStateZip('');
-                setLockBox('');
-                setSuperName('');
-                setSuperPhone('');
-                setSuperEmail('');
-                setCurrentPO('');
-                setCurrentJobId('');
-                setJobLibrary([]);
-                setSupervisorLibrary([]);
-                setSelectedJobIndex('');
-                setSelectedSupervisorIndex('');
-                setJobForms([]);
-            };
-
-            const handleSaveJob = async () => {
-                if (!user || !jobCode) {
-                    setMessage('Job Code required');
-                    return;
-                }
-                try {
-                    const jobDocRef = await db.collection('jobs').add({
-                        userId: user.uid,
-                        code: jobCode,
-                        address: jobAddress,
-                        cityStateZip,
-                        lockBox,
-                        dateCreated: new Date()
-                    });
-                    
-                    setMessage('Job saved');
-                    setJobCode('');
-                    setJobAddress('');
-                    setCityStateZip('');
-                    setLockBox('');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-            const handleSelectJob = (job) => {
-                setJobCode(job.code);
-                setJobAddress(job.address);
-                setCityStateZip(job.cityStateZip);
-                setLockBox(job.lockBox);
-                
-                // If job has id, use it; otherwise find it by code
-                if (job.id) {
-                    setCurrentJobId(job.id);
-                    loadJobForms(job.id);
-                } else if (job.code && user) {
-                    // Find job by code in jobs collection
-                    db.collection('jobs').where('userId', '==', user.uid)
-                      .where('code', '==', job.code)
-                      .limit(1)
-                      .get()
-                      .then(snapshot => {
-                          if (!snapshot.empty) {
-                              const jobId = snapshot.docs[0].id;
-                              setCurrentJobId(jobId);
-                              loadJobForms(jobId);
-                          } else {
-                              setMessage('Job not found in database');
-                          }
-                      })
-                      .catch(error => {
-                          setMessage('Error loading job: ' + error.message);
-                      });
-                }
-            };
-
-            // Opened from the Dashboard with ?job=ID: load that job once the job list is in
+            // Opened from the Dashboard with ?job=ID: pick that job once the job list is in
             const urlJobId = new URLSearchParams(window.location.search).get('job');
             const urlJobLoaded = React.useRef(false);
             useEffect(() => {
-                if (urlJobLoaded.current || !urlJobId || !user) return;
-                const idx = jobLibrary.findIndex(j => j.id === urlJobId);
-                if (idx === -1) return;
+                if (urlJobLoaded.current || !urlJobId) return;
+                if (!jobs.some(j => j.id === urlJobId)) return;
                 urlJobLoaded.current = true;
-                setSelectedJobIndex(String(idx));
-                handleSelectJob(jobLibrary[idx]);
-            }, [jobLibrary, user]);
+                handlePickJob(urlJobId);
+            }, [jobs]);
 
-            const handleDeleteJob = async (index) => {
-                const job = jobLibrary[index];
-                if (!job || !job.id) return;
-                if (!window.confirm(`Archive job ${job.code}? It will be hidden from the list. Its POs and files are kept.`)) return;
-                try {
-                    await db.collection('jobs').doc(job.id).update({ archived: true });
-                    setMessage('Job archived');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
+            // Warn before leaving the page (Dashboard link, closing the tab) with unsaved changes
+            useEffect(() => {
+                if (!dirty) return;
+                const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+                window.addEventListener('beforeunload', warn);
+                return () => window.removeEventListener('beforeunload', warn);
+            }, [dirty]);
+
+            const setField = (k, v) => { setInputs(prev => ({ ...prev, [k]: v })); setDirty(true); };
+
+            const toggleInclude = (poId, include) => {
+                setExcludedPoIds(prev => include ? prev.filter(id => id !== poId) : [...prev, poId]);
+                setDirty(true);
             };
 
-            const handleSaveSupervisor = async () => {
-                if (!user || !superName) {
-                    setMessage('Supervisor name required');
-                    return;
-                }
-                try {
-                    await db.collection('supervisors').add({
-                        name: superName.trim(),
-                        phone: superPhone.trim(),
-                        email: superEmail.trim(),
-                        dateCreated: new Date()
-                    });
-                    setMessage('Supervisor saved');
-                    setSuperName('');
-                    setSuperPhone('');
-                    setSuperEmail('');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-            const handleSelectSupervisor = (supervisor) => {
-                setSuperName(supervisor.name);
-                setSuperPhone(supervisor.phone);
-                setSuperEmail(supervisor.email);
-            };
-
-            const handleDeleteSupervisor = async (index) => {
-                const sup = supervisorLibrary[index];
-                if (!sup || !sup.id) return;
-                if (!window.confirm(`Remove ${sup.name} from the Supervisor list?`)) return;
-                try {
-                    await db.collection('supervisors').doc(sup.id).delete();
-                    setMessage('Supervisor deleted');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-          const getNextPONumber = async () => {
-    if (!user || !currentJobId) {
-        setMessage('Error: Job not selected');
-        return null;
-    }
-    try {
-        const jobDoc = await db.collection('jobs').doc(currentJobId).get();
-        const currentCounter = (jobDoc.data()?.poCounter || 0) + 1;
-        
-        // Update counter in Firebase
-        await db.collection('jobs').doc(currentJobId).update({
-            poCounter: currentCounter
-        });
-        
-        // Format: JobCode-001
-        const poNumber = `${jobCode}-${String(currentCounter).padStart(3, '0')}`;
-        return poNumber;
-    } catch (error) {
-        setMessage('Error generating PO number: ' + error.message);
-        return null;
-    }
-};
-
-          const handleGeneratePDF = async () => {
-    // Editing a PO that has its own saved header: use it, no job/super selection needed
-    const header = (editingPO && editingPO.header) ? editingPO.header : {
-        jobCode, jobAddress, cityStateZip, lockBox, superName, superEmail, superPhone
-    };
-    if (!currentJobId || !header.jobCode || !header.superName) {
-        setMessage('Select job and supervisor first');
-        return;
-    }
-    if (!formMetadata.subName || !formMetadata.category) {
-        setMessage('Subcontractor and Category required');
-        return;
-    }
-    setUploadLoading(true);
-    try {
-        const poNumber = editingPO ? editingPO.poNumber : await getNextPONumber();
-        if (!poNumber) { setUploadLoading(false); return; }
-
-        const response = await fetch(TEMPLATE_PDF_URL);
-        const arrayBuffer = await response.arrayBuffer();
-        const pdfDoc = await PDFDocument.load(arrayBuffer);
-        const form = pdfDoc.getForm();
-
-        // Amount always shown as $12,345.00 (typed with or without $ or commas)
-        const rawAmount = (formMetadata.contractAmount || '').replace(/[^0-9.]/g, '');
-        const amountNoSign = rawAmount && !isNaN(parseFloat(rawAmount))
-            ? parseFloat(rawAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : '';
-        const amountDisplay = amountNoSign ? `$${amountNoSign}` : '';
-
-        // PDF form field name -> value
-        const values = {
-            'Job Code': header.jobCode,
-            'Job Address': header.jobAddress,
-            'City State Zip': header.cityStateZip,
-            'Lock Box': header.lockBox,
-            'PO': poNumber,
-            'Super': header.superName,
-            'Email': header.superEmail,
-            'Super Phone': header.superPhone,
-            'Subcontractor': formMetadata.subName,
-            'Contact': formMetadata.contact,
-            'Phone': formMetadata.phone,
-            'Email_2': formMetadata.email,
-            'Sub Code': formMetadata.subCode,
-            'Category': formMetadata.category,
-            'Contract Amount': amountDisplay,
-            'Text1': formMetadata.scope
-        };
-        // Match on name with extra spaces ignored (e.g. "City  State  Zip")
-        form.getFields().forEach(field => {
-            const name = field.getName().replace(/\s+/g, ' ').trim();
-            if (values[name] !== undefined && field.setText) {
-                field.setText(values[name] || '');
-            }
-        });
-
-        // Add attachment pages after the PO page, in list order
-        for (const att of attachments) {
-            const bytes = att.file ? await att.file.arrayBuffer() : await (await fetch(att.url)).arrayBuffer();
-            if (att.type === 'application/pdf') {
-                const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-                try { src.getForm().flatten(); } catch (e) { /* no form fields */ }
-                const pages = await pdfDoc.copyPages(src, src.getPageIndices());
-                pages.forEach(p => pdfDoc.addPage(p));
-            } else {
-                const img = att.type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
-                const page = pdfDoc.addPage([612, 792]); // letter size
-                const scale = Math.min(540 / img.width, 720 / img.height, 1);
-                const w = img.width * scale, h = img.height * scale;
-                page.drawImage(img, { x: (612 - w) / 2, y: (792 - h) / 2, width: w, height: h });
-            }
-        }
-
-        const pdfBytes = await pdfDoc.save();
-
-        // Save new attachment files so Edit PO can rebuild with them
-        const savedAttachments = [];
-        for (const att of attachments) {
-            if (att.file) {
-                const attRef = storage.ref(`jobForms/${currentJobId}/att_${Date.now()}_${att.name}`);
-                await attRef.put(att.file);
-                savedAttachments.push({ name: att.name, type: att.type, url: await attRef.getDownloadURL() });
-            } else {
-                savedAttachments.push({ name: att.name, type: att.type, url: att.url });
-            }
-        }
-
-        // File name built from form data
-        const d = new Date();
-        const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
-        const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
-        const fileName = `${clean(formMetadata.category)}_${clean(formMetadata.subName)}_$${clean(amountNoSign)}_${poNumber}_${dateStr}.pdf`;
-
-        const fileRef = storage.ref(`jobForms/${currentJobId}/${Date.now()}_${fileName}`);
-        await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }));
-        const downloadURL = await fileRef.getDownloadURL();
-
-        const poData = {
-            fileName: fileName,
-            pdfUrl: downloadURL,
-            poNumber: poNumber,
-            subName: formMetadata.subName,
-            category: formMetadata.category,
-            contact: formMetadata.contact,
-            phone: formMetadata.phone,
-            email: formMetadata.email,
-            subCode: formMetadata.subCode,
-            contractAmount: formMetadata.contractAmount,
-            scope: formMetadata.scope || '',
-            header: header,
-            attachments: savedAttachments,
-            pdfUpdatedAt: new Date(),
-            dateUpdated: new Date()
-        };
-        const formsRef = db.collection('jobs').doc(currentJobId).collection('forms');
-        const byMe = { uid: user.uid, name: (profile && profile.name) || user.email };
-
-        if (editingPO) {
-            // Replace existing PO: update same row (notes/status kept), remove old file
-            await formsRef.doc(editingPO.id).update({ ...poData, editedBy: byMe, editedAt: new Date() });
-            try { await storage.refFromURL(editingPO.pdfUrl).delete(); } catch (e) { console.log('Old file not removed:', e.message); }
-            // Remove attachment files that were taken off this PO
-            const keptUrls = savedAttachments.map(a => a.url);
-            for (const old of (editingPO.attachments || [])) {
-                if (!keptUrls.includes(old.url)) {
-                    try { await storage.refFromURL(old.url).delete(); } catch (e) { console.log('Old attachment not removed:', e.message); }
-                }
-            }
-            setEditingPO(null);
-            setMessage(`PO updated: ${fileName}`);
-        } else {
-            await formsRef.add({ ...poData, notes: '', status: 'Pending', dateCreated: new Date(), createdBy: byMe });
-            setMessage(`PO created and saved to job: ${fileName}`);
-        }
-
-        setCurrentPO(poNumber);
-        setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
-        setAttachments([]);
-    } catch (error) {
-        setMessage('Error creating PO: ' + error.message);
-    }
-    setUploadLoading(false);
-};
-
-            const handleUseTemplate = (t) => {
-                setEditingPO(null);
-                setAttachments([]);
-                setFormMetadata({
-                    subName: t.subName || '', category: t.category || '', contact: t.contact || '',
-                    phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
-                    contractAmount: t.contractAmount || '', scope: t.scope || ''
+            const handleSave = async () => {
+                if (!jobId) return;
+                const job = jobs.find(j => j.id === jobId);
+                const data = {};
+                Object.keys(BLANK_INPUTS).forEach(k => {
+                    data[k] = NUMBER_FIELDS.includes(k) ? toNumber(inputs[k]) : (inputs[k] || '').trim();
                 });
-                setMessage(`Template loaded: ${t.subName} | ${t.category}`);
-                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
-            };
-
-            const handleSaveTemplate = async () => {
-                if (!user) return;
-                if (!formMetadata.subName || !formMetadata.category) {
-                    setMessage('Subcontractor and Category required');
-                    return;
-                }
-                setUploadLoading(true);
+                const byMe = { uid: user.uid, name: profile.name || user.email };
+                setSaving(true);
                 try {
-                    const templateData = {
-                        userId: user.uid,
-                        subName: formMetadata.subName,
-                        category: formMetadata.category,
-                        contact: formMetadata.contact,
-                        phone: formMetadata.phone,
-                        email: formMetadata.email,
-                        subCode: formMetadata.subCode,
-                        contractAmount: formMetadata.contractAmount,
-                        scope: formMetadata.scope || '',
-                        dateUpdated: new Date()
-                    };
-                    // Same sub + category already saved? Update it instead of adding a duplicate
-                    const existing = formLibraryData.find(f => f.subName === formMetadata.subName && f.category === formMetadata.category);
-                    if (existing) {
-                        await db.collection('formLibrary').doc(existing.id).update(templateData);
-                        setMessage('Template updated');
-                    } else {
-                        await db.collection('formLibrary').add({ ...templateData, dateCreated: new Date() });
-                        setMessage('Template saved');
-                    }
+                    await db.collection('gpm').doc(jobId).set({
+                        ...data,
+                        excludedPoIds,
+                        jobCode: job ? job.code : '',
+                        updatedBy: byMe,
+                        updatedAt: new Date()
+                    }, { merge: true });
+                    setDirty(false);
+                    setLastSaved({ name: byMe.name, at: new Date() });
+                    setMessage('Saved');
                 } catch (error) {
-                    setMessage('Error saving template: ' + error.message);
+                    setMessage('Error saving: ' + error.message);
                 }
-                setUploadLoading(false);
-            };
-
-            const handleDeleteTemplate = async (t) => {
-                if (!window.confirm(`Delete template ${t.subName} | ${t.category}?`)) return;
-                try {
-                    await db.collection('formLibrary').doc(t.id).delete();
-                    if (t.pdfUrl) {
-                        try { await storage.refFromURL(t.pdfUrl).delete(); } catch (e) { console.log('Old template file not removed:', e.message); }
-                    }
-                    setMessage('Template deleted');
-                } catch (error) {
-                    setMessage('Error deleting template: ' + error.message);
-                }
-            };
-
-            // Voice to text (Chrome/Edge). target = 'scope' or a tracker row id; onText gets each spoken phrase
-            const toggleVoice = (target, onText) => {
-                if (listening) {
-                    recognitionRef.current && recognitionRef.current.stop();
-                    if (listening === target) return;
-                }
-                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if (!SR) { setMessage('Voice input not supported in this browser (use Chrome or Edge)'); return; }
-                const rec = new SR();
-                rec.lang = 'en-US';
-                rec.continuous = true;
-                rec.interimResults = false;
-                rec.onresult = (e) => {
-                    let text = '';
-                    for (let i = e.resultIndex; i < e.results.length; i++) {
-                        if (e.results[i].isFinal) text += e.results[i][0].transcript;
-                    }
-                    if (text) onText(text.trim());
-                };
-                rec.onerror = (e) => { setMessage('Voice input error: ' + e.error); };
-                rec.onend = () => setListening(prev => (prev === target ? null : prev));
-                recognitionRef.current = rec;
-                rec.start();
-                setListening(target);
-            };
-
-            const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
-
-            // Capitalize line starts in a textbox as you type, without moving the cursor
-            const capInPlace = (el) => {
-                const fixed = capLines(el.value);
-                if (fixed !== el.value) {
-                    const start = el.selectionStart, end = el.selectionEnd;
-                    el.value = fixed;
-                    el.setSelectionRange(start, end);
-                }
-                return fixed;
-            };
-
-            // Put spoken text where the cursor is in a textbox; returns new text + cursor spot
-            const insertAtCursor = (el, text) => {
-                const cur = el.value || '';
-                const pos = el.selectionStart ?? cur.length;
-                const before = cur.slice(0, pos), after = cur.slice(pos);
-                const sepBefore = before && !/[\s]$/.test(before) ? ' ' : '';
-                const sepAfter = after && !/^[\s]/.test(after) ? ' ' : '';
-                const value = capLines(before + sepBefore + text + sepAfter + after);
-                return { value, pos: (before + sepBefore + text).length };
-            };
-
-            const voiceInto = (ref, setText) => (text) => {
-                const el = ref.current;
-                if (!el) return;
-                const { value, pos } = insertAtCursor(el, text);
-                setText(value);
-                setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
-            };
-
-            const toggleScopeVoice = () => toggleVoice('scope',
-                voiceInto(scopeRef, v => setFormMetadata(prev => ({ ...prev, scope: v }))));
-
-            const toggleNoteVoice = () => toggleVoice('note',
-                voiceInto(noteRef, v => setNoteModal(prev => prev ? { ...prev, text: v } : prev)));
-
-            const closeNoteModal = () => {
-                if (listening === 'note' && recognitionRef.current) recognitionRef.current.stop();
-                setNoteModal(null);
-            };
-
-            const saveNoteModal = async () => {
-                await handleUpdateForm(noteModal.form.id, { notes: noteModal.text });
-                closeNoteModal();
-            };
-
-            const handleEditPO = (form) => {
-                setEditingPO(form);
-                setAttachments(form.attachments || []);
-                setFormMetadata({
-                    subName: form.subName || '', category: form.category || '', contact: form.contact || '',
-                    phone: form.phone || '', email: form.email || '', subCode: form.subCode || '',
-                    contractAmount: form.contractAmount || '', scope: form.scope || ''
-                });
-                setMessage(`Editing PO ${form.poNumber}`);
-                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
-            };
-
-            const handleAddAttachments = (e) => {
-                const allowed = ['application/pdf', 'image/png', 'image/jpeg'];
-                const files = Array.from(e.target.files || []);
-                const bad = files.filter(f => !allowed.includes(f.type));
-                if (bad.length) setMessage('Skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', '));
-                setAttachments(prev => [...prev, ...files.filter(f => allowed.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }))]);
-                e.target.value = '';
-            };
-
-            const moveAttachment = (i, dir) => {
-                setAttachments(prev => {
-                    const list = [...prev];
-                    const j = i + dir;
-                    if (j < 0 || j >= list.length) return prev;
-                    [list[i], list[j]] = [list[j], list[i]];
-                    return list;
-                });
-            };
-
-            const removeAttachment = (i) => setAttachments(prev => prev.filter((_, k) => k !== i));
-
-            const handleCancelEditPO = () => {
-                setEditingPO(null);
-                setAttachments([]);
-                setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
-                setMessage('');
-            };
-
-            const fmtTime = (ts) => {
-                const d = ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null);
-                return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-            };
-
-            const handleSendToSub = async (form) => {
-                if (!form.email) return;
-                if (form.lastEmail && !window.confirm(`Already sent on ${fmtTime(form.lastEmail.sentAt)} to ${form.lastEmail.to} — send again?`)) return;
-                setSendingId(form.id);
-                try {
-                    await functions.httpsCallable('sendPOEmail')({ jobId: currentJobId, formId: form.id });
-                    setMessage(`PO ${form.poNumber} sent to ${form.email}`);
-                } catch (error) {
-                    setMessage('Error sending email: ' + error.message);
-                }
-                setSendingId(null);
-            };
-
-            // Save notes/status straight from the tracker row
-            const handleUpdateForm = async (formId, fields) => {
-                if (!currentJobId) return;
-                try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({ ...fields, dateUpdated: new Date() });
-                } catch (error) {
-                    setMessage('Error updating form: ' + error.message);
-                }
-            };
-
-            const handleDeleteForm = async (formId) => {
-                if (!currentJobId || !window.confirm('Delete this form record?')) return;
-                
-                try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).delete();
-                    setMessage('Form deleted');
-                } catch (error) {
-                    setMessage('Error deleting form: ' + error.message);
-                }
+                setSaving(false);
             };
 
             if (!user) {
@@ -850,505 +604,465 @@ I prefer plain, brief instructions, one step at a time.`;
             }
 
             if (profile === null) {
-                return <div className="section">Loading...</div>;
-            }
-
-            if (profile === 'pending') {
-                return (
-                    <div className="section">
-                        <div className="section-title">WAITING FOR APPROVAL</div>
-                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
-                    </div>
-                );
-            }
-
-            if (profile && profile.role === 'office') {
-                return (
-                    <div className="section">
-                        <div className="section-title">PO MANAGER</div>
-                        <p>Signed in as {user.email}. PO Manager isn't included in your access. The dashboard is coming soon.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
-                    </div>
-                );
+                return <div className="section"><p>Loading...</p></div>;
             }
 
             if (profile === false) {
                 return (
                     <div className="section">
-                        <div className="section-title">ACCOUNT NOT SET UP</div>
-                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
+                        <div className="section-title">NO ACCESS</div>
+                        <p>Signed in as {user.email}. The GPM Tool is only for Owner, Admin and Estimator. Contact an admin if you need access.</p>
                         <button className="btn-secondary" onClick={handleLogout}>Logout</button>
                     </div>
                 );
             }
 
+            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
+
+            const field = (k, labelText, hint, type = 'text') => (
+                <div className="form-group">
+                    <label>{labelText}</label>
+                    <input type={type} value={inputs[k]} onChange={e => setField(k, e.target.value)} />
+                    {hint && <div className="hint">{hint}</div>}
+                </div>
+            );
+
             return (
                 <div>
-                    {isAdminUser && secretDaysLeft !== null && secretDaysLeft <= 60 && (
-                        <div style={{ background: secretDaysLeft < 0 ? '#fdecea' : '#fff7e6', border: '1px solid ' + (secretDaysLeft < 0 ? '#d93025' : '#f0a020'), borderRadius: '6px', padding: '12px 16px', marginBottom: '16px', fontSize: '14px' }}>
-                            <strong>
-                                {secretDaysLeft < 0
-                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
-                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
-                            </strong>
-                            <div style={{ marginTop: '8px' }}>
-                                <button className="btn-secondary" style={{ width: 'auto', padding: '4px 12px' }}
-                                    onClick={() => navigator.clipboard.writeText(renewalText).then(() => setMessage('Renewal instructions copied. Paste them into a new Claude chat.'), () => setMessage('Copy failed. Select the text below and copy it.'))}>
-                                    Copy renewal instructions
-                                </button>
-                            </div>
-                            <details style={{ marginTop: '8px' }}>
-                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
-                                <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px', background: '#fff', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}>{renewalText}</pre>
-                            </details>
-                        </div>
-                    )}
-
-                    {isAdminUser && showUsers && (
-                        <div className="section">
-                            <div className="section-title">USERS</div>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
-                                <thead>
-                                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
-                                        <th style={{ padding: '6px' }}>Name</th>
-                                        <th style={{ padding: '6px' }}>Email</th>
-                                        <th style={{ padding: '6px' }}>Role</th>
-                                        <th style={{ padding: '6px' }}>Active</th>
-                                        <th style={{ padding: '6px' }}></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {usersList.map(u => {
-                                        const isMe = u.id === user.uid;
-                                        const edit = userEdits[u.id] || {};
-                                        const role = edit.role !== undefined ? edit.role : u.role;
-                                        const active = edit.active !== undefined ? edit.active : u.active === true;
-                                        const changed = edit.role !== undefined || edit.active !== undefined;
-                                        return (
-                                            <tr key={u.id} style={{ borderBottom: '1px solid #eee', background: u.role === 'pending' ? '#fff7e6' : 'transparent' }}>
-                                                <td style={{ padding: '6px' }}>
-                                                    {u.name}{isMe ? ' (you)' : ''}
-                                                    {u.role === 'pending' && <div style={{ fontSize: '11px', color: '#cc6600' }}>Waiting for access</div>}
-                                                </td>
-                                                <td style={{ padding: '6px' }}>{u.email}</td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <select value={role} disabled={isMe}
-                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
-                                                        <option value="pending">Pending</option>
-                                                        <option value="owner">Owner</option>
-                                                        <option value="admin">Admin</option>
-                                                        <option value="estimator">Estimator</option>
-                                                        <option value="super">Super</option>
-                                                        <option value="office">Office</option>
-                                                    </select>
-                                                </td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <input type="checkbox" checked={active} disabled={isMe}
-                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
-                                                </td>
-                                                <td style={{ padding: '6px' }}>
-                                                    {!isMe && (
-                                                        <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
-                                                            disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
-                                                    )}
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px', fontSize: '14px' }}>
-                                <span>Microsoft sign-in secret expires:</span>
-                                <input type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} style={{ width: 'auto' }} />
-                                <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
-                                    disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
-                            </div>
-                        </div>
-                    )}
-
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <div className="section-title">JOB DETAILS</div>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                                {isAdminUser && (
-                                    <button className="btn-secondary" onClick={() => setShowUsers(!showUsers)} style={{ width: 'auto' }}>
-                                        {showUsers ? 'Hide Users' : 'Users'}
-                                    </button>
-                                )}
-                                <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                            <p style={{ margin: 0 }}>Signed in as {profile.name || user.email} ({profile.role})</p>
+                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        </div>
+
+                        <div className="section-title">JOB</div>
+                        <div className="form-group">
+                            <select value={jobId} onChange={e => handlePickJob(e.target.value)}>
+                                <option value="">-- Pick a job --</option>
+                                {visibleJobs.map(j => (
+                                    <option key={j.id} value={j.id}>{j.code}{j.address ? ' - ' + j.address : ''}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} style={{ width: 'auto' }} />
+                            Show archived jobs
+                        </label>
+                    </div>
+
+                    {jobId && (<>
+                        <div className="section">
+                            <div className="section-title">SETTLEMENT</div>
+                            <div className="grid">
+                                {field('settlementAmount', 'Settlement amount', 'Total Insurance Obligated to pay, from the statement')}
+                                {field('settlementDate', 'Settlement date', null, 'date')}
+                                {field('deductible', 'Deductible', 'Enter as a positive number')}
+                                {field('paFeePct', 'PA fee %', 'Enter 10 for 10%. Enter 0 if no PA.')}
                             </div>
                         </div>
 
-                        {canEditJobs && (<>
-                        <div className="form-group">
-                            <label>Job Code</label>
-                            <input value={jobCode} onChange={e => setJobCode(e.target.value)} placeholder="Stark W 2602" />
+                        <div className="section">
+                            <div className="section-title">XACTIMATE TOTALS</div>
+                            <div className="grid">
+                                {field('dwellingTotal', 'Dwelling estimate (Replacement Cost Value)')}
+                                {field('otherStructuresTotal', 'Other structures estimate')}
+                                {field('codeUpgradeTotal', 'Code upgrade estimate')}
+                                {field('customerItems', 'Items paid by customer', 'Enter as a positive number. Lowers the amount due Freeman.')}
+                            </div>
                         </div>
-                        <div className="form-group">
-                            <label>Job Address</label>
-                            <input value={jobAddress} onChange={e => setJobAddress(e.target.value)} placeholder="Street address" />
-                        </div>
-                        <div className="form-group">
-                            <label>City / State / Zip</label>
-                            <input value={cityStateZip} onChange={e => setCityStateZip(e.target.value)} placeholder="City, State ZIP" />
-                        </div>
-                        <div className="form-group">
-                            <label>Lock Box</label>
-                            <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
-                        </div>
-                        </>)}
 
-                        {jobLibrary.length > 0 && (
-                            <div className="form-group">
-                                <label>Load Job</label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <select 
-                                        value={selectedJobIndex}
-                                        onChange={e => setSelectedJobIndex(e.target.value)}
-                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
-                                    >
-                                        <option value="">-- Pick a job --</option>
-                                        {jobLibrary.map((job, idx) => (
-                                            <option key={idx} value={idx}>{job.code} - {job.address}</option>
-                                        ))}
-                                    </select>
-                                    <button 
-                                        className="btn-primary" 
-                                        onClick={() => {
-                                            if (selectedJobIndex !== '') handleSelectJob(jobLibrary[parseInt(selectedJobIndex)]);
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedJobIndex === ''}
-                                    >
-                                        (Load)
-                                    </button>
-                                    {canEditJobs && <button 
-                                        className="btn-secondary" 
-                                        onClick={() => {
-                                            if (selectedJobIndex !== '') {
-                                                handleDeleteJob(parseInt(selectedJobIndex));
-                                                setSelectedJobIndex('');
-                                            }
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedJobIndex === ''}
-                                    >
-                                        (Archive)
-                                    </button>}
+                        <div className="section">
+                            <div className="section-title">COVER PAGE DATES</div>
+                            <div className="grid">
+                                {field('agreementDate', 'Agreement date', 'Used for both "agreement dated" lines', 'date')}
+                                <div />
+                                {field('startDate', 'Proposed start date', null, 'date')}
+                                {field('startNote', 'Text after start date')}
+                                {field('completionDate', 'Proposed completion date', null, 'date')}
+                                {field('completionNote', 'Text after completion date')}
+                            </div>
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">POs ({pos.length})</div>
+                            {pos.length === 0
+                                ? <p style={{ color: '#888' }}>No POs on this job yet.</p>
+                                : <div style={{ overflowX: 'auto' }}>
+                                    <table>
+                                        <thead>
+                                            <tr><th>Include</th><th>PO</th><th>Category</th><th>Subcontractor</th><th>Status</th><th style={{ textAlign: 'right' }}>Amount</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            {pos.map(po => {
+                                                const included = !excludedPoIds.includes(po.id);
+                                                const bad = po.amount === null;
+                                                return (
+                                                    <tr key={po.id} style={{ color: included ? '#333' : '#aaa' }}>
+                                                        <td><input type="checkbox" checked={included} onChange={e => toggleInclude(po.id, e.target.checked)} style={{ width: 'auto' }} /></td>
+                                                        <td>{po.poNumber}</td>
+                                                        <td>{po.category}</td>
+                                                        <td>{po.subName}</td>
+                                                        <td>{po.status}</td>
+                                                        <td style={{ textAlign: 'right', color: bad ? '#d32f2f' : undefined, fontWeight: bad ? 600 : undefined }}>
+                                                            {bad ? 'No amount' : $(po.amount)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                  </div>}
+                        </div>
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return (
+                                <div className="section">
+                                    <div className="section-title">RESULTS</div>
+                                    <p style={{ color: '#888' }}>Enter the settlement amount and Xactimate totals to see results.</p>
                                 </div>
-                            </div>
-                        )}
-
-                        {canEditJobs && currentJobId && (() => {
-                            const job = jobLibrary.find(j => j.id === currentJobId);
-                            if (!job) return null;
+                            );
+                            const onTarget = r.gpm >= TARGET_GPM;
+                            const row = (label, value, strong) => (
+                                <tr style={strong ? { fontWeight: 700 } : undefined}>
+                                    <td>{label}</td><td style={{ textAlign: 'right' }}>{value}</td>
+                                </tr>
+                            );
                             return (
-                                <div className="form-group">
-                                    <label>Assigned Supers ({job.code})</label>
-                                    {supersList.length === 0
-                                        ? <div style={{ fontSize: '13px', color: '#888' }}>No active Supers yet. Set someone's role to Super in Users.</div>
-                                        : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-                                            {supersList.map(sup => (
-                                                <label key={sup.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
-                                                    <input type="checkbox" checked={job.assignedSupers.includes(sup.id)}
-                                                        onChange={e => handleToggleSuper(sup.id, e.target.checked)} />
-                                                    {sup.name}
-                                                </label>
-                                            ))}
-                                          </div>}
+                                <div className="section">
+                                    <div className="section-title">RESULTS ({r.over ? 'over settlement' : 'under settlement'})</div>
+                                    <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '15px' }}>
+                                        <div style={{ flex: 1, minWidth: '200px', padding: '15px', borderRadius: '6px', background: onTarget ? '#e8f5e9' : '#fdecea', border: '1px solid ' + (onTarget ? '#388e3c' : '#d32f2f') }}>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>GPM</div>
+                                            <div style={{ fontSize: '28px', fontWeight: 700, color: onTarget ? '#2e7d32' : '#c62828' }}>{pct(r.gpm)}</div>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>
+                                                Target {pct(TARGET_GPM)} ({r.gpm - TARGET_GPM >= 0 ? '+' : ''}{((r.gpm - TARGET_GPM) * 100).toFixed(1)} pts)
+                                            </div>
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: '200px', padding: '15px', borderRadius: '6px', background: '#f9f9f9', border: '1px solid #ddd' }}>
+                                            <div style={{ fontSize: '13px', color: '#555' }}>{r.difference >= 0 ? 'Customer pays extra' : 'Customer credit'}</div>
+                                            <div style={{ fontSize: '28px', fontWeight: 700 }}>{$(Math.abs(r.difference))}</div>
+                                        </div>
+                                    </div>
+                                    <table>
+                                        <tbody>
+                                            {row('Net settlement (settlement - deductible)', $(r.netSettlement))}
+                                            {row('Settlement after PA fee', $(r.settlementAfterPA))}
+                                            {row('Customer Estimate (dwelling + other structures + code upgrade)', $(r.ce))}
+                                            {row(`PA fee - courtesy discount (${pct(r.pa)} of ${r.over ? 'net settlement' : 'Customer Estimate'})`, $(-r.paFee))}
+                                            {row('Items paid by customer', $(-r.customerItems))}
+                                            {row('Selling price (amount due Freeman Restoration)', $(r.sellingPrice), true)}
+                                            {row(`POs included (${pos.filter(p => !excludedPoIds.includes(p.id)).length} of ${pos.length})`, $(r.poTotal))}
+                                            {row(`In-house labor (${pct(IN_HOUSE_LABOR_PCT)} of selling price)`, $(r.inHouseLabor))}
+                                            {row('Job cost', $(r.jobCost), true)}
+                                            {row('Gross profit', $(r.grossProfit), true)}
+                                        </tbody>
+                                    </table>
                                 </div>
                             );
                         })()}
 
-                        {canEditJobs && <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>}
-                    </div>
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
+                            const canSnap = !dirty && !!lastSaved && !snapSaving;
 
-                    <div className="section">
-                        <div className="section-title">SUPERVISOR</div>
+                            const saveSnapshot = async () => {
+                                if (!window.confirm('Save a permanent snapshot of this job\'s starting point? Snapshots cannot be changed or deleted.')) return;
+                                setSnapSaving(true);
+                                try {
+                                    const savedInputs = {};
+                                    Object.keys(BLANK_INPUTS).forEach(k => { savedInputs[k] = NUMBER_FIELDS.includes(k) ? toNumber(inputs[k]) : (inputs[k] || '').trim(); });
+                                    const round2 = (n) => Math.round(n * 100) / 100;
+                                    const job = jobs.find(j => j.id === jobId);
+                                    await db.collection('gpm').doc(jobId).collection('snapshots').add({
+                                        savedAt: new Date(),
+                                        savedBy: { uid: user.uid, name: profile.name || user.email },
+                                        note: snapNote.trim(),
+                                        jobCode: job ? job.code : '',
+                                        inputs: savedInputs,
+                                        rates: { inHouseLaborPct: IN_HOUSE_LABOR_PCT, targetGpm: TARGET_GPM },
+                                        pos: pos.map(p => ({ id: p.id, poNumber: p.poNumber, category: p.category, subName: p.subName, status: p.status, amount: p.amount, included: !excludedPoIds.includes(p.id) })),
+                                        results: {
+                                            over: r.over, customerEstimate: round2(r.ce), paFee: round2(r.paFee), customerItems: round2(r.customerItems),
+                                            sellingPrice: round2(r.sellingPrice), poTotal: round2(r.poTotal), inHouseLabor: round2(r.inHouseLabor),
+                                            jobCost: round2(r.jobCost), grossProfit: round2(r.grossProfit), gpm: r.gpm, difference: round2(r.difference)
+                                        },
+                                        notesText: notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, inputs)
+                                    });
+                                    setSnapNote('');
+                                    setMessage('Snapshot saved');
+                                } catch (error) {
+                                    setMessage('Error saving snapshot: ' + error.message);
+                                }
+                                setSnapSaving(false);
+                            };
 
-                        {supervisorLibrary.length > 0 && (
-                            <div className="form-group">
-                                <label>Load Supervisor</label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <select 
-                                        value={selectedSupervisorIndex}
-                                        onChange={e => setSelectedSupervisorIndex(e.target.value)}
-                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
-                                    >
-                                        <option value="">-- Pick a supervisor --</option>
-                                        {supervisorLibrary.map((sup, idx) => (
-                                            <option key={idx} value={idx}>{sup.name}</option>
-                                        ))}
-                                    </select>
-                                    <button 
-                                        className="btn-primary" 
-                                        onClick={() => {
-                                            if (selectedSupervisorIndex !== '') handleSelectSupervisor(supervisorLibrary[parseInt(selectedSupervisorIndex)]);
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedSupervisorIndex === ''}
-                                    >
-                                        (Load)
-                                    </button>
-                                    {canEditJobs && <button 
-                                        className="btn-secondary" 
-                                        onClick={() => {
-                                            if (selectedSupervisorIndex !== '') {
-                                                handleDeleteSupervisor(parseInt(selectedSupervisorIndex));
-                                                setSelectedSupervisorIndex('');
-                                            }
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedSupervisorIndex === ''}
-                                    >
-                                        (Delete)
-                                    </button>}
+                            const when = (ts) => ts && ts.toDate ? ts.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : '';
+                            const cmpRow = (label, then, now, fmt) => {
+                                const diff = now - then;
+                                return (
+                                    <tr key={label}>
+                                        <td>{label}</td>
+                                        <td style={{ textAlign: 'right' }}>{fmt(then)}</td>
+                                        <td style={{ textAlign: 'right' }}>{fmt(now)}</td>
+                                        <td style={{ textAlign: 'right', color: Math.abs(diff) < 0.005 ? '#888' : undefined }}>
+                                            {fmt === pct ? `${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)} pts` : $(diff)}
+                                        </td>
+                                    </tr>
+                                );
+                            };
+
+                            return (
+                                <div className="section">
+                                    <div className="section-title">SNAPSHOTS ({snapshots.length})</div>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                        <input value={snapNote} onChange={e => setSnapNote(e.target.value)} placeholder="Note (optional), e.g. Start of job" style={{ flex: 1 }} />
+                                        <button className="btn-primary" style={{ width: 'auto', whiteSpace: 'nowrap' }} onClick={saveSnapshot} disabled={!canSnap}>
+                                            {snapSaving ? 'Saving...' : 'Save snapshot'}
+                                        </button>
+                                    </div>
+                                    {!canSnap && !snapSaving && <div className="hint">{dirty ? 'Save your changes first.' : 'Save this job at least once first.'}</div>}
+
+                                    {snapshots.length > 0 && (
+                                        <div style={{ overflowX: 'auto', marginTop: '12px' }}>
+                                            <table>
+                                                <thead>
+                                                    <tr><th>Saved</th><th>By</th><th>Note</th><th style={{ textAlign: 'right' }}>Selling price</th><th style={{ textAlign: 'right' }}>Job cost</th><th style={{ textAlign: 'right' }}>GPM</th></tr>
+                                                </thead>
+                                                <tbody>
+                                                    {snapshots.map((sn, i) => {
+                                                        const res = sn.results || {};
+                                                        const open = openSnapId === sn.id;
+                                                        return (
+                                                            <React.Fragment key={sn.id}>
+                                                                <tr onClick={() => setOpenSnapId(open ? null : sn.id)} style={{ cursor: 'pointer', background: open ? '#f7fbff' : undefined }}>
+                                                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                                                        {open ? '▾ ' : '▸ '}{when(sn.savedAt)}
+                                                                        {i === 0 && <span style={{ marginLeft: '6px', padding: '1px 6px', borderRadius: '10px', background: '#0066cc', color: 'white', fontSize: '11px' }}>Baseline</span>}
+                                                                    </td>
+                                                                    <td>{sn.savedBy ? sn.savedBy.name : ''}</td>
+                                                                    <td>{sn.note}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{$(res.sellingPrice || 0)}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{$(res.jobCost || 0)}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{pct(res.gpm || 0)}</td>
+                                                                </tr>
+                                                                {open && (
+                                                                    <tr><td colSpan={6} style={{ background: '#f7fbff' }}>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>Then vs now</div>
+                                                                        <table style={{ marginBottom: '12px' }}>
+                                                                            <thead><tr><th></th><th style={{ textAlign: 'right' }}>Snapshot</th><th style={{ textAlign: 'right' }}>Now</th><th style={{ textAlign: 'right' }}>Change</th></tr></thead>
+                                                                            <tbody>
+                                                                                {cmpRow('Selling price', res.sellingPrice || 0, r.sellingPrice, $)}
+                                                                                {cmpRow('POs included', res.poTotal || 0, r.poTotal, $)}
+                                                                                {cmpRow('In-house labor', res.inHouseLabor || 0, r.inHouseLabor, $)}
+                                                                                {cmpRow('Job cost', res.jobCost || 0, r.jobCost, $)}
+                                                                                {cmpRow('Gross profit', res.grossProfit || 0, r.grossProfit, $)}
+                                                                                {cmpRow('GPM', res.gpm || 0, r.gpm, pct)}
+                                                                            </tbody>
+                                                                        </table>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>POs in snapshot ({(sn.pos || []).filter(p => p.included).length} of {(sn.pos || []).length} included)</div>
+                                                                        <table style={{ marginBottom: '12px' }}>
+                                                                            <tbody>
+                                                                                {(sn.pos || []).map(p => (
+                                                                                    <tr key={p.id} style={{ color: p.included ? '#333' : '#aaa' }}>
+                                                                                        <td>{p.poNumber}</td><td>{p.category}</td><td>{p.subName}</td><td>{p.status}</td>
+                                                                                        <td style={{ textAlign: 'right' }}>{p.amount === null || p.amount === undefined ? 'No amount' : $(p.amount)}{p.included ? '' : ' (excluded)'}</td>
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>Summary notes in snapshot</div>
+                                                                        <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '12px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>{sn.notesText || ''}</pre>
+                                                                    </td></tr>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
                                 </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
+                            const generated = buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
+                            const text = notesEdit !== null ? notesEdit : generated;
+                            const copy = () => navigator.clipboard.writeText(text).then(
+                                () => setMessage('Summary notes copied'),
+                                () => setMessage('Error: copy failed. Select the text and copy it.'));
+                            return (
+                                <div className="section">
+                                    <div className="section-title">SUMMARY NOTES ({r.over ? 'over settlement' : 'under settlement'})</div>
+                                    <textarea value={text} onChange={e => setNotesEdit(e.target.value)} rows={Math.max(8, text.split('\n').length + 1)}
+                                        style={{ width: '100%', fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', whiteSpace: 'pre' }} />
+                                    <div className="hint">Edits here are for this copy only and are not saved. Changing the numbers above rebuilds the notes unless you've edited them.</div>
+                                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                        <button className="btn-primary" style={{ width: 'auto' }} onClick={copy}>Copy notes</button>
+                                        {notesEdit !== null && <button className="btn-secondary" onClick={() => setNotesEdit(null)}>Reset to generated</button>}
+                                        <div style={{ flex: 1 }} />
+                                        {!layoutDraft && <button className="btn-secondary" onClick={() => { setLayoutDraft(JSON.parse(JSON.stringify(layout))); setLayoutTab(r.over ? 'over' : 'under'); }}>Edit notes layout</button>}
+                                    </div>
+                                    {layoutInfo && !layoutDraft && <div className="hint" style={{ textAlign: 'right', marginTop: '4px' }}>
+                                        Layout last changed by {layoutInfo.name} {layoutInfo.at.toLocaleDateString('en-US')}</div>}
+
+                                    {layoutDraft && (
+                                        <div style={{ marginTop: '15px', padding: '15px', border: '1px solid #0066cc', borderRadius: '6px', background: '#f7fbff' }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '4px' }}>Notes layout (applies to all jobs)</div>
+                                            <div className="hint" style={{ marginBottom: '10px' }}>{'{date}'} = settlement date, {'{pa}'} = PA fee %. Nothing changes until you click Save layout.</div>
+                                            <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                                                {['over', 'under'].map(t => (
+                                                    <button key={t} className={layoutTab === t ? 'btn-primary' : 'btn-secondary'} style={{ width: 'auto' }} onClick={() => setLayoutTab(t)}>
+                                                        {t === 'over' ? 'Over settlement' : 'Under settlement'}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div style={{ overflowX: 'auto' }}>
+                                            <table>
+                                                <thead>
+                                                    <tr><th>Amount</th><th>Label</th><th title="Hide when no PA fee">No PA: hide</th><th title="Hide when no customer items">No items: hide</th><th></th></tr>
+                                                </thead>
+                                                <tbody>
+                                                    {layoutDraft[layoutTab].map((l, i) => (
+                                                        <tr key={i}>
+                                                            <td style={{ minWidth: '190px' }}>
+                                                                <select value={l.amount} onChange={e => editLine(i, { amount: e.target.value })}>
+                                                                    {AMOUNT_OPTIONS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+                                                                </select>
+                                                            </td>
+                                                            <td style={{ minWidth: '240px' }}><input value={l.label} onChange={e => editLine(i, { label: e.target.value })} placeholder="(blank)" /></td>
+                                                            <td style={{ textAlign: 'center' }}><input type="checkbox" checked={l.paOnly} onChange={e => editLine(i, { paOnly: e.target.checked })} style={{ width: 'auto' }} /></td>
+                                                            <td style={{ textAlign: 'center' }}><input type="checkbox" checked={l.itemsOnly} onChange={e => editLine(i, { itemsOnly: e.target.checked })} style={{ width: 'auto' }} /></td>
+                                                            <td style={{ whiteSpace: 'nowrap' }}>
+                                                                <button className="btn-secondary" style={{ padding: '4px 8px' }} onClick={() => moveLine(i, -1)} disabled={i === 0}>↑</button>{' '}
+                                                                <button className="btn-secondary" style={{ padding: '4px 8px' }} onClick={() => moveLine(i, 1)} disabled={i === layoutDraft[layoutTab].length - 1}>↓</button>{' '}
+                                                                <button style={{ padding: '4px 8px', background: '#d32f2f', color: 'white' }} onClick={() => removeLine(i)}>✕</button>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                                <button className="btn-secondary" onClick={() => addLine(false)}>+ Add line</button>
+                                                <button className="btn-secondary" onClick={() => addLine(true)}>+ Blank line</button>
+                                            </div>
+                                            <div style={{ fontWeight: 600, margin: '15px 0 5px', fontSize: '13px' }}>
+                                                Preview ({layoutTab === 'over' ? 'over' : 'under'} settlement, using this job's numbers)
+                                            </div>
+                                            <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
+                                                {buildNotes(layoutDraft[layoutTab], r, inputs) || '(empty)'}
+                                            </pre>
+                                            <div style={{ margin: '15px 0 5px' }}>
+                                                <a href="#" style={{ fontSize: '13px', color: '#0066cc' }} onClick={e => { e.preventDefault(); setShowPlacement(!showPlacement); }}>
+                                                    {showPlacement ? '▾ Hide PDF placement' : '▸ Show PDF placement'}
+                                                </a>
+                                            </div>
+                                            {showPlacement && (<>
+                                            <div className="hint" style={{ marginBottom: '8px' }}>Applies to over and under. In points: 72 pt = 1 inch. Column positions are measured from the left edge of the Xactimate labels.</div>
+                                            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr' }}>
+                                                {[['gap', 'Space below Due Freeman row'], ['amountRight', 'Amounts column right edge'], ['labelLeft', 'Labels column start'], ['lineHeight', 'Line spacing']].map(([k, t]) => {
+                                                    const pl = { ...DEFAULT_PLACEMENT, ...(layoutDraft.placement || {}) };
+                                                    return (
+                                                        <div key={k} className="form-group">
+                                                            <label>{t}</label>
+                                                            <input type="number" step="1" value={pl[k]}
+                                                                onChange={e => { const v = parseFloat(e.target.value); setLayoutDraft(prev => ({ ...prev, placement: { ...DEFAULT_PLACEMENT, ...(prev.placement || {}), [k]: isNaN(v) ? DEFAULT_PLACEMENT[k] : v } })); }} />
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            </>)}
+                                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                                <button className="btn-primary" style={{ width: 'auto' }} onClick={saveLayout}>Save layout</button>
+                                                <button className="btn-secondary" onClick={() => setLayoutDraft(null)}>Cancel</button>
+                                                <div style={{ flex: 1 }} />
+                                                <button className="btn-secondary" onClick={() => { if (window.confirm('Put both layouts back to the original wording? (Not saved until you click Save layout.)')) setLayoutDraft(JSON.parse(JSON.stringify(DEFAULT_LAYOUT))); }}>Reset to default</button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
+                            const job = jobs.find(j => j.id === jobId);
+                            const d = new Date();
+                            const fileName = `CES_$${fmtMoney(r.sellingPrice)}_${(job ? job.code : '').trim()}_${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}.pdf`;
+                            const makePdf = async () => {
+                                setPdfBusy(true);
+                                setPdfReport(null);
+                                try {
+                                    const bytes = new Uint8Array(await pdfFile.arrayBuffer());
+                                    const notesText = notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
+                                    const dateAndNote = (d, n) => [fmtDate(d), (n || '').trim()].filter(Boolean).join(' ');
+                                    const cover = {
+                                        agreementDate: fmtDate(inputs.agreementDate),
+                                        startText: inputs.startDate ? dateAndNote(inputs.startDate, inputs.startNote) : '',
+                                        completionText: inputs.completionDate ? dateAndNote(inputs.completionDate, inputs.completionNote) : ''
+                                    };
+                                    const out = await relabelXactimatePdf(bytes, PDFLib, pdfjsLib, { lines: parseNotes(notesText), placement: layout.placement }, cover);
+                                    const url = URL.createObjectURL(new Blob([out.bytes], { type: 'application/pdf' }));
+                                    const a = document.createElement('a');
+                                    a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+                                    setTimeout(() => URL.revokeObjectURL(url), 10000);
+                                    setPdfReport(out.report);
+                                    setMessage(out.report.some(e => e.missing.length) ? 'PDF created, but some labels were not found (see below)' : 'PDF created: ' + fileName);
+                                } catch (error) {
+                                    setMessage('Error creating PDF: ' + error.message);
+                                }
+                                setPdfBusy(false);
+                            };
+                            return (
+                                <div className="section">
+                                    <div className="section-title">XACTIMATE PDF</div>
+                                    <p style={{ fontSize: '13px', color: '#555' }}>Pick the full Xactimate PDF. Fills in the cover page dates, relabels the summary pages, and adds the summary notes (as shown above) to the Dwelling summary page. The file stays on your computer; nothing is uploaded.</p>
+                                    <input type="file" accept="application/pdf" onChange={e => { setPdfFile(e.target.files[0] || null); setPdfReport(null); }} />
+                                    <button className="btn-primary" style={{ marginTop: '10px' }} onClick={makePdf} disabled={!pdfFile || pdfBusy}>
+                                        {pdfBusy ? 'Working...' : 'Create CES PDF'}
+                                    </button>
+                                    <div className="hint" style={{ textAlign: 'center', marginTop: '4px' }}>Downloads as {fileName}</div>
+                                    {pdfReport && (
+                                        <div style={{ marginTop: '10px', fontSize: '13px' }}>
+                                            {pdfReport.map(e => (
+                                                <div key={e.heading + e.page} style={{ marginBottom: '6px' }}>
+                                                    <strong>{e.heading}</strong>{e.page ? ` (page ${e.page})` : ''}:{' '}
+                                                    {e.done.length ? e.done.join('; ') : 'nothing changed'}
+                                                    {e.missing.length > 0 && <div style={{ color: '#d32f2f' }}>Not found: {e.missing.join(', ')}</div>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
+                            {saving ? 'Saving...' : 'Save'}
+                        </button>
+                        {lastSaved && (
+                            <div className="hint" style={{ textAlign: 'center', marginTop: '8px' }}>
+                                Last saved by {lastSaved.name} {lastSaved.at.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                             </div>
                         )}
+                    </>)}
 
-                        <div className="form-group">
-                            <label>Super Name</label>
-                            <input value={superName} onChange={e => setSuperName(e.target.value)} placeholder="Supervisor name" />
-                        </div>
-                        <div className="form-group">
-                            <label>Super Phone</label>
-                            <input value={superPhone} onChange={e => setSuperPhone(e.target.value)} placeholder="Phone" />
-                        </div>
-                        <div className="form-group">
-                            <label>Super Email</label>
-                            <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
-                        </div>
-
-                        {canEditJobs && <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>}
-                    </div>
-
-                    <div className="section" id="generate-po-section">
-                        <div className="section-title">GENERATE PO</div>
-                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px' }}>
-                            Job: {jobCode || '(none)'} | Super: {superName || '(none)'}<br/>
-                            {currentPO && <strong>Last PO: {currentPO}</strong>}
-                            {editingPO && <div style={{ color: '#cc6600', fontWeight: 600, marginTop: '4px' }}>Editing PO: {editingPO.poNumber}</div>}
-                        </div>
-                        <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginBottom: '15px' }}>
-                            New Blank PO
-                        </button>
-                        <div className="form-group"><label>Subcontractor</label>
-                            <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
-                        <div className="form-group"><label>Contact</label>
-                            <input value={formMetadata.contact || ''} onChange={e => setFormMetadata({ ...formMetadata, contact: e.target.value })} /></div>
-                        <div className="form-group"><label>Phone</label>
-                            <input value={formMetadata.phone || ''} onChange={e => setFormMetadata({ ...formMetadata, phone: e.target.value })} /></div>
-                        <div className="form-group"><label>Email</label>
-                            <input value={formMetadata.email || ''} onChange={e => setFormMetadata({ ...formMetadata, email: e.target.value })} /></div>
-                        <div className="form-group"><label>Sub Code</label>
-                            <input value={formMetadata.subCode || ''} onChange={e => setFormMetadata({ ...formMetadata, subCode: e.target.value })} /></div>
-                        <div className="form-group"><label>Category</label>
-                            <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
-                        <div className="form-group"><label>Contract Amount</label>
-                            <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
-                        <div className="form-group"><label>Scope of Work
-                            <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
-                                {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
-                            </button></label>
-                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
-
-                        <div className="form-group">
-                            <label>Attachments (added after the PO page)
-                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', cursor: 'pointer' }}>
-                                    + Add Files
-                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={handleAddAttachments} style={{ display: 'none' }} />
-                                </label>
-                            </label>
-                            {attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
-                            {attachments.map((att, i) => (
-                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
-                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
-                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}</span>
-                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, -1)} disabled={i === 0}>↑</button>
-                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, 1)} disabled={i === attachments.length - 1}>↓</button>
-                                    <button type="button" className="btn-danger btn-sm" style={{ width: 'auto' }} onClick={() => removeAttachment(i)}>✕</button>
-                                </div>
-                            ))}
-                        </div>
-
-                        <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
-                            {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
-                        </button>
-                        {canEditJobs && <button className="btn-secondary" onClick={async () => { await handleSaveTemplate(); await handleGeneratePDF(); }} disabled={uploadLoading || !currentJobId} style={{ marginTop: '8px' }}>
-                            {editingPO ? 'Save Changes + Update Template' : 'Create PO & Save to Template + Job'}
-                        </button>}
-                        {editingPO && (
-                            <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
-                        )}
-                        {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
-                    </div>
-
-                    {currentJobId && jobForms.length > 0 && (
-                        <div className="section">
-                            <div className="section-title">JOB FORM COMPLETION TRACKER</div>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>File</th>
-                                        <th>Notes</th>
-                                        <th>Status</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {[...jobForms]
-                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
-                                        .map(form => {
-                                            const status = (form.status === 'Complete' || form.status === 'Completed') ? 'Complete'
-                                                : form.status === 'Revised' ? 'Revised' : 'Pending';
-                                            return (
-                                                <tr key={form.id}>
-                                                    <td>
-                                                        {form.fileName}
-                                                        {(form.createdBy || form.editedBy) && (
-                                                            <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
-                                                                {[
-                                                                    form.createdBy && `Created by ${form.createdBy.name}`,
-                                                                    form.editedBy && `Edited by ${form.editedBy.name} ${form.editedAt && form.editedAt.toDate ? form.editedAt.toDate().toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : ''}`
-                                                                ].filter(Boolean).join(' · ')}
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                    <td>
-                                                        <button type="button" className="btn-secondary btn-sm"
-                                                            onClick={() => setNoteModal({ form, text: form.notes || '' })}
-                                                            title={form.notes || ''}
-                                                            style={{ width: 'auto', textAlign: 'left', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                            📝 {form.notes ? form.notes.split('\n')[0] : 'Add note'}
-                                                        </button>
-                                                    </td>
-                                                    <td>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Pending'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Pending' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Pending
-                                                        </label>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Complete'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Complete' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Complete
-                                                        </label>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Revised'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Revised' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Revised
-                                                        </label>
-                                                    </td>
-                                                    <td>
-                                                        <div className="button-group" style={{ gap: '4px' }}>
-                                                            {form.poNumber && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
-                                                            <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
-                                                            <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>
-                                                        </div>
-                                                        {form.poNumber && (
-                                                            <button className="btn-primary btn-sm" style={{ width: 'auto', marginTop: '4px' }}
-                                                                onClick={() => handleSendToSub(form)}
-                                                                disabled={!form.email || sendingId === form.id}
-                                                                title={form.email ? `Email to ${form.email}` : 'No sub email on this PO'}>
-                                                                {sendingId === form.id ? 'Sending...' : 'Send to Sub'}
-                                                            </button>
-                                                        )}
-                                                        {form.lastEmail && (() => {
-                                                            const e = form.lastEmail;
-                                                            const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
-                                                            const label = e.status === 'Delivered' ? `Delivered ${fmtTime(e.statusAt)} ✓`
-                                                                : e.status === 'Bounced' ? `Bounced ${fmtTime(e.statusAt)} ✗`
-                                                                : `Sent ${fmtTime(e.sentAt)}`;
-                                                            const changed = form.pdfUpdatedAt && e.sentAt && form.pdfUpdatedAt.toMillis() > e.sentAt.toMillis();
-                                                            const history = (form.emailHistory || []).map(h =>
-                                                                `${h.to} | Sent ${fmtTime(h.sentAt)} | ${h.status}${h.statusAt ? ' ' + fmtTime(h.statusAt) : ''}${h.detail ? ' (' + h.detail + ')' : ''}`).join('\n');
-                                                            return (
-                                                                <div title={history} style={{ fontSize: '11px', marginTop: '4px', cursor: 'help' }}>
-                                                                    <div style={{ color, fontWeight: 600 }}>{label}</div>
-                                                                    {changed && <div style={{ color: '#cc6600', fontWeight: 600 }}>Changed since sent</div>}
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    {noteModal && (
-                        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-                            <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
-                                <div style={{ fontWeight: 700, marginBottom: '4px' }}>Notes</div>
-                                <div style={{ fontSize: '12px', color: '#666', marginBottom: '10px', wordBreak: 'break-all' }}>{noteModal.form.fileName}</div>
-                                <textarea
-                                    ref={noteRef}
-                                    rows="15"
-                                    autoFocus
-                                    value={noteModal.text}
-                                    onChange={e => { const v = capInPlace(e.target); setNoteModal(prev => ({ ...prev, text: v })); }}
-                                    placeholder="Type or use Voice..."
-                                    style={{ width: '100%' }}
-                                />
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                    <button type="button" className={listening === 'note' ? 'btn-danger' : 'btn-secondary'} onClick={toggleNoteVoice} style={{ width: 'auto' }}>
-                                        {listening === 'note' ? '■ Stop' : '🎤 Voice'}
-                                    </button>
-                                    <div style={{ flex: 1 }} />
-                                    <button type="button" className="btn-secondary" onClick={closeNoteModal} style={{ width: 'auto' }}>Cancel</button>
-                                    <button type="button" className="btn-primary" onClick={saveNoteModal} style={{ width: 'auto' }}>Save</button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {formLibraryData.length > 0 && (
-                        <div className="section">
-                            <div className="section-title">TEMPLATE LIBRARY</div>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Category</th>
-                                        <th>Subcontractor</th>
-                                        <th>Contract Amount</th>
-                                        <th>Last Updated</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {[...formLibraryData]
-                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
-                                        .map(t => {
-                                            const d = t.dateUpdated || t.dateCreated;
-                                            return (
-                                                <tr key={t.id}>
-                                                    <td>{t.category}</td>
-                                                    <td>{t.subName}</td>
-                                                    <td>{t.contractAmount || '-'}</td>
-                                                    <td>{d && d.toDate ? d.toDate().toLocaleDateString() : '-'}</td>
-                                                    <td>
-                                                        <div className="button-group" style={{ gap: '4px' }}>
-                                                            <button className="btn-secondary btn-sm" onClick={() => handleUseTemplate(t)}>Use</button>
-                                                            {canEditJobs && <button className="btn-danger btn-sm" onClick={() => handleDeleteTemplate(t)}>Delete</button>}
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
+                    {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
                 </div>
             );
         }
 
-        ReactDOM.render(<POApp />, document.getElementById('app'));
+        ReactDOM.render(<GPMApp />, document.getElementById('app'));
     </script>
 </body>
 </html>
