@@ -384,6 +384,23 @@
             const [pdfFile, setPdfFile] = useState(null);     // Xactimate PDF picked for relabeling (stays in the browser)
             const [pdfBusy, setPdfBusy] = useState(false);
             const [pdfReport, setPdfReport] = useState(null); // what was changed / not found
+            const [showPlacement, setShowPlacement] = useState(false); // PDF placement settings collapsed by default
+            const [snapshots, setSnapshots] = useState([]);   // this job's saved snapshots, newest first
+            const [snapNote, setSnapNote] = useState('');
+            const [snapSaving, setSnapSaving] = useState(false);
+            const [openSnapId, setOpenSnapId] = useState(null);
+
+            // Live list of the picked job's snapshots (read-only once saved)
+            useEffect(() => {
+                setSnapshots([]);
+                if (!jobId) return;
+                const unsub = db.collection('gpm').doc(jobId).collection('snapshots').orderBy('savedAt', 'desc').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setSnapshots(list);
+                }, error => setMessage('Error loading snapshots: ' + error.message));
+                return () => unsub();
+            }, [jobId]);
 
             useEffect(() => {
                 if (!profile) return;
@@ -502,6 +519,8 @@
                 setNotesEdit(null);
                 setPdfFile(null);
                 setPdfReport(null);
+                setSnapNote('');
+                setOpenSnapId(null);
                 if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
                     const snap = await db.collection('gpm').doc(id).get();
@@ -727,6 +746,132 @@
                             const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
                             const r = calcGPM(inputs, poTotal);
                             if (!r) return null;
+                            const canSnap = !dirty && !!lastSaved && !snapSaving;
+
+                            const saveSnapshot = async () => {
+                                if (!window.confirm('Save a permanent snapshot of this job\'s starting point? Snapshots cannot be changed or deleted.')) return;
+                                setSnapSaving(true);
+                                try {
+                                    const savedInputs = {};
+                                    Object.keys(BLANK_INPUTS).forEach(k => { savedInputs[k] = NUMBER_FIELDS.includes(k) ? toNumber(inputs[k]) : (inputs[k] || '').trim(); });
+                                    const round2 = (n) => Math.round(n * 100) / 100;
+                                    const job = jobs.find(j => j.id === jobId);
+                                    await db.collection('gpm').doc(jobId).collection('snapshots').add({
+                                        savedAt: new Date(),
+                                        savedBy: { uid: user.uid, name: profile.name || user.email },
+                                        note: snapNote.trim(),
+                                        jobCode: job ? job.code : '',
+                                        inputs: savedInputs,
+                                        rates: { inHouseLaborPct: IN_HOUSE_LABOR_PCT, targetGpm: TARGET_GPM },
+                                        pos: pos.map(p => ({ id: p.id, poNumber: p.poNumber, category: p.category, subName: p.subName, status: p.status, amount: p.amount, included: !excludedPoIds.includes(p.id) })),
+                                        results: {
+                                            over: r.over, customerEstimate: round2(r.ce), paFee: round2(r.paFee), customerItems: round2(r.customerItems),
+                                            sellingPrice: round2(r.sellingPrice), poTotal: round2(r.poTotal), inHouseLabor: round2(r.inHouseLabor),
+                                            jobCost: round2(r.jobCost), grossProfit: round2(r.grossProfit), gpm: r.gpm, difference: round2(r.difference)
+                                        },
+                                        notesText: notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, inputs)
+                                    });
+                                    setSnapNote('');
+                                    setMessage('Snapshot saved');
+                                } catch (error) {
+                                    setMessage('Error saving snapshot: ' + error.message);
+                                }
+                                setSnapSaving(false);
+                            };
+
+                            const when = (ts) => ts && ts.toDate ? ts.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : '';
+                            const cmpRow = (label, then, now, fmt) => {
+                                const diff = now - then;
+                                return (
+                                    <tr key={label}>
+                                        <td>{label}</td>
+                                        <td style={{ textAlign: 'right' }}>{fmt(then)}</td>
+                                        <td style={{ textAlign: 'right' }}>{fmt(now)}</td>
+                                        <td style={{ textAlign: 'right', color: Math.abs(diff) < 0.005 ? '#888' : undefined }}>
+                                            {fmt === pct ? `${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)} pts` : $(diff)}
+                                        </td>
+                                    </tr>
+                                );
+                            };
+
+                            return (
+                                <div className="section">
+                                    <div className="section-title">SNAPSHOTS ({snapshots.length})</div>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                        <input value={snapNote} onChange={e => setSnapNote(e.target.value)} placeholder="Note (optional), e.g. Start of job" style={{ flex: 1 }} />
+                                        <button className="btn-primary" style={{ width: 'auto', whiteSpace: 'nowrap' }} onClick={saveSnapshot} disabled={!canSnap}>
+                                            {snapSaving ? 'Saving...' : 'Save snapshot'}
+                                        </button>
+                                    </div>
+                                    {!canSnap && !snapSaving && <div className="hint">{dirty ? 'Save your changes first.' : 'Save this job at least once first.'}</div>}
+
+                                    {snapshots.length > 0 && (
+                                        <div style={{ overflowX: 'auto', marginTop: '12px' }}>
+                                            <table>
+                                                <thead>
+                                                    <tr><th>Saved</th><th>By</th><th>Note</th><th style={{ textAlign: 'right' }}>Selling price</th><th style={{ textAlign: 'right' }}>Job cost</th><th style={{ textAlign: 'right' }}>GPM</th></tr>
+                                                </thead>
+                                                <tbody>
+                                                    {snapshots.map((sn, i) => {
+                                                        const res = sn.results || {};
+                                                        const open = openSnapId === sn.id;
+                                                        return (
+                                                            <React.Fragment key={sn.id}>
+                                                                <tr onClick={() => setOpenSnapId(open ? null : sn.id)} style={{ cursor: 'pointer', background: open ? '#f7fbff' : undefined }}>
+                                                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                                                        {open ? '▾ ' : '▸ '}{when(sn.savedAt)}
+                                                                        {i === 0 && <span style={{ marginLeft: '6px', padding: '1px 6px', borderRadius: '10px', background: '#0066cc', color: 'white', fontSize: '11px' }}>Baseline</span>}
+                                                                    </td>
+                                                                    <td>{sn.savedBy ? sn.savedBy.name : ''}</td>
+                                                                    <td>{sn.note}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{$(res.sellingPrice || 0)}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{$(res.jobCost || 0)}</td>
+                                                                    <td style={{ textAlign: 'right' }}>{pct(res.gpm || 0)}</td>
+                                                                </tr>
+                                                                {open && (
+                                                                    <tr><td colSpan={6} style={{ background: '#f7fbff' }}>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>Then vs now</div>
+                                                                        <table style={{ marginBottom: '12px' }}>
+                                                                            <thead><tr><th></th><th style={{ textAlign: 'right' }}>Snapshot</th><th style={{ textAlign: 'right' }}>Now</th><th style={{ textAlign: 'right' }}>Change</th></tr></thead>
+                                                                            <tbody>
+                                                                                {cmpRow('Selling price', res.sellingPrice || 0, r.sellingPrice, $)}
+                                                                                {cmpRow('POs included', res.poTotal || 0, r.poTotal, $)}
+                                                                                {cmpRow('In-house labor', res.inHouseLabor || 0, r.inHouseLabor, $)}
+                                                                                {cmpRow('Job cost', res.jobCost || 0, r.jobCost, $)}
+                                                                                {cmpRow('Gross profit', res.grossProfit || 0, r.grossProfit, $)}
+                                                                                {cmpRow('GPM', res.gpm || 0, r.gpm, pct)}
+                                                                            </tbody>
+                                                                        </table>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>POs in snapshot ({(sn.pos || []).filter(p => p.included).length} of {(sn.pos || []).length} included)</div>
+                                                                        <table style={{ marginBottom: '12px' }}>
+                                                                            <tbody>
+                                                                                {(sn.pos || []).map(p => (
+                                                                                    <tr key={p.id} style={{ color: p.included ? '#333' : '#aaa' }}>
+                                                                                        <td>{p.poNumber}</td><td>{p.category}</td><td>{p.subName}</td><td>{p.status}</td>
+                                                                                        <td style={{ textAlign: 'right' }}>{p.amount === null || p.amount === undefined ? 'No amount' : $(p.amount)}{p.included ? '' : ' (excluded)'}</td>
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>Summary notes in snapshot</div>
+                                                                        <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '12px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>{sn.notesText || ''}</pre>
+                                                                    </td></tr>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const poTotal = pos.filter(p => !excludedPoIds.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                            const r = calcGPM(inputs, poTotal);
+                            if (!r) return null;
                             const generated = buildNotes(layout[r.over ? 'over' : 'under'], r, inputs);
                             const text = notesEdit !== null ? notesEdit : generated;
                             const copy = () => navigator.clipboard.writeText(text).then(
@@ -794,8 +939,13 @@
                                             <pre style={{ fontFamily: 'Arial, sans-serif', fontSize: '13px', tabSize: 30, background: 'white', border: '1px solid #ddd', borderRadius: '4px', padding: '8px 10px', whiteSpace: 'pre', overflowX: 'auto' }}>
                                                 {buildNotes(layoutDraft[layoutTab], r, inputs) || '(empty)'}
                                             </pre>
-                                            <div style={{ fontWeight: 600, margin: '15px 0 5px', fontSize: '13px' }}>PDF placement (both over and under)</div>
-                                            <div className="hint" style={{ marginBottom: '8px' }}>In points: 72 pt = 1 inch. Column positions are measured from the left edge of the Xactimate labels.</div>
+                                            <div style={{ margin: '15px 0 5px' }}>
+                                                <a href="#" style={{ fontSize: '13px', color: '#0066cc' }} onClick={e => { e.preventDefault(); setShowPlacement(!showPlacement); }}>
+                                                    {showPlacement ? '▾ Hide PDF placement' : '▸ Show PDF placement'}
+                                                </a>
+                                            </div>
+                                            {showPlacement && (<>
+                                            <div className="hint" style={{ marginBottom: '8px' }}>Applies to over and under. In points: 72 pt = 1 inch. Column positions are measured from the left edge of the Xactimate labels.</div>
                                             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr' }}>
                                                 {[['gap', 'Space below Due Freeman row'], ['amountRight', 'Amounts column right edge'], ['labelLeft', 'Labels column start'], ['lineHeight', 'Line spacing']].map(([k, t]) => {
                                                     const pl = { ...DEFAULT_PLACEMENT, ...(layoutDraft.placement || {}) };
@@ -808,6 +958,7 @@
                                                     );
                                                 })}
                                             </div>
+                                            </>)}
                                             <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                                                 <button className="btn-primary" style={{ width: 'auto' }} onClick={saveLayout}>Save layout</button>
                                                 <button className="btn-secondary" onClick={() => setLayoutDraft(null)}>Cancel</button>
