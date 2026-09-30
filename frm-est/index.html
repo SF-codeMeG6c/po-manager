@@ -7,27 +7,40 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
         .back { display: inline-block; color: #0066cc; text-decoration: none; font-size: 14px; margin-bottom: 12px; }
         .back:hover { text-decoration: underline; }
         h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
         .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-        .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        .sub-title { font-weight: 600; color: #444; margin: 18px 0 8px; font-size: 14px; }
         .form-group { margin-bottom: 12px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        input, select { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; margin-top: 8px; }
         .btn-primary:hover { background: #0052a3; }
         .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
         .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .muted { font-size: 13px; color: #666; margin-top: 8px; }
         .msg { margin-top: 15px; padding: 10px; text-align: center; font-weight: 500; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 6px 4px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; }
+        td { padding: 4px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .num { width: 80px; }
+        .out { display: flex; gap: 20px; margin-top: 16px; flex-wrap: wrap; }
+        .out > div { flex: 1; min-width: 260px; background: #f9f9f9; border-radius: 4px; padding: 12px; font-size: 13px; }
+        .out .t { font-weight: 600; margin-bottom: 6px; }
+        .out div.l { padding: 2px 0; }
+        .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .inline label { margin: 0; }
+        .unsaved { color: #cc6600; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -62,6 +75,138 @@
 
         const ALLOWED = ['owner', 'admin', 'estimator'];
 
+        // Wall height -> precut stud (supplier) and nominal feet (Xactimate LF)
+        const HEIGHTS = {
+            '8':  { precut: '92 1/4',  ft: 8 },
+            '9':  { precut: '104 5/8', ft: 9 },
+            '10': { precut: '116 5/8', ft: 10 }
+        };
+        const HEADER_SIZES = ['4x4', '4x6', '4x8', '4x10', '4x12', '6x6', '6x8', '6x10', '6x12'];
+        const POST_SIZES = ['4x4', '4x6', '4x8', '6x6'];
+
+        const newWall = () => ({ name: '', lf: '', size: '2x4', height: '8', topPlates: 2, pt: true, extraStuds: '' });
+        const newPiece = (size) => ({ size, qty: '', length: '' });
+        const newHours = () => ({ crew: '', days: '', note: '' });
+        const blankEstimate = () => ({
+            waste: { supplier: 10, xact: 25 },
+            walls: {
+                rows: [newWall()],
+                headers: [],
+                posts: [],
+                bracingLF: '',
+                shearSF: '',
+                frmHours: newHours(),
+                dmoHours: newHours()
+            }
+        });
+
+        const n = (v) => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
+        const hoursOf = (h) => n(h && h.crew) * n(h && h.days) * 8;
+        const sp = (size) => size.replace('x', ' x ');
+
+        // Walls math -> { supplier: [text lines], xact: [[label, amount, unit]] }
+        function calcWalls(w, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const plateLF = {}, studCount = {}, studLF = {}, xLF = {};
+            const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+
+            (w.rows || []).forEach(r => {
+                const lf = n(r.lf);
+                if (!lf) return;
+                const h = HEIGHTS[r.height] || HEIGHTS['8'];
+                // Plates: bottom (PT or regular) + top plates
+                const top = n(r.topPlates) || 1;
+                addTo(plateLF, r.size + (r.pt ? ' PT' : ''), lf);
+                addTo(plateLF, r.size, lf * top);
+                // Studs: LF x 0.8 + 1 + extras
+                const count = lf * 0.8 + 1 + n(r.extraStuds);
+                addTo(studCount, r.size + '|' + r.height, count);
+                addTo(studLF, r.size, count * h.ft);
+            });
+
+            const supplier = [];
+            Object.keys(plateLF).sort().forEach(k => {
+                const pcs = Math.ceil((plateLF[k] / 16) * sw);
+                const pt = k.endsWith(' PT');
+                supplier.push(`${pcs} - ${sp(k.replace(' PT', ''))} x 16${pt ? ' PT' : ''}   (plate)`);
+                addTo(xLF, k, plateLF[k]);
+            });
+            Object.keys(studCount).sort().forEach(k => {
+                const [size, ht] = k.split('|');
+                supplier.push(`${Math.ceil(studCount[k] * sw)} - ${sp(size)} x ${HEIGHTS[ht].precut}   (studs)`);
+            });
+            Object.keys(studLF).forEach(k => addTo(xLF, k, studLF[k]));
+
+            // Headers and posts: bought as listed, no supplier waste
+            (w.headers || []).forEach(p => {
+                if (!n(p.qty) || !n(p.length)) return;
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (header)`);
+                addTo(xLF, p.size, n(p.qty) * n(p.length));
+            });
+            (w.posts || []).forEach(p => {
+                if (!n(p.qty) || !n(p.length)) return;
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (post)`);
+                addTo(xLF, p.size, n(p.qty) * n(p.length));
+            });
+
+            // Temp bracing: LF / 16 -> 2x4x16
+            if (n(w.bracingLF)) {
+                supplier.push(`${Math.ceil((n(w.bracingLF) / 16) * sw)} - 2 x 4 x 16   (temp bracing)`);
+                addTo(xLF, '2x4', n(w.bracingLF));
+            }
+
+            const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
+
+            // Shear panel: SF / 32 -> 4x8 sheets
+            if (n(w.shearSF)) {
+                supplier.push(`${Math.ceil((n(w.shearSF) / 32) * sw)} - 4 x 8 x 1/2 OSB STR1   (shear panel)`);
+                xact.push(['1/2" OSB shear panel', Math.ceil(n(w.shearSF) * xw), 'SF']);
+            }
+            return { supplier, xact };
+        }
+
+        function HoursRow({ label, value, onChange }) {
+            const v = value || newHours();
+            const set = (k, x) => onChange({ ...v, [k]: x });
+            return (
+                <tr>
+                    <td style={{ width: '120px' }}>{label}</td>
+                    <td><input className="num" type="number" value={v.crew} onChange={e => set('crew', e.target.value)} placeholder="crew" /></td>
+                    <td><input className="num" type="number" value={v.days} onChange={e => set('days', e.target.value)} placeholder="days" /></td>
+                    <td style={{ width: '70px', fontWeight: 600 }}>{hoursOf(v)} hrs</td>
+                    <td><input value={v.note} onChange={e => set('note', e.target.value)} placeholder="e.g. 2 guys 1 day" /></td>
+                </tr>
+            );
+        }
+
+        function PieceTable({ title, sizes, list, onChange }) {
+            const update = (i, k, v) => onChange(list.map((p, j) => j === i ? { ...p, [k]: v } : p));
+            return (
+                <div>
+                    <div className="sub-title">{title}</div>
+                    {list.length > 0 && (
+                        <table>
+                            <thead><tr><th>Size</th><th>Qty</th><th>Length (ft)</th><th></th></tr></thead>
+                            <tbody>
+                                {list.map((p, i) => (
+                                    <tr key={i}>
+                                        <td><select value={p.size} onChange={e => update(i, 'size', e.target.value)}>
+                                            {sizes.map(s => <option key={s} value={s}>{s}</option>)}
+                                        </select></td>
+                                        <td><input className="num" type="number" value={p.qty} onChange={e => update(i, 'qty', e.target.value)} /></td>
+                                        <td><input className="num" type="number" value={p.length} onChange={e => update(i, 'length', e.target.value)} /></td>
+                                        <td><button className="btn-x" onClick={() => onChange(list.filter((_, j) => j !== i))}>✕</button></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => onChange([...list, newPiece(sizes[0])])}>+ Add</button>
+                </div>
+            );
+        }
+
         function App() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = ok
@@ -69,7 +214,9 @@
             const [jobs, setJobs] = useState([]);
             const [showArchived, setShowArchived] = useState(false);
             const [jobId, setJobId] = useState('');
-            const [record, setRecord] = useState(null); // frmEst/{jobId}
+            const [record, setRecord] = useState(null); // saved frmEst/{jobId}
+            const [est, setEst] = useState(null);       // what's on screen
+            const [dirty, setDirty] = useState(false);
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
 
@@ -101,15 +248,26 @@
                 }, e => setMessage('Error loading jobs: ' + e.message));
             }, [profile]);
 
-            // Saved FRM-EST record for the picked job
+            // Load the saved estimate once when a job is picked
             useEffect(() => {
                 setRecord(null);
+                setEst(null);
+                setDirty(false);
                 if (!profile || !jobId) return;
-                return db.collection('frmEst').doc(jobId).onSnapshot(
-                    doc => setRecord(doc.exists ? doc.data() : false),
-                    e => setMessage('Error loading estimate: ' + e.message)
-                );
+                db.collection('frmEst').doc(jobId).get().then(doc => {
+                    const d = doc.exists ? doc.data() : {};
+                    const base = blankEstimate();
+                    setRecord(doc.exists ? d : false);
+                    setEst({
+                        waste: { ...base.waste, ...(d.waste || {}) },
+                        walls: { ...base.walls, ...(d.walls || {}) }
+                    });
+                }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
+
+            const change = (fn) => { setEst(prev => fn(prev)); setDirty(true); setMessage(''); };
+            const setWalls = (k, v) => change(p => ({ ...p, walls: { ...p.walls, [k]: v } }));
+            const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
                 setAuthError('');
@@ -124,15 +282,20 @@
 
             const save = async () => {
                 const job = jobs.find(j => j.id === jobId);
-                if (!job) return;
+                if (!job || !est) return;
                 setSaving(true);
                 setMessage('');
                 try {
-                    await db.collection('frmEst').doc(jobId).set({
+                    const data = {
                         jobCode: job.code || '',
+                        waste: est.waste,
+                        walls: est.walls,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
-                    }, { merge: true });
+                    };
+                    await db.collection('frmEst').doc(jobId).set(data, { merge: true });
+                    setRecord({ ...(record || {}), ...data, updatedAt: { toDate: () => data.updatedAt } });
+                    setDirty(false);
                     setMessage('Saved');
                 } catch (e) {
                     setMessage('Error saving: ' + e.message);
@@ -161,9 +324,12 @@
             }
 
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
-            const saved = record && record.updatedAt && record.updatedAt.toDate
+            const savedText = record && record.updatedAt && record.updatedAt.toDate
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${record.updatedAt.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' })}`
                 : 'Not saved yet';
+
+            const w = est && est.walls;
+            const out = est ? calcWalls(w, est.waste) : null;
 
             return (
                 <div>
@@ -175,7 +341,10 @@
                     <div className="section">
                         <div className="section-title">JOB</div>
                         <div className="form-group">
-                            <select value={jobId} onChange={e => { setJobId(e.target.value); setMessage(''); }}>
+                            <select value={jobId} onChange={e => {
+                                if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
+                                setJobId(e.target.value); setMessage('');
+                            }}>
                                 <option value="">-- Pick a job --</option>
                                 {visibleJobs.map(j => (
                                     <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
@@ -183,20 +352,88 @@
                             </select>
                         </div>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
-                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            <input type="checkbox" style={{ width: 'auto' }} checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
                             Show archived jobs
                         </label>
-
-                        {jobId && (
-                            <div>
-                                <div className="muted">{record === null ? 'Loading...' : saved}</div>
-                                <button className="btn-primary" onClick={save} disabled={saving || record === null}>
-                                    {saving ? 'Saving...' : 'Save'}
-                                </button>
-                            </div>
-                        )}
-                        {message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
+                        {jobId && <div className="muted">{record === null ? 'Loading...' : savedText}{dirty && <span className="unsaved"> · Unsaved changes</span>}</div>}
                     </div>
+
+                    {est && (<>
+                        <div className="section">
+                            <div className="section-title">WASTE</div>
+                            <div className="inline">
+                                <label>Supplier %</label>
+                                <input className="num" type="number" value={est.waste.supplier}
+                                    onChange={e => change(p => ({ ...p, waste: { ...p.waste, supplier: e.target.value } }))} />
+                                <label style={{ marginLeft: '16px' }}>Xactimate %</label>
+                                <input className="num" type="number" value={est.waste.xact}
+                                    onChange={e => change(p => ({ ...p, waste: { ...p.waste, xact: e.target.value } }))} />
+                            </div>
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">WALLS</div>
+                            <table>
+                                <thead><tr>
+                                    <th>Wall</th><th>LF</th><th>Studs</th><th>Height</th><th>Top plates</th><th>PT bottom</th><th>Extra studs</th><th></th>
+                                </tr></thead>
+                                <tbody>
+                                    {w.rows.map((r, i) => (
+                                        <tr key={i}>
+                                            <td><input value={r.name} onChange={e => setWallRow(i, 'name', e.target.value)} placeholder="e.g. 2nd floor" /></td>
+                                            <td><input className="num" type="number" value={r.lf} onChange={e => setWallRow(i, 'lf', e.target.value)} /></td>
+                                            <td><select value={r.size} onChange={e => setWallRow(i, 'size', e.target.value)}>
+                                                <option value="2x4">2x4</option><option value="2x6">2x6</option>
+                                            </select></td>
+                                            <td><select value={r.height} onChange={e => setWallRow(i, 'height', e.target.value)}>
+                                                <option value="8">8'</option><option value="9">9'</option><option value="10">10'</option>
+                                            </select></td>
+                                            <td><select value={r.topPlates} onChange={e => setWallRow(i, 'topPlates', parseInt(e.target.value))}>
+                                                <option value={1}>Single</option><option value={2}>Double</option>
+                                            </select></td>
+                                            <td style={{ textAlign: 'center' }}><input type="checkbox" style={{ width: 'auto' }} checked={r.pt} onChange={e => setWallRow(i, 'pt', e.target.checked)} /></td>
+                                            <td><input className="num" type="number" value={r.extraStuds} onChange={e => setWallRow(i, 'extraStuds', e.target.value)} /></td>
+                                            <td><button className="btn-x" onClick={() => setWalls('rows', w.rows.filter((_, j) => j !== i))}>✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setWalls('rows', [...w.rows, newWall()])}>+ Add wall</button>
+
+                            <PieceTable title="Headers" sizes={HEADER_SIZES} list={w.headers} onChange={v => setWalls('headers', v)} />
+                            <PieceTable title="Posts" sizes={POST_SIZES} list={w.posts} onChange={v => setWalls('posts', v)} />
+
+                            <div className="sub-title">Other</div>
+                            <div className="inline">
+                                <label>Temp bracing, exterior wall LF</label>
+                                <input className="num" type="number" value={w.bracingLF} onChange={e => setWalls('bracingLF', e.target.value)} />
+                                <label style={{ marginLeft: '16px' }}>Shear panel SF</label>
+                                <input className="num" type="number" value={w.shearSF} onChange={e => setWalls('shearSF', e.target.value)} />
+                            </div>
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Wall framing" value={w.frmHours} onChange={v => setWalls('frmHours', v)} />
+                                <HoursRow label="Wall demo" value={w.dmoHours} onChange={v => setWalls('dmoHours', v)} />
+                            </tbody></table>
+
+                            <div className="out">
+                                <div>
+                                    <div className="t">Supplier (+{n(est.waste.supplier)}%)</div>
+                                    {out.supplier.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
+                                        : out.supplier.map((l, i) => <div className="l" key={i}>{l}</div>)}
+                                </div>
+                                <div>
+                                    <div className="t">Xactimate (+{n(est.waste.xact)}%)</div>
+                                    {out.xact.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
+                                        : out.xact.map(([k, v, u], i) => <div className="l" key={i}>{k}: {v.toLocaleString()} {u}</div>)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                        {message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
+                    </>)}
                 </div>
             );
         }
