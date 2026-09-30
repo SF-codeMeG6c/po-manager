@@ -27,6 +27,8 @@
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th { background: #f5f5f5; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
         td { padding: 8px 10px; border-bottom: 1px solid #eee; }
@@ -35,6 +37,7 @@
 </head>
 <body>
     <div class="container">
+        <a href="/" class="back-link">&larr; Dashboard</a>
         <h1>GPM Tool</h1>
         <p class="subtitle">Freeman Restoration starting-point Gross Produced Margin</p>
         <div id="app"></div>
@@ -538,6 +541,24 @@
                     setMessage('Error loading GPM data: ' + error.message);
                 }
             };
+
+            // Opened from the Dashboard with ?job=ID: pick that job once the job list is in
+            const urlJobId = new URLSearchParams(window.location.search).get('job');
+            const urlJobLoaded = React.useRef(false);
+            useEffect(() => {
+                if (urlJobLoaded.current || !urlJobId) return;
+                if (!jobs.some(j => j.id === urlJobId)) return;
+                urlJobLoaded.current = true;
+                handlePickJob(urlJobId);
+            }, [jobs]);
+
+            // Warn before leaving the page (Dashboard link, closing the tab) with unsaved changes
+            useEffect(() => {
+                if (!dirty) return;
+                const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+                window.addEventListener('beforeunload', warn);
+                return () => window.removeEventListener('beforeunload', warn);
+            }, [dirty]);
 
             const setField = (k, v) => { setInputs(prev => ({ ...prev, [k]: v })); setDirty(true); };
 
