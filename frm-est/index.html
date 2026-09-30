@@ -84,6 +84,13 @@
         const HEADER_SIZES = ['4x4', '4x6', '4x8', '4x10', '4x12', '6x6', '6x8', '6x10', '6x12'];
         const POST_SIZES = ['4x4', '4x6', '4x8', '6x6'];
 
+        const JOIST_SIZES = ['2x6', '2x8', '2x10', '2x12'];
+        const BEAM_SIZES = ['4x6', '4x8', '4x10', '4x12', '6x8', '6x10', '6x12'];
+        const SPACING = { '12': 1.0, '16': 0.8, '24': 0.55 }; // joists per LF of run
+        const SHEATH_TYPES = { '3/4': '4 x 8 x 3/4" T&G', '5/8': '4 x 8 x 5/8" T&G' };
+
+        const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
+        const newLF = (size) => ({ size, lf: '' });
         const newWall = () => ({ name: '', lf: '', size: '2x4', height: '8', topPlates: 2, pt: true, extraStuds: '' });
         const newPiece = (size) => ({ size, qty: '', length: '' });
         const newHours = () => ({ crew: '', days: '', note: '' });
@@ -95,6 +102,16 @@
                 posts: [],
                 bracingLF: '',
                 shearSF: '',
+                frmHours: newHours(),
+                dmoHours: newHours()
+            },
+            floor: {
+                rows: [newJoist()],
+                rims: [],
+                blocking: [],
+                beams: [],
+                sheathSF: '',
+                sheathType: '3/4',
                 frmHours: newHours(),
                 dmoHours: newHours()
             }
@@ -164,6 +181,90 @@
                 xact.push(['1/2" OSB shear panel', Math.ceil(n(w.shearSF) * xw), 'SF']);
             }
             return { supplier, xact };
+        }
+
+        // Floor joists math -> same shape as calcWalls
+        function calcFloor(f, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const joists = {}, xLF = {}, rimLF = {}, blkLF = {};
+            const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+
+            (f.rows || []).forEach(r => {
+                const span = n(r.span), run = n(r.run);
+                if (!span || !run) return;
+                // Count: run x spacing factor + 1 + extras
+                const count = run * (SPACING[r.spacing] || 0.8) + 1 + n(r.extra);
+                const buyLen = Math.ceil(span / 2) * 2; // next even length
+                addTo(joists, r.size + '|' + buyLen, count);
+                addTo(xLF, r.size, count * span);
+            });
+            (f.rims || []).forEach(p => { if (n(p.lf)) { addTo(rimLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+            (f.blocking || []).forEach(p => { if (n(p.lf)) { addTo(blkLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+
+            const supplier = [];
+            Object.keys(joists).sort().forEach(k => {
+                const [size, len] = k.split('|');
+                supplier.push(`${Math.ceil(joists[k] * sw)} - ${sp(size)} x ${len}   (joists)`);
+            });
+            Object.keys(rimLF).sort().forEach(k => supplier.push(`${Math.ceil((rimLF[k] / 16) * sw)} - ${sp(k)} x 16   (rim)`));
+            Object.keys(blkLF).sort().forEach(k => supplier.push(`${Math.ceil((blkLF[k] / 16) * sw)} - ${sp(k)} x 16   (blocking)`));
+            (f.beams || []).forEach(p => {
+                if (!n(p.qty) || !n(p.length)) return;
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (beam)`);
+                addTo(xLF, p.size, n(p.qty) * n(p.length));
+            });
+
+            const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
+            if (n(f.sheathSF)) {
+                const t = SHEATH_TYPES[f.sheathType] || SHEATH_TYPES['3/4'];
+                supplier.push(`${Math.ceil((n(f.sheathSF) / 32) * sw)} - ${t}   (floor sheathing)`);
+                xact.push([t.replace('4 x 8 x ', '') + ' floor sheathing', Math.ceil(n(f.sheathSF) * xw), 'SF']);
+            }
+            return { supplier, xact };
+        }
+
+        function Output({ out, waste }) {
+            return (
+                <div className="out">
+                    <div>
+                        <div className="t">Supplier (+{n(waste.supplier)}%)</div>
+                        {out.supplier.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
+                            : out.supplier.map((l, i) => <div className="l" key={i}>{l}</div>)}
+                    </div>
+                    <div>
+                        <div className="t">Xactimate (+{n(waste.xact)}%)</div>
+                        {out.xact.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
+                            : out.xact.map(([k, v, u], i) => <div className="l" key={i}>{k}: {v.toLocaleString()} {u}</div>)}
+                    </div>
+                </div>
+            );
+        }
+
+        function LFTable({ title, sizes, list, onChange }) {
+            const update = (i, k, v) => onChange(list.map((p, j) => j === i ? { ...p, [k]: v } : p));
+            return (
+                <div>
+                    <div className="sub-title">{title}</div>
+                    {list.length > 0 && (
+                        <table>
+                            <thead><tr><th>Size</th><th>LF</th><th></th></tr></thead>
+                            <tbody>
+                                {list.map((p, i) => (
+                                    <tr key={i}>
+                                        <td><select value={p.size} onChange={e => update(i, 'size', e.target.value)}>
+                                            {sizes.map(s => <option key={s} value={s}>{s}</option>)}
+                                        </select></td>
+                                        <td><input className="num" type="number" value={p.lf} onChange={e => update(i, 'lf', e.target.value)} /></td>
+                                        <td><button className="btn-x" onClick={() => onChange(list.filter((_, j) => j !== i))}>✕</button></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => onChange([...list, newLF(sizes[0])])}>+ Add</button>
+                </div>
+            );
         }
 
         function HoursRow({ label, value, onChange }) {
@@ -260,13 +361,16 @@
                     setRecord(doc.exists ? d : false);
                     setEst({
                         waste: { ...base.waste, ...(d.waste || {}) },
-                        walls: { ...base.walls, ...(d.walls || {}) }
+                        walls: { ...base.walls, ...(d.walls || {}) },
+                        floor: { ...base.floor, ...(d.floor || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
 
             const change = (fn) => { setEst(prev => fn(prev)); setDirty(true); setMessage(''); };
             const setWalls = (k, v) => change(p => ({ ...p, walls: { ...p.walls, [k]: v } }));
+            const setFloor = (k, v) => change(p => ({ ...p, floor: { ...p.floor, [k]: v } }));
+            const setFloorRow = (i, k, v) => setFloor('rows', est.floor.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
@@ -290,6 +394,7 @@
                         jobCode: job.code || '',
                         waste: est.waste,
                         walls: est.walls,
+                        floor: est.floor,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -330,6 +435,8 @@
 
             const w = est && est.walls;
             const out = est ? calcWalls(w, est.waste) : null;
+            const f = est && est.floor;
+            const floorOut = est ? calcFloor(f, est.waste) : null;
 
             return (
                 <div>
@@ -417,18 +524,55 @@
                                 <HoursRow label="Wall demo" value={w.dmoHours} onChange={v => setWalls('dmoHours', v)} />
                             </tbody></table>
 
-                            <div className="out">
-                                <div>
-                                    <div className="t">Supplier (+{n(est.waste.supplier)}%)</div>
-                                    {out.supplier.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
-                                        : out.supplier.map((l, i) => <div className="l" key={i}>{l}</div>)}
-                                </div>
-                                <div>
-                                    <div className="t">Xactimate (+{n(est.waste.xact)}%)</div>
-                                    {out.xact.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
-                                        : out.xact.map(([k, v, u], i) => <div className="l" key={i}>{k}: {v.toLocaleString()} {u}</div>)}
-                                </div>
+                            <Output out={out} waste={est.waste} />
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">FLOOR JOISTS</div>
+                            <table>
+                                <thead><tr>
+                                    <th>Area</th><th>Size</th><th>Span (ft)</th><th>Run (LF)</th><th>Spacing</th><th>Extra joists</th><th></th>
+                                </tr></thead>
+                                <tbody>
+                                    {f.rows.map((r, i) => (
+                                        <tr key={i}>
+                                            <td><input value={r.name} onChange={e => setFloorRow(i, 'name', e.target.value)} placeholder="e.g. Floor over living room" /></td>
+                                            <td><select value={r.size} onChange={e => setFloorRow(i, 'size', e.target.value)}>
+                                                {JOIST_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                                            </select></td>
+                                            <td><input className="num" type="number" value={r.span} onChange={e => setFloorRow(i, 'span', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.run} onChange={e => setFloorRow(i, 'run', e.target.value)} /></td>
+                                            <td><select value={r.spacing} onChange={e => setFloorRow(i, 'spacing', e.target.value)}>
+                                                <option value="12">12" OC</option><option value="16">16" OC</option><option value="24">24" OC</option>
+                                            </select></td>
+                                            <td><input className="num" type="number" value={r.extra} onChange={e => setFloorRow(i, 'extra', e.target.value)} /></td>
+                                            <td><button className="btn-x" onClick={() => setFloor('rows', f.rows.filter((_, j) => j !== i))}>✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setFloor('rows', [...f.rows, newJoist()])}>+ Add joists</button>
+
+                            <LFTable title="Rim / band board" sizes={JOIST_SIZES} list={f.rims} onChange={v => setFloor('rims', v)} />
+                            <LFTable title="Blocking" sizes={JOIST_SIZES} list={f.blocking} onChange={v => setFloor('blocking', v)} />
+                            <PieceTable title="Beams" sizes={BEAM_SIZES} list={f.beams} onChange={v => setFloor('beams', v)} />
+
+                            <div className="sub-title">Floor sheathing</div>
+                            <div className="inline">
+                                <label>SF</label>
+                                <input className="num" type="number" value={f.sheathSF} onChange={e => setFloor('sheathSF', e.target.value)} />
+                                <select style={{ width: 'auto' }} value={f.sheathType} onChange={e => setFloor('sheathType', e.target.value)}>
+                                    <option value="3/4">3/4" T&amp;G</option><option value="5/8">5/8" T&amp;G</option>
+                                </select>
                             </div>
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Floor framing" value={f.frmHours} onChange={v => setFloor('frmHours', v)} />
+                                <HoursRow label="Floor demo" value={f.dmoHours} onChange={v => setFloor('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={floorOut} waste={est.waste} />
                         </div>
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
