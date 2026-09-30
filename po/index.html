@@ -37,6 +37,8 @@
         tr:hover { background: #fafafa; }
         
         
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
         .button-group { display: flex; gap: 8px; margin-top: 8px; }
         .button-group button { margin: 0; }
         
@@ -44,6 +46,7 @@
 </head>
 <body>
     <div class="container">
+        <a href="/" class="back-link">&larr; Dashboard</a>
         <h1>PO Manager</h1>
         <p class="subtitle">Freeman Restoration Subcontractor Scope of Work</p>
         <div id="app"></div>
@@ -391,6 +394,18 @@ I prefer plain, brief instructions, one step at a time.`;
                       });
                 }
             };
+
+            // Opened from the Dashboard with ?job=ID: load that job once the job list is in
+            const urlJobId = new URLSearchParams(window.location.search).get('job');
+            const urlJobLoaded = React.useRef(false);
+            useEffect(() => {
+                if (urlJobLoaded.current || !urlJobId || !user) return;
+                const idx = jobLibrary.findIndex(j => j.id === urlJobId);
+                if (idx === -1) return;
+                urlJobLoaded.current = true;
+                setSelectedJobIndex(String(idx));
+                handleSelectJob(jobLibrary[idx]);
+            }, [jobLibrary, user]);
 
             const handleDeleteJob = async (index) => {
                 const job = jobLibrary[index];
