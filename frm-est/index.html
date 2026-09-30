@@ -127,7 +127,7 @@
 
         const n = (v) => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
         const hoursOf = (h) => n(h && h.crew) * n(h && h.days) * 8;
-        const sp = (size) => size.replace('x', ' x ');
+        const sp = (size) => /^\d+x\d+$/.test(size) ? size.replace('x', ' x ') : size.trim(); // '2x4' -> '2 x 4'; typed sizes stay as typed
 
         // Walls math -> { supplier: [text lines], xact: [[label, amount, unit]] }
         function calcWalls(w, waste) {
@@ -325,6 +325,7 @@
         }
 
         function PieceTable({ title, sizes, list, onChange }) {
+            const listId = 'sizes-' + sizes.join('-');
             const update = (i, k, v) => onChange(list.map((p, j) => j === i ? { ...p, [k]: v } : p));
             return (
                 <div>
@@ -335,9 +336,7 @@
                             <tbody>
                                 {list.map((p, i) => (
                                     <tr key={i}>
-                                        <td><select value={p.size} onChange={e => update(i, 'size', e.target.value)}>
-                                            {sizes.map(s => <option key={s} value={s}>{s}</option>)}
-                                        </select></td>
+                                        <td><input list={listId} value={p.size} onChange={e => update(i, 'size', e.target.value)} placeholder="pick or type" /></td>
                                         <td><input className="num" type="number" value={p.qty} onChange={e => update(i, 'qty', e.target.value)} /></td>
                                         <td><input className="num" type="number" value={p.length} onChange={e => update(i, 'length', e.target.value)} /></td>
                                         <td><button className="btn-x" onClick={() => onChange(list.filter((_, j) => j !== i))}>✕</button></td>
@@ -346,6 +345,7 @@
                             </tbody>
                         </table>
                     )}
+                    <datalist id={listId}>{sizes.map(s => <option key={s} value={s} />)}</datalist>
                     <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => onChange([...list, newPiece(sizes[0])])}>+ Add</button>
                 </div>
             );
