@@ -114,6 +114,14 @@
                 sheathType: '3/4',
                 frmHours: newHours(),
                 dmoHours: newHours()
+            },
+            ceiling: {
+                rows: [{ ...newJoist(), size: '2x6' }],
+                beams: [],
+                posts: [],
+                ledgers: [],
+                frmHours: newHours(),
+                dmoHours: newHours()
             }
         });
 
@@ -221,6 +229,41 @@
                 supplier.push(`${Math.ceil((n(f.sheathSF) / 32) * sw)} - ${t}   (floor sheathing)`);
                 xact.push([t.replace('4 x 8 x ', '') + ' floor sheathing', Math.ceil(n(f.sheathSF) * xw), 'SF']);
             }
+            return { supplier, xact };
+        }
+
+        // Ceiling joists math -> same shape as calcWalls
+        function calcCeiling(c, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const joists = {}, xLF = {}, ledgerLF = {};
+            const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+
+            (c.rows || []).forEach(r => {
+                const span = n(r.span), run = n(r.run);
+                if (!span || !run) return;
+                const count = run * (SPACING[r.spacing] || 0.8) + 1 + n(r.extra);
+                const buyLen = Math.ceil(span / 2) * 2;
+                addTo(joists, r.size + '|' + buyLen, count);
+                addTo(xLF, r.size, count * span);
+            });
+            (c.ledgers || []).forEach(p => { if (n(p.lf)) { addTo(ledgerLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+
+            const supplier = [];
+            Object.keys(joists).sort().forEach(k => {
+                const [size, len] = k.split('|');
+                supplier.push(`${Math.ceil(joists[k] * sw)} - ${sp(size)} x ${len}   (ceiling joists)`);
+            });
+            Object.keys(ledgerLF).sort().forEach(k => supplier.push(`${Math.ceil((ledgerLF[k] / 16) * sw)} - ${sp(k)} x 16   (ledger)`));
+            [['beams', 'beam / purlin'], ['posts', 'post']].forEach(([key, label]) => {
+                (c[key] || []).forEach(p => {
+                    if (!n(p.qty) || !n(p.length)) return;
+                    supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${label})`);
+                    addTo(xLF, p.size, n(p.qty) * n(p.length));
+                });
+            });
+
+            const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
             return { supplier, xact };
         }
 
@@ -362,7 +405,8 @@
                     setEst({
                         waste: { ...base.waste, ...(d.waste || {}) },
                         walls: { ...base.walls, ...(d.walls || {}) },
-                        floor: { ...base.floor, ...(d.floor || {}) }
+                        floor: { ...base.floor, ...(d.floor || {}) },
+                        ceiling: { ...base.ceiling, ...(d.ceiling || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
@@ -371,6 +415,8 @@
             const setWalls = (k, v) => change(p => ({ ...p, walls: { ...p.walls, [k]: v } }));
             const setFloor = (k, v) => change(p => ({ ...p, floor: { ...p.floor, [k]: v } }));
             const setFloorRow = (i, k, v) => setFloor('rows', est.floor.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const setCeil = (k, v) => change(p => ({ ...p, ceiling: { ...p.ceiling, [k]: v } }));
+            const setCeilRow = (i, k, v) => setCeil('rows', est.ceiling.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
@@ -395,6 +441,7 @@
                         waste: est.waste,
                         walls: est.walls,
                         floor: est.floor,
+                        ceiling: est.ceiling,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -437,6 +484,8 @@
             const out = est ? calcWalls(w, est.waste) : null;
             const f = est && est.floor;
             const floorOut = est ? calcFloor(f, est.waste) : null;
+            const c = est && est.ceiling;
+            const ceilOut = est ? calcCeiling(c, est.waste) : null;
 
             return (
                 <div>
@@ -531,7 +580,7 @@
                             <div className="section-title">FLOOR JOISTS</div>
                             <table>
                                 <thead><tr>
-                                    <th>Area</th><th>Size</th><th>Span (ft)</th><th>Run (LF)</th><th>Spacing</th><th>Extra joists</th><th></th>
+                                    <th>Area</th><th>Size</th><th>Span (ft)</th><th>Length (LF)</th><th>Spacing</th><th>Extra joists</th><th></th>
                                 </tr></thead>
                                 <tbody>
                                     {f.rows.map((r, i) => (
@@ -573,6 +622,45 @@
                             </tbody></table>
 
                             <Output out={floorOut} waste={est.waste} />
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">CEILING JOISTS</div>
+                            <table>
+                                <thead><tr>
+                                    <th>Area</th><th>Size</th><th>Span (ft)</th><th>Length (LF)</th><th>Spacing</th><th>Extra joists</th><th></th>
+                                </tr></thead>
+                                <tbody>
+                                    {c.rows.map((r, i) => (
+                                        <tr key={i}>
+                                            <td><input value={r.name} onChange={e => setCeilRow(i, 'name', e.target.value)} placeholder="e.g. 2nd floor ceiling" /></td>
+                                            <td><select value={r.size} onChange={e => setCeilRow(i, 'size', e.target.value)}>
+                                                {JOIST_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                                            </select></td>
+                                            <td><input className="num" type="number" value={r.span} onChange={e => setCeilRow(i, 'span', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.run} onChange={e => setCeilRow(i, 'run', e.target.value)} /></td>
+                                            <td><select value={r.spacing} onChange={e => setCeilRow(i, 'spacing', e.target.value)}>
+                                                <option value="12">12" OC</option><option value="16">16" OC</option><option value="24">24" OC</option>
+                                            </select></td>
+                                            <td><input className="num" type="number" value={r.extra} onChange={e => setCeilRow(i, 'extra', e.target.value)} /></td>
+                                            <td><button className="btn-x" onClick={() => setCeil('rows', c.rows.filter((_, j) => j !== i))}>✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setCeil('rows', [...c.rows, { ...newJoist(), size: '2x6' }])}>+ Add joists</button>
+
+                            <PieceTable title="Beams / drop purlins" sizes={BEAM_SIZES} list={c.beams} onChange={v => setCeil('beams', v)} />
+                            <PieceTable title="Posts" sizes={POST_SIZES} list={c.posts} onChange={v => setCeil('posts', v)} />
+                            <LFTable title="Ledgers" sizes={JOIST_SIZES} list={c.ledgers} onChange={v => setCeil('ledgers', v)} />
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Ceiling framing" value={c.frmHours} onChange={v => setCeil('frmHours', v)} />
+                                <HoursRow label="Ceiling demo" value={c.dmoHours} onChange={v => setCeil('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={ceilOut} waste={est.waste} />
                         </div>
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
