@@ -166,31 +166,31 @@
             Object.keys(plateLF).sort().forEach(k => {
                 const pcs = Math.ceil((plateLF[k] / 16) * sw);
                 const pt = k.endsWith(' PT');
-                supplier.push(`${pcs} - ${sp(k.replace(' PT', ''))} x 16${pt ? ' PT' : ''}   (plate)`);
-                addTo(xLF, k, plateLF[k]);
+                supplier.push(`${pcs} - ${sp(k.replace(' PT', ''))} x 16${pt ? ' pressure treated' : ''}   (plate)`);
+                addTo(xLF, k.replace(' PT', ' pressure treated') + ' plate', plateLF[k]);
             });
             Object.keys(studCount).sort().forEach(k => {
                 const [size, ht] = k.split('|');
                 supplier.push(`${Math.ceil(studCount[k] * sw)} - ${sp(size)} x ${HEIGHTS[ht].precut}   (studs)`);
             });
-            Object.keys(studLF).forEach(k => addTo(xLF, k, studLF[k]));
+            Object.keys(studLF).forEach(k => addTo(xLF, k + ' studs', studLF[k]));
 
             // Headers and posts: bought as listed, no supplier waste
             (w.headers || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
                 supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (header)`);
-                addTo(xLF, p.size, n(p.qty) * n(p.length));
+                addTo(xLF, p.size.trim() + ' header', n(p.qty) * n(p.length));
             });
             (w.posts || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
                 supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (post)`);
-                addTo(xLF, p.size, n(p.qty) * n(p.length));
+                addTo(xLF, p.size.trim() + ' post', n(p.qty) * n(p.length));
             });
 
             // Temp bracing: LF / 16 -> 2x4x16
             if (n(w.bracingLF)) {
                 supplier.push(`${Math.ceil((n(w.bracingLF) / 16) * sw)} - 2 x 4 x 16   (temp bracing)`);
-                addTo(xLF, '2x4', n(w.bracingLF));
+                addTo(xLF, '2x4 temp bracing', n(w.bracingLF));
             }
 
             const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
@@ -217,10 +217,10 @@
                 const count = run * (SPACING[r.spacing] || 0.8) + 1 + n(r.extra);
                 const buyLen = Math.ceil(span / 2) * 2; // next even length
                 addTo(joists, r.size + '|' + buyLen, count);
-                addTo(xLF, r.size, count * span);
+                addTo(xLF, r.size + ' floor joists', count * span);
             });
-            (f.rims || []).forEach(p => { if (n(p.lf)) { addTo(rimLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
-            (f.blocking || []).forEach(p => { if (n(p.lf)) { addTo(blkLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+            (f.rims || []).forEach(p => { if (n(p.lf)) { addTo(rimLF, p.size, n(p.lf)); addTo(xLF, p.size + ' rim', n(p.lf)); } });
+            (f.blocking || []).forEach(p => { if (n(p.lf)) { addTo(blkLF, p.size, n(p.lf)); addTo(xLF, p.size + ' blocking', n(p.lf)); } });
 
             const supplier = [];
             Object.keys(joists).sort().forEach(k => {
@@ -232,7 +232,7 @@
             (f.beams || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
                 supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (beam)`);
-                addTo(xLF, p.size, n(p.qty) * n(p.length));
+                addTo(xLF, p.size.trim() + ' beam', n(p.qty) * n(p.length));
             });
 
             const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
@@ -257,9 +257,9 @@
                 const count = run * (SPACING[r.spacing] || 0.8) + 1 + n(r.extra);
                 const buyLen = Math.ceil(span / 2) * 2;
                 addTo(joists, r.size + '|' + buyLen, count);
-                addTo(xLF, r.size, count * span);
+                addTo(xLF, r.size + ' ceiling joists', count * span);
             });
-            (c.ledgers || []).forEach(p => { if (n(p.lf)) { addTo(ledgerLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+            (c.ledgers || []).forEach(p => { if (n(p.lf)) { addTo(ledgerLF, p.size, n(p.lf)); addTo(xLF, p.size + ' ledger', n(p.lf)); } });
 
             const supplier = [];
             Object.keys(joists).sort().forEach(k => {
@@ -271,7 +271,7 @@
                 (c[key] || []).forEach(p => {
                     if (!n(p.qty) || !n(p.length)) return;
                     supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${label})`);
-                    addTo(xLF, p.size, n(p.qty) * n(p.length));
+                    addTo(xLF, p.size.trim() + ' ' + label, n(p.qty) * n(p.length));
                 });
             });
 
@@ -302,20 +302,20 @@
                 const c = roofRow(r);
                 if (!c) return;
                 addTo(rafters, r.size + '|' + c.buyLen, c.rafters);
-                addTo(xLF, r.size, c.rafters * c.buyLen);
+                addTo(xLF, r.size + ' rafters', c.rafters * c.buyLen);
                 // Ridge: length + 4 (gables only), doubled if checked
                 if (c.sides === 2) {
                     const lf = (n(r.length) + 4) * (r.doubleRidge ? 2 : 1);
                     addTo(ridgeLF, r.ridgeSize, lf);
-                    addTo(xLF, r.ridgeSize, lf);
+                    addTo(xLF, r.ridgeSize + ' ridge', lf);
                 }
                 // Blocking: length x sides at rafter size
                 addTo(blkLF, r.size, n(r.length) * c.sides);
-                addTo(xLF, r.size, n(r.length) * c.sides);
+                addTo(xLF, r.size + ' blocking', n(r.length) * c.sides);
                 collars += c.collars;
             });
-            (rf.hips || []).forEach(p => { if (n(p.lf)) { addTo(hipLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
-            (rf.calFill || []).forEach(p => { if (n(p.lf)) { addTo(calLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+            (rf.hips || []).forEach(p => { if (n(p.lf)) { addTo(hipLF, p.size, n(p.lf)); addTo(xLF, p.size + ' hip / valley', n(p.lf)); } });
+            (rf.calFill || []).forEach(p => { if (n(p.lf)) { addTo(calLF, p.size, n(p.lf)); addTo(xLF, p.size + ' California fill', n(p.lf)); } });
 
             const supplier = [];
             Object.keys(rafters).sort().forEach(k => {
@@ -331,12 +331,12 @@
             // Collar ties: 50% of rafters, 2x4x8 each
             if (collars) {
                 supplier.push(`${Math.ceil(collars * sw)} - 2 x 4 x 8   (collar ties)`);
-                addTo(xLF, '2x4', collars * 8);
+                addTo(xLF, '2x4 collar ties', collars * 8);
             }
             (rf.purlins || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
                 supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (purlin / kicker)`);
-                addTo(xLF, p.size, n(p.qty) * n(p.length));
+                addTo(xLF, p.size.trim() + ' purlin / kicker', n(p.qty) * n(p.length));
             });
 
             const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
