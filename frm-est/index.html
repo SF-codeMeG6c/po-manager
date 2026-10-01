@@ -92,7 +92,7 @@
         const RAFTER_SIZES = ['2x6', '2x8', '2x10', '2x12'];
         const RIDGE_SIZES = ['2x8', '2x10', '2x12', '2x14'];
         const PURLIN_SIZES = ['2x4', '2x6', '4x4', '4x6'];
-        const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
+        const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, gables: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
         const ROOF_SHEATH = { '1/2': '4 x 8 x 1/2" CDX', '7/16': '4 x 8 x 7/16" OSB' };
         const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
         const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
@@ -139,6 +139,8 @@
             roofSheath: {
                 sf: '',
                 type: '1/2',
+                eaveOH: 2,
+                bargeOH: 2,
                 fascia: [],
                 starter: [],
                 lookouts: [],
@@ -301,11 +303,17 @@
         function roofRow(r) {
             const run = n(r.run), pitch = n(r.pitch), length = n(r.length);
             if (!run || !length) return null;
-            const slope = Math.sqrt(run * run + Math.pow(run * pitch / 12, 2)) + n(r.overhang);
+            const sloped = Math.sqrt(run * run + Math.pow(run * pitch / 12, 2)); // no overhang
+            const slope = sloped + n(r.overhang);
             const buyLen = Math.ceil(slope / 2) * 2; // next even foot
             const sides = n(r.sides) || 2;
             const rafters = sides * (length * (SPACING[r.spacing] || 0.55) + 1);
-            return { slope, buyLen, sides, rafters, collars: r.collar !== false ? rafters * 0.5 : 0 };
+            const gables = r.gables === undefined ? 2 : n(r.gables);
+            return {
+                slope, buyLen, sides, rafters, collars: r.collar !== false ? rafters * 0.5 : 0,
+                sheathSF: sloped * length * sides,   // overhang gets starter board instead
+                barge: gables * sides * slope        // barge = rafter length with overhang
+            };
         }
 
         // Conventional roof math -> same shape as calcWalls
@@ -368,7 +376,13 @@
             const total = Math.ceil(length * 0.55 + 1); // 24" OC
             const gables = Math.min(n(r.gables), total);
             const each = span + 2 * n(r.overhang); // span plus tails both sides
-            return { total, gables, commons: total - gables, each };
+            const half = span / 2;
+            const sloped = Math.sqrt(half * half + Math.pow(half * n(r.pitch) / 12, 2)); // no tail
+            return {
+                total, gables, commons: total - gables, each,
+                sheathSF: sloped * length * 2,
+                barge: gables * 2 * (sloped + n(r.overhang))
+            };
         }
 
         // Trusses: 10% waste on both lists (not the usual Xactimate %)
@@ -400,7 +414,22 @@
         }
 
         // Roof sheathing, fascia, starter, lookouts
-        function calcRoofSheath(r, waste) {
+        // Totals from both roof sections: sheathing SF and barge LF
+        function roofTotals(est) {
+            let sf = 0, barge = 0;
+            (est.roof.rows || []).forEach(r => { const c = roofRow(r); if (c) { sf += c.sheathSF; barge += c.barge; } });
+            (est.trusses.rows || []).forEach(r => { const c = trussRow(r); if (c) { sf += c.sheathSF; barge += c.barge; } });
+            return { sf: Math.ceil(sf), barge: Math.ceil(barge) };
+        }
+
+        // Starter board: (fascia LF x eave overhang + barge LF x barge overhang) / 7" coverage -> LF of 1x8 shiplap
+        function starterCalc(r, barge) {
+            const fasciaLF = (r.fascia || []).reduce((t, p) => t + n(p.lf), 0);
+            const sf = fasciaLF * n(r.eaveOH) + barge * n(r.bargeOH);
+            return { fasciaLF, sf, lf: sf / (7 / 12) };
+        }
+
+        function calcRoofSheath(r, waste, barge) {
             const sw = 1 + n(waste.supplier) / 100;
             const xw = 1 + n(waste.xact) / 100;
             const supplier = [], xact = [];
@@ -409,7 +438,7 @@
                 supplier.push(`${Math.ceil((n(r.sf) / 32) * sw)} - ${t}   (roof sheathing)`);
                 xact.push([t.replace('4 x 8 x ', '') + ' roof sheathing', Math.ceil(n(r.sf) * xw), 'SF']);
             }
-            [['fascia', 'fascia'], ['starter', 'starter board']].forEach(([key, label]) => {
+            [['fascia', 'fascia']].forEach(([key, label]) => {
                 const lf = {};
                 (r[key] || []).forEach(p => { if (n(p.lf)) lf[p.size] = (lf[p.size] || 0) + n(p.lf); });
                 Object.keys(lf).sort().forEach(k => {
@@ -417,6 +446,11 @@
                     xact.push([`${k} ${label}`, Math.ceil(lf[k] * xw), 'LF']);
                 });
             });
+            const st = starterCalc(r, barge);
+            if (st.lf) {
+                supplier.push(`${Math.ceil((st.lf / 16) * sw)} - 1 x 8 shiplap x 16   (starter board)`);
+                xact.push(['1x8 shiplap starter board', Math.ceil(st.lf * xw), 'LF']);
+            }
             (r.lookouts || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
                 supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (lookouts)`);
@@ -660,7 +694,9 @@
             const tr = est && est.trusses;
             const trussOut = est ? calcTrusses(tr, est.waste) : null;
             const rs = est && est.roofSheath;
-            const rsOut = est ? calcRoofSheath(rs, est.waste) : null;
+            const rt = est ? roofTotals(est) : null;
+            const rsOut = est ? calcRoofSheath(rs, est.waste, rt.barge) : null;
+            const st = est ? starterCalc(rs, rt.barge) : null;
 
             return (
                 <div>
@@ -863,6 +899,10 @@
                                                 <select value={r.sides} onChange={e => setRoofRow(i, 'sides', parseInt(e.target.value))}>
                                                     <option value={2}>2 (gable)</option><option value={1}>1 (shed)</option>
                                                 </select></div>
+                                            <div><label>Gable ends</label>
+                                                <select value={r.gables === undefined ? 2 : r.gables} onChange={e => setRoofRow(i, 'gables', parseInt(e.target.value))}>
+                                                    <option value={0}>0</option><option value={1}>1</option><option value={2}>2</option>
+                                                </select></div>
                                             <button className="btn-x" onClick={() => setRoof('rows', rf.rows.filter((_, j) => j !== i))}>✕</button>
                                         </div>
                                         <div className="inline" style={{ alignItems: 'flex-end', marginTop: '8px' }}>
@@ -950,10 +990,23 @@
                                 <select style={{ width: 'auto' }} value={rs.type} onChange={e => setRS('type', e.target.value)}>
                                     <option value="1/2">1/2" CDX</option><option value="7/16">7/16" OSB</option>
                                 </select>
+                                <span className="muted" style={{ marginTop: 0 }}>Calculated: {rt.sf.toLocaleString()} SF (no overhang)</span>
+                                <button className="btn-secondary btn-sm" disabled={!rt.sf} onClick={() => setRS('sf', String(rt.sf))}>Use calculated</button>
                             </div>
 
                             <LFTable title="Fascia" sizes={['2x6', '2x8', '2x10', '2x12']} list={rs.fascia} onChange={v => setRS('fascia', v)} />
-                            <LFTable title="Starter board" sizes={['2x6 T&G', '2x6', '1x6', '1x8']} list={rs.starter} onChange={v => setRS('starter', v)} />
+                            <div className="sub-title">Starter board (1x8 shiplap, 7" coverage)</div>
+                            <div className="inline">
+                                <label>Eave overhang</label>
+                                <select style={{ width: 'auto' }} value={rs.eaveOH} onChange={e => setRS('eaveOH', parseInt(e.target.value))}>
+                                    <option value={0}>None</option><option value={1}>1'</option><option value={2}>2'</option><option value={3}>3'</option>
+                                </select>
+                                <label style={{ marginLeft: '16px' }}>Barge overhang</label>
+                                <select style={{ width: 'auto' }} value={rs.bargeOH} onChange={e => setRS('bargeOH', parseInt(e.target.value))}>
+                                    <option value={0}>None</option><option value={1}>1'</option><option value={2}>2'</option><option value={3}>3'</option>
+                                </select>
+                            </div>
+                            <div className="muted">Fascia {st.fasciaLF} LF × {n(rs.eaveOH)}' + barge {rt.barge} LF × {n(rs.bargeOH)}' = {Math.ceil(st.sf)} SF → {Math.ceil(st.lf)} LF of 1x8 shiplap</div>
                             <PieceTable title="Lookouts" sizes={['2x4', '2x6']} list={rs.lookouts} onChange={v => setRS('lookouts', v)} />
 
                             <div className="sub-title">Hours</div>
