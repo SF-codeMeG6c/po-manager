@@ -89,6 +89,10 @@
         const SPACING = { '12': 1.0, '16': 0.8, '24': 0.55 }; // joists per LF of run
         const SHEATH_TYPES = { '3/4': '4 x 8 x 3/4" T&G', '5/8': '4 x 8 x 5/8" T&G' };
 
+        const RAFTER_SIZES = ['2x6', '2x8', '2x10', '2x12'];
+        const RIDGE_SIZES = ['2x8', '2x10', '2x12', '2x14'];
+        const PURLIN_SIZES = ['2x4', '2x6', '4x4', '4x6'];
+        const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
         const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
         const newLF = (size) => ({ size, lf: '' });
         const newWall = () => ({ name: '', lf: '', size: '2x4', height: '8', topPlates: 2, pt: true, extraStuds: '' });
@@ -112,6 +116,14 @@
                 beams: [],
                 sheathSF: '',
                 sheathType: '3/4',
+                frmHours: newHours(),
+                dmoHours: newHours()
+            },
+            roof: {
+                rows: [newRoof()],
+                hips: [],
+                calFill: [],
+                purlins: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
             },
@@ -267,6 +279,70 @@
             return { supplier, xact };
         }
 
+        // One roof row -> rafter length (even ft), counts
+        function roofRow(r) {
+            const run = n(r.run), pitch = n(r.pitch), length = n(r.length);
+            if (!run || !length) return null;
+            const slope = Math.sqrt(run * run + Math.pow(run * pitch / 12, 2)) + n(r.overhang);
+            const buyLen = Math.ceil(slope / 2) * 2; // next even foot
+            const sides = n(r.sides) || 2;
+            const rafters = sides * (length * (SPACING[r.spacing] || 0.55) + 1);
+            return { slope, buyLen, sides, rafters, collars: r.collar !== false ? rafters * 0.5 : 0 };
+        }
+
+        // Conventional roof math -> same shape as calcWalls
+        function calcRoof(rf, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const rafters = {}, xLF = {}, ridgeLF = {}, blkLF = {}, hipLF = {}, calLF = {};
+            let collars = 0;
+            const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+
+            (rf.rows || []).forEach(r => {
+                const c = roofRow(r);
+                if (!c) return;
+                addTo(rafters, r.size + '|' + c.buyLen, c.rafters);
+                addTo(xLF, r.size, c.rafters * c.buyLen);
+                // Ridge: length + 4 (gables only), doubled if checked
+                if (c.sides === 2) {
+                    const lf = (n(r.length) + 4) * (r.doubleRidge ? 2 : 1);
+                    addTo(ridgeLF, r.ridgeSize, lf);
+                    addTo(xLF, r.ridgeSize, lf);
+                }
+                // Blocking: length x sides at rafter size
+                addTo(blkLF, r.size, n(r.length) * c.sides);
+                addTo(xLF, r.size, n(r.length) * c.sides);
+                collars += c.collars;
+            });
+            (rf.hips || []).forEach(p => { if (n(p.lf)) { addTo(hipLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+            (rf.calFill || []).forEach(p => { if (n(p.lf)) { addTo(calLF, p.size, n(p.lf)); addTo(xLF, p.size, n(p.lf)); } });
+
+            const supplier = [];
+            Object.keys(rafters).sort().forEach(k => {
+                const [size, len] = k.split('|');
+                supplier.push(`${Math.ceil(rafters[k] * sw)} - ${sp(size)} x ${len}   (rafters)`);
+            });
+            const by16 = (obj, label) => Object.keys(obj).sort().forEach(k =>
+                supplier.push(`${Math.ceil((obj[k] / 16) * sw)} - ${sp(k)} x 16   (${label})`));
+            by16(ridgeLF, 'ridge');
+            by16(blkLF, 'blocking');
+            by16(hipLF, 'hip / valley');
+            by16(calLF, 'California fill');
+            // Collar ties: 50% of rafters, 2x4x8 each
+            if (collars) {
+                supplier.push(`${Math.ceil(collars * sw)} - 2 x 4 x 8   (collar ties)`);
+                addTo(xLF, '2x4', collars * 8);
+            }
+            (rf.purlins || []).forEach(p => {
+                if (!n(p.qty) || !n(p.length)) return;
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (purlin / kicker)`);
+                addTo(xLF, p.size, n(p.qty) * n(p.length));
+            });
+
+            const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
+            return { supplier, xact };
+        }
+
         function Output({ out, waste }) {
             return (
                 <div className="out">
@@ -406,7 +482,8 @@
                         waste: { ...base.waste, ...(d.waste || {}) },
                         walls: { ...base.walls, ...(d.walls || {}) },
                         floor: { ...base.floor, ...(d.floor || {}) },
-                        ceiling: { ...base.ceiling, ...(d.ceiling || {}) }
+                        ceiling: { ...base.ceiling, ...(d.ceiling || {}) },
+                        roof: { ...base.roof, ...(d.roof || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
@@ -417,6 +494,8 @@
             const setFloorRow = (i, k, v) => setFloor('rows', est.floor.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setCeil = (k, v) => change(p => ({ ...p, ceiling: { ...p.ceiling, [k]: v } }));
             const setCeilRow = (i, k, v) => setCeil('rows', est.ceiling.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const setRoof = (k, v) => change(p => ({ ...p, roof: { ...p.roof, [k]: v } }));
+            const setRoofRow = (i, k, v) => setRoof('rows', est.roof.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
@@ -442,6 +521,7 @@
                         walls: est.walls,
                         floor: est.floor,
                         ceiling: est.ceiling,
+                        roof: est.roof,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -486,6 +566,8 @@
             const floorOut = est ? calcFloor(f, est.waste) : null;
             const c = est && est.ceiling;
             const ceilOut = est ? calcCeiling(c, est.waste) : null;
+            const rf = est && est.roof;
+            const roofOut = est ? calcRoof(rf, est.waste) : null;
 
             return (
                 <div>
@@ -661,6 +743,70 @@
                             </tbody></table>
 
                             <Output out={ceilOut} waste={est.waste} />
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">ROOF - CONVENTIONAL</div>
+                            {rf.rows.map((r, i) => {
+                                const calc = roofRow(r);
+                                const fld = (label, k) => (
+                                    <div><label>{label}</label>
+                                        <input type="number" style={{ width: '90px' }} value={r[k]} onChange={e => setRoofRow(i, k, e.target.value)} /></div>
+                                );
+                                return (
+                                    <div key={i} style={{ border: '1px solid #e5e5e5', borderRadius: '6px', padding: '12px', marginBottom: '10px' }}>
+                                        <div className="inline" style={{ alignItems: 'flex-end' }}>
+                                            <div style={{ flex: 1, minWidth: '160px' }}><label>Roof area</label>
+                                                <input value={r.name} onChange={e => setRoofRow(i, 'name', e.target.value)} placeholder="e.g. Main roof" /></div>
+                                            <div><label>Rafters</label>
+                                                <select value={r.size} onChange={e => setRoofRow(i, 'size', e.target.value)}>
+                                                    {RAFTER_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                                                </select></div>
+                                            <div><label>Spacing</label>
+                                                <select value={r.spacing} onChange={e => setRoofRow(i, 'spacing', e.target.value)}>
+                                                    <option value="12">12" OC</option><option value="16">16" OC</option><option value="24">24" OC</option>
+                                                </select></div>
+                                            <div><label>Sides</label>
+                                                <select value={r.sides} onChange={e => setRoofRow(i, 'sides', parseInt(e.target.value))}>
+                                                    <option value={2}>2 (gable)</option><option value={1}>1 (shed)</option>
+                                                </select></div>
+                                            <button className="btn-x" onClick={() => setRoof('rows', rf.rows.filter((_, j) => j !== i))}>✕</button>
+                                        </div>
+                                        <div className="inline" style={{ alignItems: 'flex-end', marginTop: '8px' }}>
+                                            {fld('Pitch (/12)', 'pitch')}
+                                            {fld('Run (ft)', 'run')}
+                                            {fld('Overhang (ft)', 'overhang')}
+                                            {fld('Length (LF)', 'length')}
+                                            {r.sides === 2 && (<>
+                                                <div><label>Ridge</label>
+                                                    <select value={r.ridgeSize} onChange={e => setRoofRow(i, 'ridgeSize', e.target.value)}>
+                                                        {RIDGE_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                                                    </select></div>
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'normal' }}>
+                                                    <input type="checkbox" style={{ width: 'auto' }} checked={r.doubleRidge} onChange={e => setRoofRow(i, 'doubleRidge', e.target.checked)} /> Double ridge
+                                                </label>
+                                            </>)}
+                                            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'normal' }}>
+                                                <input type="checkbox" style={{ width: 'auto' }} checked={r.collar !== false} onChange={e => setRoofRow(i, 'collar', e.target.checked)} /> Collar ties
+                                            </label>
+                                        </div>
+                                        {calc && <div className="muted">Rafter {calc.slope.toFixed(1)}' → buy {calc.buyLen}' · {Math.ceil(calc.rafters)} rafters before waste{r.collar !== false ? ` · ${Math.ceil(calc.collars)} collar ties` : ''}</div>}
+                                    </div>
+                                );
+                            })}
+                            <button className="btn-secondary btn-sm" onClick={() => setRoof('rows', [...rf.rows, newRoof()])}>+ Add roof area</button>
+
+                            <LFTable title="Hips / valleys" sizes={RIDGE_SIZES} list={rf.hips} onChange={v => setRoof('hips', v)} />
+                            <LFTable title="California fill" sizes={['2x4', '2x6']} list={rf.calFill} onChange={v => setRoof('calFill', v)} />
+                            <PieceTable title="Purlins / kickers" sizes={PURLIN_SIZES} list={rf.purlins} onChange={v => setRoof('purlins', v)} />
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Roof framing" value={rf.frmHours} onChange={v => setRoof('frmHours', v)} />
+                                <HoursRow label="Roof demo" value={rf.dmoHours} onChange={v => setRoof('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={roofOut} waste={est.waste} />
                         </div>
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
