@@ -93,6 +93,8 @@
         const RIDGE_SIZES = ['2x8', '2x10', '2x12', '2x14'];
         const PURLIN_SIZES = ['2x4', '2x6', '4x4', '4x6'];
         const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
+        const ROOF_SHEATH = { '1/2': '4 x 8 x 1/2" CDX', '7/16': '4 x 8 x 7/16" OSB' };
+        const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
         const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
         const newLF = (size) => ({ size, lf: '' });
         const newWall = () => ({ name: '', lf: '', size: '2x4', height: '8', topPlates: 2, pt: true, extraStuds: '' });
@@ -124,6 +126,22 @@
                 hips: [],
                 calFill: [],
                 purlins: [],
+                frmHours: newHours(),
+                dmoHours: newHours()
+            },
+            trusses: {
+                rows: [newTruss()],
+                bracing: [],
+                blocking: [],
+                frmHours: newHours(),
+                dmoHours: newHours()
+            },
+            roofSheath: {
+                sf: '',
+                type: '1/2',
+                fascia: [],
+                starter: [],
+                lookouts: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
             },
@@ -343,6 +361,70 @@
             return { supplier, xact };
         }
 
+        // One truss row -> total count, gable ends, LF per truss
+        function trussRow(r) {
+            const length = n(r.length), span = n(r.span);
+            if (!length || !span) return null;
+            const total = Math.ceil(length * 0.55 + 1); // 24" OC
+            const gables = Math.min(n(r.gables), total);
+            const each = span + 2 * n(r.overhang); // span plus tails both sides
+            return { total, gables, commons: total - gables, each };
+        }
+
+        // Trusses: 10% waste on both lists (not the usual Xactimate %)
+        function calcTrusses(t, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const supplier = [], xact = [], xLF = {}, brLF = {}, blkLF = {};
+            const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+
+            (t.rows || []).forEach(r => {
+                const c = trussRow(r);
+                if (!c) return;
+                const desc = `${n(r.span)}' span ${n(r.pitch)}/12${n(r.overhang) ? `, ${n(r.overhang)}' tails` : ''}`;
+                if (c.commons) supplier.push(`${Math.ceil(c.commons * 1.1)} - Common truss ${desc}`);
+                if (c.gables) supplier.push(`${c.gables} - Gable end truss ${desc}`);
+                xact.push([`Truss ${desc}`, Math.ceil((c.commons * 1.1 + c.gables) * c.each), 'LF']);
+            });
+            (t.bracing || []).forEach(p => { if (n(p.lf)) addTo(brLF, p.size, n(p.lf)); });
+            (t.blocking || []).forEach(p => { if (n(p.lf)) addTo(blkLF, p.size, n(p.lf)); });
+            Object.keys(brLF).sort().forEach(k => {
+                supplier.push(`${Math.ceil((brLF[k] / 16) * sw)} - ${sp(k)} x 16   (truss bracing)`);
+                xact.push([k + ' truss bracing', Math.ceil(brLF[k] * xw), 'LF']);
+            });
+            Object.keys(blkLF).sort().forEach(k => {
+                supplier.push(`${Math.ceil((blkLF[k] / 16) * sw)} - ${sp(k)} x 16   (truss blocking)`);
+                xact.push([k + ' truss blocking', Math.ceil(blkLF[k] * xw), 'LF']);
+            });
+            return { supplier, xact };
+        }
+
+        // Roof sheathing, fascia, starter, lookouts
+        function calcRoofSheath(r, waste) {
+            const sw = 1 + n(waste.supplier) / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const supplier = [], xact = [];
+            if (n(r.sf)) {
+                const t = ROOF_SHEATH[r.type] || ROOF_SHEATH['1/2'];
+                supplier.push(`${Math.ceil((n(r.sf) / 32) * sw)} - ${t}   (roof sheathing)`);
+                xact.push([t.replace('4 x 8 x ', '') + ' roof sheathing', Math.ceil(n(r.sf) * xw), 'SF']);
+            }
+            [['fascia', 'fascia'], ['starter', 'starter board']].forEach(([key, label]) => {
+                const lf = {};
+                (r[key] || []).forEach(p => { if (n(p.lf)) lf[p.size] = (lf[p.size] || 0) + n(p.lf); });
+                Object.keys(lf).sort().forEach(k => {
+                    supplier.push(`${Math.ceil((lf[k] / 16) * sw)} - ${sp(k)} x 16   (${label})`);
+                    xact.push([`${k} ${label}`, Math.ceil(lf[k] * xw), 'LF']);
+                });
+            });
+            (r.lookouts || []).forEach(p => {
+                if (!n(p.qty) || !n(p.length)) return;
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (lookouts)`);
+                xact.push([`${p.size.trim()} lookouts`, Math.ceil(n(p.qty) * n(p.length) * xw), 'LF']);
+            });
+            return { supplier, xact };
+        }
+
         function Output({ out, waste }) {
             return (
                 <div className="out">
@@ -483,7 +565,9 @@
                         walls: { ...base.walls, ...(d.walls || {}) },
                         floor: { ...base.floor, ...(d.floor || {}) },
                         ceiling: { ...base.ceiling, ...(d.ceiling || {}) },
-                        roof: { ...base.roof, ...(d.roof || {}) }
+                        roof: { ...base.roof, ...(d.roof || {}) },
+                        trusses: { ...base.trusses, ...(d.trusses || {}) },
+                        roofSheath: { ...base.roofSheath, ...(d.roofSheath || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
@@ -496,6 +580,9 @@
             const setCeilRow = (i, k, v) => setCeil('rows', est.ceiling.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setRoof = (k, v) => change(p => ({ ...p, roof: { ...p.roof, [k]: v } }));
             const setRoofRow = (i, k, v) => setRoof('rows', est.roof.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const setTruss = (k, v) => change(p => ({ ...p, trusses: { ...p.trusses, [k]: v } }));
+            const setTrussRow = (i, k, v) => setTruss('rows', est.trusses.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const setRS = (k, v) => change(p => ({ ...p, roofSheath: { ...p.roofSheath, [k]: v } }));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
@@ -522,6 +609,8 @@
                         floor: est.floor,
                         ceiling: est.ceiling,
                         roof: est.roof,
+                        trusses: est.trusses,
+                        roofSheath: est.roofSheath,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -568,6 +657,10 @@
             const ceilOut = est ? calcCeiling(c, est.waste) : null;
             const rf = est && est.roof;
             const roofOut = est ? calcRoof(rf, est.waste) : null;
+            const tr = est && est.trusses;
+            const trussOut = est ? calcTrusses(tr, est.waste) : null;
+            const rs = est && est.roofSheath;
+            const rsOut = est ? calcRoofSheath(rs, est.waste) : null;
 
             return (
                 <div>
@@ -807,6 +900,69 @@
                             </tbody></table>
 
                             <Output out={roofOut} waste={est.waste} />
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">ROOF - TRUSSES (24" OC)</div>
+                            <table>
+                                <thead><tr>
+                                    <th>Roof area</th><th>Span (ft)</th><th>Pitch (/12)</th><th>Overhang (ft)</th><th>Length (LF)</th><th>Gable ends</th><th></th>
+                                </tr></thead>
+                                <tbody>
+                                    {tr.rows.map((r, i) => (
+                                        <tr key={i}>
+                                            <td><input value={r.name} onChange={e => setTrussRow(i, 'name', e.target.value)} placeholder="e.g. Garage" /></td>
+                                            <td><input className="num" type="number" value={r.span} onChange={e => setTrussRow(i, 'span', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.pitch} onChange={e => setTrussRow(i, 'pitch', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.overhang} onChange={e => setTrussRow(i, 'overhang', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.length} onChange={e => setTrussRow(i, 'length', e.target.value)} /></td>
+                                            <td><select value={r.gables} onChange={e => setTrussRow(i, 'gables', parseInt(e.target.value))}>
+                                                <option value={0}>0</option><option value={1}>1</option><option value={2}>2</option>
+                                            </select></td>
+                                            <td><button className="btn-x" onClick={() => setTruss('rows', tr.rows.filter((_, j) => j !== i))}>✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            {tr.rows.map((r, i) => { const c = trussRow(r); return c && (
+                                <div key={i} className="muted">{r.name || `Row ${i + 1}`}: {c.total} trusses ({c.commons} common + {c.gables} gable end) · {c.each}' each</div>
+                            ); })}
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setTruss('rows', [...tr.rows, newTruss()])}>+ Add trusses</button>
+
+                            <LFTable title="Lateral bracing" sizes={['2x4', '2x6']} list={tr.bracing} onChange={v => setTruss('bracing', v)} />
+                            <LFTable title="Blocking" sizes={['2x4', '2x6', '2x8']} list={tr.blocking} onChange={v => setTruss('blocking', v)} />
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Truss framing" value={tr.frmHours} onChange={v => setTruss('frmHours', v)} />
+                                <HoursRow label="Truss demo" value={tr.dmoHours} onChange={v => setTruss('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={trussOut} waste={est.waste} />
+                            <div className="muted">Trusses get 10% waste on both lists. Gable ends are listed as entered.</div>
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">ROOF SHEATHING & FASCIA</div>
+                            <div className="inline">
+                                <label>Roof sheathing SF</label>
+                                <input className="num" type="number" value={rs.sf} onChange={e => setRS('sf', e.target.value)} />
+                                <select style={{ width: 'auto' }} value={rs.type} onChange={e => setRS('type', e.target.value)}>
+                                    <option value="1/2">1/2" CDX</option><option value="7/16">7/16" OSB</option>
+                                </select>
+                            </div>
+
+                            <LFTable title="Fascia" sizes={['2x6', '2x8', '2x10', '2x12']} list={rs.fascia} onChange={v => setRS('fascia', v)} />
+                            <LFTable title="Starter board" sizes={['2x6 T&G', '2x6', '1x6', '1x8']} list={rs.starter} onChange={v => setRS('starter', v)} />
+                            <PieceTable title="Lookouts" sizes={['2x4', '2x6']} list={rs.lookouts} onChange={v => setRS('lookouts', v)} />
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Sheathing / fascia framing" value={rs.frmHours} onChange={v => setRS('frmHours', v)} />
+                                <HoursRow label="Sheathing / fascia demo" value={rs.dmoHours} onChange={v => setRS('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={rsOut} waste={est.waste} />
                         </div>
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
