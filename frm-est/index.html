@@ -95,6 +95,12 @@
         const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, gables: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
         const ROOF_SHEATH = { '1/2': '4 x 8 x 1/2" CDX', '7/16': '4 x 8 x 7/16" OSB' };
         const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
+        const HARDWARE = ['Simpson H2.5A', 'Simpson A35', 'Simpson L50', 'Simpson LUS26', 'Simpson LUS28', 'Simpson LUS210',
+            'Simpson LSU26', 'Simpson LSU210', 'Simpson HDU2', 'Simpson HDU4', 'Simpson MSTA24', 'Simpson MSTA36',
+            'Simpson CS16 coil strap', 'Simpson SDS 1/4 x 3', '16d sinkers', '8d common', '10d common', 'Joist hanger nails'];
+        const HW_UNITS = ['EA', 'Box', 'Roll', 'LF'];
+        const HW_SUPPLIER_WASTE = 5; // hardware supplier waste %, separate from lumber
+        const newHW = () => ({ item: '', qty: '', unit: 'EA' });
         const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
         const newLF = (size) => ({ size, lf: '' });
         const newWall = () => ({ name: '', lf: '', size: '2x4', height: '8', topPlates: 2, pt: true, extraStuds: '' });
@@ -148,6 +154,12 @@
                 fascia: [],
                 starter: [],
                 lookouts: [],
+                frmHours: newHours(),
+                dmoHours: newHours()
+            },
+            hardware: {
+                autoH25: true,
+                rows: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
             },
@@ -467,6 +479,28 @@
             return { supplier, xact };
         }
 
+        // Rafter + truss count (before waste) for automatic hurricane ties
+        function tieCount(est) {
+            let c = 0;
+            (est.roof.rows || []).forEach(r => { const x = roofRow(r); if (x) c += x.rafters; });
+            (est.trusses.rows || []).forEach(r => { const x = trussRow(r); if (x) c += x.total; });
+            return Math.ceil(c);
+        }
+
+        // Hardware: 5% supplier waste, job Xactimate % on the Xactimate side
+        function calcHardware(h, waste, ties) {
+            const sw = 1 + HW_SUPPLIER_WASTE / 100;
+            const xw = 1 + n(waste.xact) / 100;
+            const supplier = [], xact = [];
+            const push = (item, qty, unit) => {
+                supplier.push(`${Math.ceil(qty * sw)} - ${item}${unit && unit !== 'EA' ? ` (${unit})` : ''}`);
+                xact.push([item, Math.ceil(qty * xw), unit || 'EA']);
+            };
+            if (h.autoH25 !== false && ties) push('Simpson H2.5A', ties, 'EA');
+            (h.rows || []).forEach(r => { if (r.item.trim() && n(r.qty)) push(r.item.trim(), n(r.qty), r.unit); });
+            return { supplier, xact };
+        }
+
         function Output({ out, waste }) {
             return (
                 <div className="out">
@@ -609,7 +643,8 @@
                         ceiling: { ...base.ceiling, ...(d.ceiling || {}) },
                         roof: { ...base.roof, ...(d.roof || {}) },
                         trusses: { ...base.trusses, ...(d.trusses || {}) },
-                        roofSheath: { ...base.roofSheath, ...(d.roofSheath || {}) }
+                        roofSheath: { ...base.roofSheath, ...(d.roofSheath || {}) },
+                        hardware: { ...base.hardware, ...(d.hardware || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
@@ -625,6 +660,8 @@
             const setTruss = (k, v) => change(p => ({ ...p, trusses: { ...p.trusses, [k]: v } }));
             const setTrussRow = (i, k, v) => setTruss('rows', est.trusses.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setRS = (k, v) => change(p => ({ ...p, roofSheath: { ...p.roofSheath, [k]: v } }));
+            const setHW = (k, v) => change(p => ({ ...p, hardware: { ...p.hardware, [k]: v } }));
+            const setHWRow = (i, k, v) => setHW('rows', est.hardware.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
 
             const login = async () => {
@@ -653,6 +690,7 @@
                         roof: est.roof,
                         trusses: est.trusses,
                         roofSheath: est.roofSheath,
+                        hardware: est.hardware,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -705,6 +743,9 @@
             const rt = est ? roofTotals(est) : null;
             const rsOut = est ? calcRoofSheath(rs, est.waste, rt) : null;
             const st = est ? starterCalc(rs, rt) : null;
+            const hw = est && est.hardware;
+            const ties = est ? tieCount(est) : 0;
+            const hwOut = est ? calcHardware(hw, est.waste, ties) : null;
 
             return (
                 <div>
@@ -1063,6 +1104,41 @@
                             </tbody></table>
 
                             <Output out={rsOut} waste={est.waste} />
+                        </div>
+
+                        <div className="section">
+                            <div className="section-title">HARDWARE</div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', marginBottom: '8px' }}>
+                                <input type="checkbox" style={{ width: 'auto' }} checked={hw.autoH25 !== false} onChange={e => setHW('autoH25', e.target.checked)} />
+                                Simpson H2.5A hurricane ties: 1 per rafter and truss ({ties} before waste)
+                            </label>
+                            {hw.rows.length > 0 && (
+                                <table>
+                                    <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th></th></tr></thead>
+                                    <tbody>
+                                        {hw.rows.map((r, i) => (
+                                            <tr key={i}>
+                                                <td><input list="hw-items" value={r.item} onChange={e => setHWRow(i, 'item', e.target.value)} placeholder="pick or type" /></td>
+                                                <td><input className="num" type="number" value={r.qty} onChange={e => setHWRow(i, 'qty', e.target.value)} /></td>
+                                                <td><select style={{ width: 'auto' }} value={r.unit} onChange={e => setHWRow(i, 'unit', e.target.value)}>
+                                                    {HW_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                                                </select></td>
+                                                <td><button className="btn-x" onClick={() => setHW('rows', hw.rows.filter((_, j) => j !== i))}>✕</button></td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                            <datalist id="hw-items">{HARDWARE.map(h => <option key={h} value={h} />)}</datalist>
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setHW('rows', [...hw.rows, newHW()])}>+ Add hardware</button>
+
+                            <div className="sub-title">Hours</div>
+                            <table><tbody>
+                                <HoursRow label="Hardware install" value={hw.frmHours} onChange={v => setHW('frmHours', v)} />
+                                <HoursRow label="Hardware demo" value={hw.dmoHours} onChange={v => setHW('dmoHours', v)} />
+                            </tbody></table>
+
+                            <Output out={hwOut} waste={{ supplier: HW_SUPPLIER_WASTE, xact: est.waste.xact }} />
                         </div>
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
