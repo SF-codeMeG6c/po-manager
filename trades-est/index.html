@@ -63,6 +63,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
@@ -207,11 +208,20 @@
             if (factor > 1) factor = factor / 100;                        // 70 typed for 0.70
             if (!(factor > 0)) factor = n(DEFAULT_FACTOR);
             const retail = round2(vendorPrice / factor);                  // what Xactimate needs to total
-            const rows = ws.xact.map(x => ({ ...x, total: round2(n(x.qty) * n(x.price)) }));
+            const rows = ws.xact.map(x => {
+                // Lines marked CHANGE, OPEN-ITEM, BID ITEM... carry no dollars, same as on the Work Order
+                if (x.marker) return { ...x, total: 0 };
+                // Untouched Work Order line: use the total printed on the Work Order (Xactimate rounds its own way)
+                const asPrinted = x.woTotal != null && x.qty === x.woQty && x.price === x.woPrice;
+                return { ...x, total: asPrinted ? x.woTotal : round2(n(x.qty) * n(x.price)) };
+            });
             const xactTotal = round2(rows.reduce((t, r) => t + r.total, 0));
-            // New unit prices: every line moves by the same percentage, rounded to the cent
+            // New unit prices: every priced line moves by the same percentage, rounded to the cent
             const ratio = xactTotal > 0 ? retail / xactTotal : 0;
-            rows.forEach(r => { r.newPrice = round2(n(r.price) * ratio); r.newTotal = round2(n(r.qty) * r.newPrice); });
+            rows.forEach(r => {
+                r.newPrice = r.marker ? 0 : round2(n(r.price) * ratio);
+                r.newTotal = r.marker ? 0 : round2(n(r.qty) * r.newPrice);
+            });
             const newTotal = round2(rows.reduce((t, r) => t + r.newTotal, 0));
             return {
                 vendorPrice, factor, retail, rows, xactTotal, newTotal,
@@ -220,16 +230,123 @@
                 leftover: round2(newTotal - retail)                       // rounding leftover at the new prices
             };
         }
+        const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // Xactimate categories a trade code pulls from the Work Order: "INS" -> INS, "FNC/DOR #2" -> FNC and DOR
+        const catsFor = (code) => (code || '').toUpperCase().split(/[\s#]/)[0].split('/').filter(t => /^[A-Z]{3}$/.test(t));
+
+        // Read an Xactimate Work Order PDF (already opened with pdf.js) into its line items
+        async function parseWorkOrder(pdf) {
+            const num = (s) => parseFloat(String(s).replace(/,/g, ''));
+            const out = { date: '', estimate: '', lines: [], catTotals: {} };
+            let cat = '';     // category section we are in
+            let cur = null;   // item waiting for its quantity/price row
+            let last = null;  // last finished item (a marker like "ROOF BID ITEM" can wrap to a second row)
+            for (let p = 1; p <= pdf.numPages; p++) {
+                const page = await pdf.getPage(p);
+                const tc = await page.getTextContent();
+                // Group the text into rows by height on the page
+                const rows = [];
+                tc.items.forEach(it => {
+                    const s = (it.str || '').trim();
+                    if (!s) return;
+                    const x = it.transform[4], y = it.transform[5];
+                    let row = rows.find(r => Math.abs(r.y - y) < 2);
+                    if (!row) { row = { y, parts: [] }; rows.push(row); }
+                    row.parts.push({ x, s });
+                });
+                rows.sort((a, b) => b.y - a.y);
+                rows.forEach(row => {
+                    row.parts.sort((a, b) => a.x - b.x);
+                    const text = row.parts.map(q => q.s).join(' ').replace(/\s+/g, ' ');
+                    const x0 = row.parts[0].x;
+                    let m;
+                    if ((m = text.match(/^(\d{1,2}\/\d{1,2}\/\d{4}) Page: \d+$/))) { if (!out.date) out.date = m[1]; return; }
+                    if (row.y > 770) return; // page number at the top edge
+                    if ((m = text.match(/^Estimate: (\S+)/))) { out.estimate = m[1]; return; }
+                    if (x0 < 60 && (m = text.match(/^TOTAL .*?(-?[\d,]+\.\d{2})?$/))) { if (cat) out.catTotals[cat] = m[1] ? num(m[1]) : 0; return; }
+                    // Quantity row: "1,743.04 SF 2.16 3,764.97 [ ]" or "... CHANGE [ ]"
+                    if (cur && (m = text.match(/^(-?[\d,]+\.\d{2}) ([A-Z]{2,3}) (-?[\d,]+\.\d{2}) (.+?)(?: \[ ?\])?$/))) {
+                        cur.qty = m[1]; cur.unit = m[2]; cur.price = m[3];
+                        if (/^-?[\d,]+\.\d{2}$/.test(m[4])) { cur.total = num(m[4]); cur.marker = ''; }
+                        else { cur.total = null; cur.marker = m[4]; }
+                        out.lines.push(cur); last = cur; cur = null;
+                        return;
+                    }
+                    // Rest of a marker that wrapped ("ROOF BID" / "ITEM")
+                    if (!cur && last && last.marker && row.parts.length === 1 && x0 > 480) { last.marker += ' ' + text; last = null; return; }
+                    // Category heading: "INS INSULATION" (starts further left than the items)
+                    if (x0 < 42 && (m = text.match(/^([A-Z]{3}) [A-Z]/))) { cat = m[1]; cur = null; last = null; return; }
+                    // Item row: category, selector, activity, description
+                    if (x0 >= 42 && x0 < 60) {
+                        if (/^[A-Z]{3}$/.test(row.parts[0].s)) {
+                            const rest = row.parts.slice(1);
+                            cur = {
+                                cat: row.parts[0].s,
+                                sel: rest.filter(q => q.x < 160).map(q => q.s).join(' '),
+                                act: rest.filter(q => q.x >= 160 && q.x < 182).map(q => q.s).join(' '),
+                                desc: rest.filter(q => q.x >= 182).map(q => q.s).join(' ')
+                            };
+                        } else if ((m = text.match(/^([A-Z]{3}) (\S+) (\S) (.+)$/))) {
+                            cur = { cat: m[1], sel: m[2], act: m[3], desc: m[4] };
+                        }
+                        return;
+                    }
+                    // Description that wrapped to a second row
+                    if (cur && x0 >= 182) cur.desc += ' ' + text;
+                });
+            }
+            return out;
+        }
+
         const overShort = (x) => x === 0 ? <span>{money(0)}</span>
             : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
 
         // One trade's pricing worksheet (Quote method): vendor price, retail needed, Xactimate comparison
-        function Worksheet({ line, onChange }) {
+        function Worksheet({ line, me, onChange }) {
+            const [busy, setBusy] = useState(false);
+            const [note, setNote] = useState('');
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const c = calcWs(ws);
             const set = (k, v) => onChange({ ...ws, [k]: v });
             const setRow = (list, id, k, v) => set(list, ws[list].map(r => r.id === id ? { ...r, [k]: v } : r));
             const ready = c.vendorPrice > 0 && c.xactTotal > 0;
+
+            // Fill this trade's Xactimate lines from a Work Order PDF. Only this trade changes.
+            const upload = async (e) => {
+                const file = e.target.files[0];
+                e.target.value = '';
+                if (!file) return;
+                const cats = catsFor(line.code);
+                if (!cats.length) { setNote('Error: the trade code needs to start with a 3-letter Xactimate category, like INS, to match Work Order lines.'); return; }
+                setBusy(true);
+                setNote('');
+                try {
+                    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
+                    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+                    const wo = await parseWorkOrder(pdf);
+                    const found = wo.lines.filter(l => cats.includes(l.cat));
+                    if (!wo.lines.length) {
+                        setNote('Error: no Work Order lines found in that PDF. It needs to be the Xactimate Work Order report. Nothing changed.');
+                    } else if (!found.length) {
+                        setNote(`No ${cats.join(' or ')} lines in that Work Order. Nothing changed.`);
+                    } else if (!ws.xact.length || window.confirm(`Replace this trade's ${ws.xact.length} Xactimate line(s) with ${found.length} line(s) from the Work Order dated ${wo.date}?`)) {
+                        const xact = found.map(l => ({
+                            id: newId(), desc: `${l.sel} ${l.act} ${l.desc}`, qty: l.qty, unit: l.unit, price: l.price,
+                            woQty: l.qty, woPrice: l.price, woTotal: l.total, marker: l.marker
+                        }));
+                        const catTotal = round2(cats.reduce((t, k) => t + (wo.catTotals[k] || 0), 0));
+                        const sum = round2(found.reduce((t, l) => t + (l.total || 0), 0));
+                        onChange({ ...ws, xact, wo: { fileName: file.name, date: wo.date, estimate: wo.estimate, cats, catTotal, lines: found.length, uploadedBy: me, uploadedAt: new Date() } });
+                        setNote(sum === catTotal
+                            ? `${found.length} line(s) loaded from the Work Order dated ${wo.date}. Click Save to keep them.`
+                            : `Error: ${found.length} line(s) loaded, but they add to ${money(sum)} and the Work Order total is ${money(catTotal)}. Check the lines.`);
+                    }
+                } catch (err) {
+                    setNote('Error reading the PDF: ' + err.message);
+                }
+                setBusy(false);
+            };
 
             return (
                 <div className="ws">
@@ -264,7 +381,19 @@
                         <span>= <strong>{money(c.retail)}</strong> retail needed in Xactimate</span>
                     </div>
 
-                    <div className="sub-title">Xactimate lines (typed from the Work Order)</div>
+                    <div className="sub-title">Xactimate lines</div>
+                    <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
+                        <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333' }}>
+                            {busy ? 'Reading...' : 'Upload Work Order'}
+                            <input type="file" accept="application/pdf" onChange={upload} disabled={busy} style={{ display: 'none' }} />
+                        </label>
+                        <span style={{ color: '#666' }}>
+                            {ws.wo
+                                ? `From the Work Order dated ${ws.wo.date}${ws.wo.estimate ? ' (' + ws.wo.estimate + ')' : ''}, uploaded by ${ws.wo.uploadedBy ? ws.wo.uploadedBy.name : ''} on ${fmtStamp(ws.wo.uploadedAt)}`
+                                : 'No Work Order uploaded for this trade yet. Upload one, or add lines by hand.'}
+                        </span>
+                    </div>
+                    {note && <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
                     <table>
                         <thead><tr>
                             <th>Description</th><th className="num">Qty</th><th style={{ width: '70px' }}>Unit</th><th className="num">Unit price</th>
@@ -273,13 +402,13 @@
                         <tbody>
                             {c.rows.map(r => (
                                 <tr key={r.id}>
-                                    <td><input value={r.desc} onChange={e => setRow('xact', r.id, 'desc', e.target.value)} placeholder="Xactimate description" /></td>
+                                    <td><input value={r.desc} title={r.desc} onChange={e => setRow('xact', r.id, 'desc', e.target.value)} placeholder="Xactimate description" /></td>
                                     <td><input className="num" value={r.qty} onChange={e => setRow('xact', r.id, 'qty', e.target.value)} /></td>
                                     <td><input list="units" value={r.unit} onChange={e => setRow('xact', r.id, 'unit', e.target.value)} /></td>
                                     <td><input className="num" value={r.price} onChange={e => setRow('xact', r.id, 'price', e.target.value)} /></td>
-                                    <td className="money">{money(r.total)}</td>
-                                    <td className="money">{ready ? money(r.newPrice) : '-'}</td>
-                                    <td className="money">{ready ? money(r.newTotal) : '-'}</td>
+                                    <td className="money">{r.marker || money(r.total)}</td>
+                                    <td className="money">{ready && !r.marker ? money(r.newPrice) : '-'}</td>
+                                    <td className="money">{ready && !r.marker ? money(r.newTotal) : '-'}</td>
                                     <td><button className="btn-x" title="Remove this line" onClick={() => set('xact', ws.xact.filter(x => x.id !== r.id))}>✕</button></td>
                                 </tr>
                             ))}
@@ -375,7 +504,7 @@
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
                                     {worksheets && openId === l.id && l.method === 'quote' && (
-                                        <tr><td colSpan="5"><Worksheet line={l} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                        <tr><td colSpan="5"><Worksheet line={l} me={me} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
                                     )}
                                 </React.Fragment>
                             ))}
