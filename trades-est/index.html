@@ -1,1 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trades-EST - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .back { display: inline-block; color: #0066cc; text-decoration: none; font-size: 14px; margin-bottom: 12px; }
+        .back:hover { text-decoration: underline; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        .sub-title { font-weight: 600; color: #444; margin: 18px 0 8px; font-size: 14px; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        input, select { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; margin-top: 8px; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
+        .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .muted { font-size: 13px; color: #666; margin-top: 8px; }
+        .msg { margin-top: 15px; padding: 10px; text-align: center; font-weight: 500; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 6px 4px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; }
+        td { padding: 4px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .code { width: 170px; }
+        .unsaved { color: #cc6600; font-weight: 600; }
+        .note { background: #fff7e6; border: 1px solid #f0a020; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+        .gone td { color: #888; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a class="back" href="/">← Dashboard</a>
+        <h1>Trades-EST</h1>
+        <p class="subtitle">Freeman Restoration trade pricing: trade list per job</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        const ALLOWED = ['owner', 'admin', 'estimator'];
+        const ADMINS = ['owner', 'admin']; // can restore removed trades
+
+        // Built-in start list (from the Stark W 2602 Trade Recap, sub names removed).
+        // Used until a start list is saved with "Edit start list".
+        const DEFAULT_START = [
+            ['APP', 'Appliances'],
+            ['AWN', 'Alumawood patio covers'],
+            ['CAB', 'Cabinets / counter tops'],
+            ['CLN #1', 'Final clean'],
+            ['CLN #2', 'Misc'],
+            ['CLN #3', 'Misc'],
+            ['CNC #1', 'Concrete piers'],
+            ['CNC #2', 'Slabs'],
+            ['DMO #1', 'Demo interior'],
+            ['DMO #2', 'Demo exterior'],
+            ['DMO #3', 'Demo roof tear off'],
+            ['DMO #4', 'Trailer loads'],
+            ['DRY #1', 'Drywall labor'],
+            ['DRY #2', 'Drywall material'],
+            ['ELE #1', 'Electrician labor'],
+            ['ELE/LIT #2', 'Lighting material'],
+            ['EQU', 'Heavy equipment'],
+            ['FCC', 'Carpet'],
+            ['FCS', 'Floor stone / marble'],
+            ['FCT', 'Floor tile'],
+            ['FCV', 'Vinyl / plank'],
+            ['FEE', 'Eagle View / iGuide'],
+            ['FEE', 'In-house labor'],
+            ['FEE', 'Building'],
+            ['FNC/DOR #1', 'Exterior door labor'],
+            ['FNC/DOR #2', 'Molding and door labor'],
+            ['FNC/DOR #3', 'Molding and door material'],
+            ['FNC/DOR #4', 'Balustrade'],
+            ['FNC/DOR #5', 'Garage door'],
+            ['FNH #1', 'Finish hardware labor'],
+            ['FNH #2', 'Finish hardware material'],
+            ['FPL', 'Fireplace zero clearance'],
+            ['FPS', 'Fire sprinklers'],
+            ['FRM #1', 'Framing labor'],
+            ['FRM #2', 'Framing material'],
+            ['FRM #3', 'Truss'],
+            ['FRM #4', 'Patio/deck framing labor'],
+            ['FRM #5', 'Patio/deck framing material'],
+            ['HVC', 'Heat and air'],
+            ['INS', 'Insulation'],
+            ['LAB', 'Multiple entries'],
+            ['LND', 'Landscaping'],
+            ['MAS #1', 'Masonry labor'],
+            ['MAS #2', 'Masonry material'],
+            ['MBL', 'Shower walls, sheet material'],
+            ['MPR', 'Moisture protection / decks'],
+            ['MSD/GLS', 'Glass work'],
+            ['ORI', 'Ornamental iron'],
+            ['PLM #1', 'Plumbing labor'],
+            ['PLM #2', 'Plumbing fixtures'],
+            ['PLM #3', 'Shower pan'],
+            ['PNL', 'Paneling'],
+            ['PNT #1', 'Paint'],
+            ['PNT #2', 'Seal/deo'],
+            ['PNT #3', 'Seal/deo material'],
+            ['RFG', 'Roofing'],
+            ['SDG #1', 'Siding labor'],
+            ['SDG #2', 'Siding material'],
+            ['SFG', 'Soffit / fascia / gutter'],
+            ['STL', 'Steel components'],
+            ['STU/SCF', 'Stucco'],
+            ['TIL', 'Showers / fireplace face'],
+            ['TMP', 'Camera'],
+            ['TMP', 'Temp electric'],
+            ['TMP', 'Toilet'],
+            ['TMP', 'Hand wash'],
+            ['WDS', 'Skylight material'],
+            ['WDT #1', 'Blinds'],
+            ['WDT #2', 'Plantation shutters'],
+            ['WDV #1', 'Window labor'],
+            ['WDV #2', 'Window material'],
+            ['WDV - skylight', 'Skylight labor'],
+            ['WDV - skylight', 'Skylight material']
+        ].map(([code, name], i) => ({ id: 's' + i, code, name }));
+
+        const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+        // Alphabetical by trade code. Spaces ignored, numbers compared as numbers (#2 before #10).
+        const cmpCode = (a, b) => {
+            const parts = (s) => (s || '').toUpperCase().replace(/\s+/g, '').match(/\d+|\D+/g) || [];
+            const x = parts(a), y = parts(b);
+            for (let i = 0; i < Math.min(x.length, y.length); i++) {
+                const p = x[i], q = y[i];
+                if (/^\d/.test(p) && /^\d/.test(q)) { if (+p !== +q) return +p - +q; }
+                else if (p !== q) return p < q ? -1 : 1;
+            }
+            return x.length - y.length;
+        };
+        // Lines with the same code keep the order they were in
+        const sortLines = (lines) => [...lines].sort((a, b) => cmpCode(a.code, b.code));
+
+        // A new job starts with a blank copy of every trade on the start list
+        const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => ({ id: newId(), startId: l.id, code: l.code, name: l.name })));
+
+        // What gets saved: no on-screen flags, no fully blank lines
+        const cleanLines = (lines) => sortLines(lines)
+            .map(({ _new, ...l }) => ({ ...l, code: (l.code || '').trim(), name: (l.name || '').trim() }))
+            .filter(l => l.code || l.name);
+
+        const toDate = (ts) => ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null);
+        const fmtDay = (ts) => { const d = toDate(ts); return d ? d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' }) : ''; };
+        const fmtStamp = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : ''; };
+
+        // Editable list of trades. Used for a job's list and for the start list.
+        function LineTable({ lines, onChange, me, canRestore }) {
+            const [showGone, setShowGone] = useState(false);
+            const [addCode, setAddCode] = useState('');
+            const [addName, setAddName] = useState('');
+            const live = lines.filter(l => !l.deleted);
+            const gone = lines.filter(l => l.deleted);
+
+            const edit = (id, k, v) => onChange(lines.map(l => l.id === id ? { ...l, [k]: v } : l));
+            // Put the row back in alphabetical order after its code is changed (when you leave the box)
+            const resort = () => {
+                const sorted = sortLines(lines);
+                if (sorted.some((l, i) => l.id !== lines[i].id)) onChange(sorted);
+            };
+            const remove = (l) => {
+                // Added just now and never saved: nothing to keep. Otherwise hide it and record who and when.
+                if (l._new) onChange(lines.filter(x => x.id !== l.id));
+                else onChange(lines.map(x => x.id === l.id ? { ...x, deleted: true, deletedBy: me, deletedAt: new Date() } : x));
+            };
+            const restore = (l) => onChange(sortLines(lines.map(x => {
+                if (x.id !== l.id) return x;
+                const { deleted, deletedBy, deletedAt, ...rest } = x;
+                return { ...rest, restoredBy: me, restoredAt: new Date() };
+            })));
+            const add = () => {
+                const code = addCode.trim(), name = addName.trim();
+                if (!code && !name) return;
+                onChange(sortLines([...lines, { id: newId(), code, name, _new: true }]));
+                setAddCode('');
+                setAddName('');
+            };
+            const addOnEnter = (e) => { if (e.key === 'Enter') add(); };
+
+            return (
+                <div>
+                    <table>
+                        <thead><tr><th className="code">Trade code</th><th>Description</th><th style={{ width: '40px' }}></th></tr></thead>
+                        <tbody>
+                            {live.map(l => (
+                                <tr key={l.id}>
+                                    <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
+                                    <td><input value={l.name} onChange={e => edit(l.id, 'name', e.target.value)} /></td>
+                                    <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
+                                </tr>
+                            ))}
+                            {live.length === 0 && <tr><td colSpan="3" style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                        </tbody>
+                    </table>
+
+                    <div className="sub-title">Add a trade</div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <input className="code" value={addCode} onChange={e => setAddCode(e.target.value)} onKeyDown={addOnEnter} placeholder="Trade code" />
+                        <input value={addName} onChange={e => setAddName(e.target.value)} onKeyDown={addOnEnter} placeholder="Description" />
+                        <button className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={add}>+ Add trade</button>
+                    </div>
+
+                    <div className="muted">
+                        {live.length} trade{live.length === 1 ? '' : 's'}
+                        {gone.length > 0 && (<>
+                            {' | '}{gone.length} removed{' '}
+                            <button className="btn-secondary btn-sm" style={{ marginLeft: '6px' }} onClick={() => setShowGone(!showGone)}>
+                                {showGone ? 'Hide removed' : 'Show removed'}
+                            </button>
+                        </>)}
+                    </div>
+
+                    {showGone && gone.length > 0 && (
+                        <table style={{ marginTop: '8px' }}>
+                            <thead><tr><th className="code">Trade code</th><th>Description</th><th>Removed</th><th style={{ width: '80px' }}></th></tr></thead>
+                            <tbody>
+                                {gone.map(l => (
+                                    <tr key={l.id} className="gone">
+                                        <td>{l.code}</td>
+                                        <td>{l.name}</td>
+                                        <td>{l.deletedBy ? l.deletedBy.name : ''} {fmtDay(l.deletedAt)}</td>
+                                        <td>{canRestore && <button className="btn-secondary btn-sm" onClick={() => restore(l)}>Restore</button>}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            );
+        }
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, false = no access, object = ok
+            const [authError, setAuthError] = useState('');
+            const [jobs, setJobs] = useState([]);
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobId, setJobId] = useState('');
+            const [record, setRecord] = useState(null);   // saved tradesEst/{jobId}: null = loading, false = none yet
+            const [lines, setLines] = useState(null);     // the job's trade list on screen
+            const [dirty, setDirty] = useState(false);
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const [startRec, setStartRec] = useState(null);     // saved tradesEstStart/list: null = loading, false = none yet
+            const [startLines, setStartLines] = useState(null); // saved start list (or the built-in one)
+            const [editingStart, setEditingStart] = useState(false);
+            const [startEdit, setStartEdit] = useState(null);   // start list on screen while editing
+            const [startDirty, setStartDirty] = useState(false);
+            const startRef = React.useRef(null);
+
+            // Sign-in and role check (this page never creates user records)
+            useEffect(() => {
+                return auth.onAuthStateChanged(async u => {
+                    setUser(u);
+                    setProfile(null);
+                    if (!u) return;
+                    try {
+                        const snap = await db.collection('users').doc(u.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && ALLOWED.includes(d.role)) setProfile({ uid: u.uid, ...d });
+                        else setProfile(false);
+                    } catch (e) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            // Job list
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('jobs').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    list.sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+                    setJobs(list);
+                }, e => setMessage('Error loading jobs: ' + e.message));
+            }, [profile]);
+
+            // Opened from the Dashboard tile (?job=...): pick that job once the list loads
+            const urlJobDone = React.useRef(false);
+            useEffect(() => {
+                if (urlJobDone.current || !jobs.length) return;
+                urlJobDone.current = true;
+                const id = new URLSearchParams(window.location.search).get('job');
+                if (id && !jobId && jobs.some(j => j.id === id)) setJobId(id);
+            }, [jobs]);
+
+            // Company-wide start list
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('tradesEstStart').doc('list').onSnapshot(doc => {
+                    const d = doc.exists ? doc.data() : null;
+                    const list = d && Array.isArray(d.lines) ? sortLines(d.lines) : sortLines(DEFAULT_START);
+                    startRef.current = list;
+                    setStartRec(d || false);
+                    setStartLines(list);
+                }, e => setMessage('Error loading start list: ' + e.message));
+            }, [profile]);
+
+            // Load the job's trade list once when a job is picked. No saved list yet = blank copy of the start list.
+            const startReady = startLines !== null;
+            useEffect(() => {
+                setRecord(null);
+                setLines(null);
+                setDirty(false);
+                if (!profile || !jobId || !startReady) return;
+                db.collection('tradesEst').doc(jobId).get().then(doc => {
+                    if (doc.exists) {
+                        setRecord(doc.data());
+                        setLines(sortLines(doc.data().lines || []));
+                    } else {
+                        setRecord(false);
+                        setLines(copyStart(startRef.current || []));
+                    }
+                }).catch(e => setMessage('Error loading trade list: ' + e.message));
+            }, [profile, jobId, startReady]);
+
+            const login = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (e) {
+                    setAuthError(e.message);
+                }
+            };
+
+            // Save the job's trade list. Every save also keeps a copy in history (versions).
+            const save = async () => {
+                const job = jobs.find(j => j.id === jobId);
+                if (!job || !lines) return;
+                setSaving(true);
+                setMessage('');
+                try {
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const now = new Date();
+                    const clean = cleanLines(lines);
+                    const data = { jobCode: job.code || '', lines: clean, updatedBy: by, updatedAt: now };
+                    const ref = db.collection('tradesEst').doc(jobId);
+                    const batch = db.batch();
+                    batch.set(ref, data, { merge: true });
+                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, savedBy: by, savedAt: now });
+                    await batch.commit();
+                    setRecord({ ...(record || {}), ...data });
+                    setLines(clean);
+                    setDirty(false);
+                    setMessage('Saved');
+                } catch (e) {
+                    setMessage('Error saving: ' + e.message);
+                }
+                setSaving(false);
+            };
+
+            // Save the company-wide start list, with a copy in history (versions)
+            const saveStart = async () => {
+                if (!startEdit) return;
+                setSaving(true);
+                setMessage('');
+                try {
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const now = new Date();
+                    const clean = cleanLines(startEdit);
+                    const ref = db.collection('tradesEstStart').doc('list');
+                    const batch = db.batch();
+                    batch.set(ref, { lines: clean, updatedBy: by, updatedAt: now }, { merge: true });
+                    batch.set(ref.collection('versions').doc(), { lines: clean, savedBy: by, savedAt: now });
+                    await batch.commit();
+                    setStartEdit(clean);
+                    setStartDirty(false);
+                    setMessage('Start list saved');
+                } catch (e) {
+                    setMessage('Error saving start list: ' + e.message);
+                }
+                setSaving(false);
+            };
+
+            const openStart = () => {
+                setStartEdit(startLines.map(l => ({ ...l })));
+                setStartDirty(false);
+                setEditingStart(true);
+                setMessage('');
+            };
+            const closeStart = () => {
+                if (startDirty && !window.confirm('You have unsaved changes to the start list. Close anyway?')) return;
+                setEditingStart(false);
+                setStartEdit(null);
+                setStartDirty(false);
+                setMessage('');
+            };
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <button className="btn-primary" onClick={login}>Sign in with Microsoft</button>
+                        {authError && <div className="msg" style={{ color: '#d32f2f' }}>{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) return <div className="section">Loading...</div>;
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <p>Signed in as {user.email}. No access: Trades-EST is for Owner, Admin and Estimator.</p>
+                        <button className="btn-secondary" style={{ marginTop: '12px' }} onClick={() => auth.signOut()}>Logout</button>
+                    </div>
+                );
+            }
+
+            const me = { uid: user.uid, name: profile.name || user.email };
+            const canRestore = ADMINS.includes(profile.role);
+            const job = jobs.find(j => j.id === jobId);
+            const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
+            const savedText = record && record.updatedAt
+                ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
+                : 'Not saved yet. Showing the start list.';
+            const startText = startRec && startRec.updatedAt
+                ? `Last saved by ${startRec.updatedBy ? startRec.updatedBy.name : ''} on ${fmtStamp(startRec.updatedAt)}`
+                : 'Built-in list. Not changed yet.';
+            const msg = message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>;
+
+            return (
+                <div>
+                    <div className="row">
+                        <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
+                        <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
+                    </div>
+
+                    <div className="section">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                            <div className="section-title">JOB</div>
+                            {!editingStart && <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>}
+                        </div>
+                        <div className="form-group">
+                            <select value={jobId} disabled={editingStart} onChange={e => {
+                                if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
+                                setJobId(e.target.value); setMessage('');
+                            }}>
+                                <option value="">-- Pick a job --</option>
+                                {visibleJobs.map(j => (
+                                    <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
+                            <input type="checkbox" style={{ width: 'auto' }} checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            Show archived jobs
+                        </label>
+                        {jobId && <div className="muted">{record === null ? 'Loading...' : savedText}{dirty && <span className="unsaved"> | Unsaved changes</span>}</div>}
+                    </div>
+
+                    {editingStart && startEdit && (
+                        <div className="section">
+                            <div className="section-title">START LIST</div>
+                            <div className="note">
+                                This is the list every new job starts with. Changes here do not touch jobs already saved in Trades-EST.
+                            </div>
+                            <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>{startText}{startDirty && <span className="unsaved"> | Unsaved changes</span>}</div>
+                            <LineTable lines={startEdit} me={me} canRestore={canRestore}
+                                onChange={next => { setStartEdit(next); setStartDirty(true); setMessage(''); }} />
+                            <button className="btn-primary" onClick={saveStart} disabled={saving}>{saving ? 'Saving...' : 'Save start list'}</button>
+                            <button className="btn-secondary" style={{ width: '100%', marginTop: '8px' }} onClick={closeStart} disabled={saving}>
+                                {jobId ? 'Close start list and go back to the job' : 'Close start list'}
+                            </button>
+                            {msg}
+                        </div>
+                    )}
+
+                    {!editingStart && lines && (
+                        <div className="section">
+                            <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
+                            <LineTable lines={lines} me={me} canRestore={canRestore}
+                                onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
+                            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                            {msg}
+                        </div>
+                    )}
+
+                    {!editingStart && !lines && msg}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('app'));
+    </script>
+</body>
+</html>
 
