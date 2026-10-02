@@ -187,9 +187,7 @@
                 dumpsterPrice: 977,
                 interiorDumpsters: '',
                 contentsDumpsters: '',
-                rooms: ['Entry', 'Living-dining', 'Kitchen', 'Family', 'Hall', 'Bath', 'Laundry', 'Bedroom', 'Garage',
-                        'Landing', 'Bath 2', 'Bed front', 'Bed mid left', 'Bed mid right', 'Bed master', 'Bath master', 'Closet master']
-                    .map(name => ({ name, interior: '', contents: '' }))
+                rooms: [{ name: '', interior: '', contents: '' }]
             },
             ceiling: {
                 rows: [{ ...newJoist(), size: '2x6' }],
@@ -553,7 +551,7 @@
                     <div>
                         <div className="t">Xactimate (+{n(waste.xact)}%)</div>
                         {out.xact.length === 0 ? <div className="l" style={{ color: '#888' }}>Nothing yet</div>
-                            : out.xact.map(([k, v, u], i) => <div className="l" key={i}>{k}: {v.toLocaleString()} {u}</div>)}
+                            : out.xact.map(([k, v, u], i) => <div className="l" key={i} style={{ display: 'flex', gap: '24px' }}><span style={{ flex: 1 }}>{k}</span><span>{v.toLocaleString()} {u}</span></div>)}
                     </div>
                 </div>
             );
@@ -679,7 +677,7 @@
                     </div>
                     <div className="page">
                         <h2>Xactimate list</h2>
-                        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.xactText}</pre>
+                        <pre style={{ whiteSpace: 'pre', fontFamily: 'Consolas, Menlo, monospace' }}>{T.xactText}</pre>
                     </div>
                     <div className="page">
                         <h2>Hours and pricing</h2>
@@ -716,6 +714,8 @@
             const [message, setMessage] = useState('');
             const [savedItems, setSavedItems] = useState([]); // company-wide hardware items [{ id, name }]
             const [showManage, setShowManage] = useState(false);
+            const [listeningRoom, setListeningRoom] = useState(null); // room row index while the mic is on
+            const recRef = React.useRef(null);
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -797,7 +797,28 @@
                 catch (e) { setMessage('Error deleting item: ' + e.message); }
             };
             const setTot = (k, v) => change(p => ({ ...p, totals: { ...p.totals, [k]: v } }));
-            const setRoom = (i, k, v) => setTot('rooms', est.totals.rooms.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const setRoom = (i, k, v) => change(p => ({ ...p, totals: { ...p.totals, rooms: p.totals.rooms.map((r, j) => j === i ? { ...r, [k]: v } : r) } }));
+            // Voice to text for a room name (Chrome/Edge): one phrase, then stops
+            const roomVoice = (i) => {
+                if (listeningRoom !== null) {
+                    recRef.current && recRef.current.stop();
+                    if (listeningRoom === i) return;
+                }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setMessage('Error: voice input needs Chrome or Edge'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    const t = (e.results[0][0].transcript || '').trim();
+                    if (t) setRoom(i, 'name', t.charAt(0).toUpperCase() + t.slice(1));
+                };
+                rec.onerror = (e) => setMessage('Error: voice input ' + e.error);
+                rec.onend = () => setListeningRoom(prev => (prev === i ? null : prev));
+                recRef.current = rec;
+                rec.start();
+                setListeningRoom(i);
+            };
             const copyText = (text, label) => navigator.clipboard.writeText(text).then(
                 () => setMessage(label + ' copied'), () => setMessage('Error: copy failed'));
             const setHW = (k, v) => change(p => ({ ...p, hardware: { ...p.hardware, [k]: v } }));
@@ -911,8 +932,10 @@
                 const header = `${job.code || ''} - ${[job.address, job.cityStateZip].filter(Boolean).join(', ')} - ${new Date().toLocaleDateString('en-US')}`;
                 const supplierText = [header, ''].concat(...sections.filter(([, o]) => o.supplier.length)
                     .map(([name, o]) => [name.toUpperCase(), ...o.supplier.map(l => l.replace(/\s+\(/, ' (')), ''])).join('\n').trim();
+                // Pad descriptions so the amounts line up, 6 spaces past the longest
+                const xactWidth = Math.max(0, ...sections.flatMap(([, o]) => o.xact.map(([k]) => k.length))) + 6;
                 const xactText = [header, ''].concat(...sections.filter(([, o]) => o.xact.length)
-                    .map(([name, o]) => [name.toUpperCase(), ...o.xact.map(([k, v, u]) => `${k}: ${v.toLocaleString()} ${u}`), ''])).join('\n').trim();
+                    .map(([name, o]) => [name.toUpperCase(), ...o.xact.map(([k, v, u]) => k.padEnd(xactWidth) + `${v.toLocaleString()} ${u}`), ''])).join('\n').trim();
                 const fr = n(tot.framingRate), dr = n(tot.demoRate);
                 const hourRows = sections.map(([name, , d]) => {
                     const fh = hoursOf(d.frmHours), dh = hoursOf(d.dmoHours);
@@ -1358,7 +1381,7 @@
                             <button className="btn-secondary btn-sm" onClick={() => copyText(T.supplierText, 'Supplier list')}>Copy supplier list</button>
 
                             <div className="sub-title">Xactimate list (grouped by section)</div>
-                            <pre style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.xactText}</pre>
+                            <pre style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre', overflowX: 'auto', fontFamily: 'Consolas, Menlo, monospace' }}>{T.xactText}</pre>
                             <button className="btn-secondary btn-sm" onClick={() => copyText(T.xactText, 'Xactimate list')}>Copy Xactimate list</button>
 
                             <div className="sub-title">Framing and demo hours</div>
@@ -1370,7 +1393,12 @@
                                 <tbody>
                                     {est.totals.rooms.map((r, i) => (
                                         <tr key={i}>
-                                            <td><input value={r.name} onChange={e => setRoom(i, 'name', e.target.value)} /></td>
+                                            <td><div style={{ display: 'flex', gap: '6px' }}>
+                                                <input value={r.name} onChange={e => setRoom(i, 'name', e.target.value)} placeholder="Room name" />
+                                                <button className={listeningRoom === i ? 'btn-x' : 'btn-secondary btn-sm'} style={{ whiteSpace: 'nowrap' }} onClick={() => roomVoice(i)}>
+                                                    {listeningRoom === i ? '■ Stop' : '🎤'}
+                                                </button>
+                                            </div></td>
                                             <td><input className="num" type="number" value={r.interior} onChange={e => setRoom(i, 'interior', e.target.value)} /></td>
                                             <td><input className="num" type="number" value={r.contents} onChange={e => setRoom(i, 'contents', e.target.value)} /></td>
                                             <td><button className="btn-x" onClick={() => setTot('rooms', est.totals.rooms.filter((_, j) => j !== i))}>✕</button></td>
