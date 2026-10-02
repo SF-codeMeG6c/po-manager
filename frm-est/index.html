@@ -745,6 +745,15 @@
                 }, e => setMessage('Error loading jobs: ' + e.message));
             }, [profile]);
 
+            // Opened from the Dashboard tile (?job=...): pick that job once the list loads
+            const urlJobDone = React.useRef(false);
+            useEffect(() => {
+                if (urlJobDone.current || !jobs.length) return;
+                urlJobDone.current = true;
+                const id = new URLSearchParams(window.location.search).get('job');
+                if (id && !jobId && jobs.some(j => j.id === id)) setJobId(id);
+            }, [jobs]);
+
             // Company-wide hardware item list
             useEffect(() => {
                 if (!profile) return;
