@@ -41,9 +41,25 @@
         .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
         .inline label { margin: 0; }
         .unsaved { color: #cc6600; font-weight: 600; }
+        .money { text-align: right; white-space: nowrap; }
+        .totals td, .totals th { padding: 5px 6px; }
+        .totals tr.sum td { font-weight: 700; border-top: 2px solid #ddd; }
+        #print-root { display: none; }
+        @media print {
+            body { background: white; padding: 0; }
+            body > .container { display: none; }
+            #print-root { display: block; font-size: 12px; }
+            #print-root h2 { font-size: 16px; margin: 0 0 4px; }
+            #print-root h3 { font-size: 13px; margin: 14px 0 4px; }
+            #print-root .page { page-break-after: always; }
+            #print-root .page:last-child { page-break-after: auto; }
+            #print-root table { width: 100%; border-collapse: collapse; }
+            #print-root td, #print-root th { padding: 2px 4px; border-bottom: 1px solid #eee; text-align: left; }
+        }
     </style>
 </head>
 <body>
+    <div id="print-root"></div>
     <div class="container">
         <a class="back" href="/">← Dashboard</a>
         <h1>FRM-EST</h1>
@@ -163,6 +179,17 @@
                 rows: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
+            },
+            totals: {
+                framingRate: 94.88,
+                demoRate: 69.87,
+                priceList: '',
+                dumpsterPrice: 977,
+                interiorDumpsters: '',
+                contentsDumpsters: '',
+                rooms: ['Entry', 'Living-dining', 'Kitchen', 'Family', 'Hall', 'Bath', 'Laundry', 'Bedroom', 'Garage',
+                        'Landing', 'Bath 2', 'Bed front', 'Bed mid left', 'Bed mid right', 'Bed master', 'Bath master', 'Closet master']
+                    .map(name => ({ name, interior: '', contents: '' }))
             },
             ceiling: {
                 rows: [{ ...newJoist(), size: '2x6' }],
@@ -503,6 +530,18 @@
             return { supplier, xact };
         }
 
+        const money = (v) => '$' + (Math.round(v * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        // Interior / contents demo block: hours x rate, wholesale 75%, dumpsters at 60% wholesale
+        function demoBlock(hours, rate, dumpsters, dumpsterPrice) {
+            const retailLabor = hours * rate;
+            const wholesaleLabor = retailLabor * 0.75;
+            const dumpRetail = dumpsters * dumpsterPrice;
+            const dumpWholesale = dumpRetail * 0.6;
+            return { hours, retailLabor, wholesaleLabor, dumpRetail, dumpWholesale,
+                     retail: retailLabor + dumpRetail, wholesale: wholesaleLabor + dumpWholesale };
+        }
+
         function Output({ out, waste }) {
             return (
                 <div className="out">
@@ -587,6 +626,82 @@
             );
         }
 
+        function HoursTable({ T }) {
+            if (!T.hourRows.length) return <div className="muted" style={{ marginTop: 0 }}>No hours entered yet</div>;
+            return (
+                <table className="totals">
+                    <thead><tr><th>Operation</th><th className="money">Framing hrs</th><th className="money">Framing $</th><th className="money">Demo hrs</th><th className="money">Demo $</th></tr></thead>
+                    <tbody>
+                        {T.hourRows.map(r => (
+                            <tr key={r.name}>
+                                <td>{r.name}{r.notes && <div style={{ fontSize: '11px', color: '#888' }}>{r.notes}</div>}</td>
+                                <td className="money">{r.fh}</td><td className="money">{money(r.f$)}</td>
+                                <td className="money">{r.dh}</td><td className="money">{money(r.d$)}</td>
+                            </tr>
+                        ))}
+                        <tr className="sum">
+                            <td>Total</td><td className="money">{T.sum('fh')}</td><td className="money">{money(T.sum('f$'))}</td>
+                            <td className="money">{T.sum('dh')}</td><td className="money">{money(T.sum('d$'))}</td>
+                        </tr>
+                        <tr><td colSpan={4}>Retail (framing + demo)</td><td className="money">{money(T.frmRetail)}</td></tr>
+                        <tr><td colSpan={4}>Wholesale (75%)</td><td className="money">{money(T.frmRetail * 0.75)}</td></tr>
+                    </tbody>
+                </table>
+            );
+        }
+
+        function DemoTable({ T }) {
+            const row = (label, a, b) => <tr><td>{label}</td><td className="money">{a}</td><td className="money">{b}</td></tr>;
+            const i = T.interior, c = T.contents;
+            return (
+                <table className="totals" style={{ marginTop: '10px' }}>
+                    <thead><tr><th></th><th className="money">Interior demo</th><th className="money">Contents demo</th></tr></thead>
+                    <tbody>
+                        {row('Hours', i.hours, c.hours)}
+                        {row(`Retail labor (× ${money(T.dr)})`, money(i.retailLabor), money(c.retailLabor))}
+                        {row('Wholesale labor (75%)', money(i.wholesaleLabor), money(c.wholesaleLabor))}
+                        {row('Dumpsters retail', money(i.dumpRetail), money(c.dumpRetail))}
+                        {row('Dumpsters wholesale (60%)', money(i.dumpWholesale), money(c.dumpWholesale))}
+                        <tr className="sum"><td>Retail total</td><td className="money">{money(i.retail)}</td><td className="money">{money(c.retail)}</td></tr>
+                        <tr className="sum"><td>Wholesale line item cost</td><td className="money">{money(i.wholesale)}</td><td className="money">{money(c.wholesale)}</td></tr>
+                    </tbody>
+                </table>
+            );
+        }
+
+        function PrintView({ T, est }) {
+            const rates = `Framing ${money(T.fr)}/hr · Demo ${money(T.dr)}/hr${est.totals.priceList ? ' · Price list ' + est.totals.priceList : ''}`;
+            return (
+                <div>
+                    <div className="page">
+                        <h2>Supplier list</h2>
+                        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.supplierText}</pre>
+                    </div>
+                    <div className="page">
+                        <h2>Xactimate list</h2>
+                        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.xactText}</pre>
+                    </div>
+                    <div className="page">
+                        <h2>Hours and pricing</h2>
+                        <div>{T.header}</div>
+                        <div>{rates}</div>
+                        <h3>Framing and demo hours</h3>
+                        <HoursTable T={T} />
+                        <h3>Interior demo and contents demo</h3>
+                        <table>
+                            <thead><tr><th>Room</th><th>Interior hrs</th><th>Contents hrs</th></tr></thead>
+                            <tbody>
+                                {est.totals.rooms.filter(r => n(r.interior) || n(r.contents)).map((r, i) => (
+                                    <tr key={i}><td>{r.name}</td><td>{n(r.interior)}</td><td>{n(r.contents)}</td></tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        <DemoTable T={T} />
+                    </div>
+                </div>
+            );
+        }
+
         function App() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, false = no access, object = ok
@@ -659,7 +774,8 @@
                         roof: { ...base.roof, ...(d.roof || {}) },
                         trusses: { ...base.trusses, ...(d.trusses || {}) },
                         roofSheath: { ...base.roofSheath, ...(d.roofSheath || {}) },
-                        hardware: { ...base.hardware, ...(d.hardware || {}) }
+                        hardware: { ...base.hardware, ...(d.hardware || {}) },
+                        totals: { ...base.totals, ...(d.totals || {}) }
                     });
                 }).catch(e => setMessage('Error loading estimate: ' + e.message));
             }, [profile, jobId]);
@@ -680,6 +796,10 @@
                 try { await db.collection('hardwareItems').doc(it.id).delete(); }
                 catch (e) { setMessage('Error deleting item: ' + e.message); }
             };
+            const setTot = (k, v) => change(p => ({ ...p, totals: { ...p.totals, [k]: v } }));
+            const setRoom = (i, k, v) => setTot('rooms', est.totals.rooms.map((r, j) => j === i ? { ...r, [k]: v } : r));
+            const copyText = (text, label) => navigator.clipboard.writeText(text).then(
+                () => setMessage(label + ' copied'), () => setMessage('Error: copy failed'));
             const setHW = (k, v) => change(p => ({ ...p, hardware: { ...p.hardware, [k]: v } }));
             const setHWRow = (i, k, v) => setHW('rows', est.hardware.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
@@ -711,6 +831,7 @@
                         trusses: est.trusses,
                         roofSheath: est.roofSheath,
                         hardware: est.hardware,
+                        totals: est.totals,
                         updatedBy: { uid: user.uid, name: profile.name || user.email },
                         updatedAt: new Date()
                     };
@@ -776,6 +897,35 @@
             const hw = est && est.hardware;
             const ties = est ? tieCount(est) : 0;
             const hwOut = est ? calcHardware(hw, est.waste, ties) : null;
+
+            // ---------- Job totals ----------
+            let T = null;
+            if (est) {
+                const job = jobs.find(j => j.id === jobId) || {};
+                const tot = est.totals;
+                const sections = [
+                    ['Walls', out, w], ['Floor joists', floorOut, f], ['Ceiling joists', ceilOut, c],
+                    ['Roof - conventional', roofOut, rf], ['Roof - trusses', trussOut, tr],
+                    ['Sheathing & fascia', rsOut, rs], ['Hardware', hwOut, hw]
+                ];
+                const header = `${job.code || ''} - ${[job.address, job.cityStateZip].filter(Boolean).join(', ')} - ${new Date().toLocaleDateString('en-US')}`;
+                const supplierText = [header, ''].concat(...sections.filter(([, o]) => o.supplier.length)
+                    .map(([name, o]) => [name.toUpperCase(), ...o.supplier.map(l => l.replace(/\s+\(/, ' (')), ''])).join('\n').trim();
+                const xactText = [header, ''].concat(...sections.filter(([, o]) => o.xact.length)
+                    .map(([name, o]) => [name.toUpperCase(), ...o.xact.map(([k, v, u]) => `${k}: ${v.toLocaleString()} ${u}`), ''])).join('\n').trim();
+                const fr = n(tot.framingRate), dr = n(tot.demoRate);
+                const hourRows = sections.map(([name, , d]) => {
+                    const fh = hoursOf(d.frmHours), dh = hoursOf(d.dmoHours);
+                    const notes = [d.frmHours && d.frmHours.note, d.dmoHours && d.dmoHours.note && 'Demo: ' + d.dmoHours.note].filter(Boolean).join(' · ');
+                    return { name, fh, dh, f$: fh * fr, d$: dh * dr, notes };
+                }).filter(r => r.fh || r.dh);
+                const sum = (k) => hourRows.reduce((t, r) => t + r[k], 0);
+                const frmRetail = sum('f$') + sum('d$');
+                const rooms = tot.rooms || [];
+                const interior = demoBlock(rooms.reduce((t, r) => t + n(r.interior), 0), dr, n(tot.interiorDumpsters), n(tot.dumpsterPrice));
+                const contents = demoBlock(rooms.reduce((t, r) => t + n(r.contents), 0), dr, n(tot.contentsDumpsters), n(tot.dumpsterPrice));
+                T = { job, header, sections, supplierText, xactText, hourRows, sum, frmRetail, interior, contents, fr, dr };
+            }
 
             return (
                 <div>
@@ -1191,6 +1341,58 @@
 
                             <Output out={hwOut} waste={{ supplier: HW_SUPPLIER_WASTE, xact: est.waste.xact }} />
                         </div>
+
+                        <div className="section">
+                            <div className="section-title">JOB TOTALS</div>
+                            <div className="inline">
+                                <label>Framing rate $/hr</label>
+                                <input className="num" type="number" value={est.totals.framingRate} onChange={e => setTot('framingRate', e.target.value)} />
+                                <label style={{ marginLeft: '16px' }}>Demo rate $/hr</label>
+                                <input className="num" type="number" value={est.totals.demoRate} onChange={e => setTot('demoRate', e.target.value)} />
+                                <label style={{ marginLeft: '16px' }}>Price list</label>
+                                <input style={{ width: '160px' }} value={est.totals.priceList} onChange={e => setTot('priceList', e.target.value)} placeholder="e.g. CALA8X_OCT26" />
+                            </div>
+
+                            <div className="sub-title">Supplier list (grouped by section)</div>
+                            <pre style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.supplierText}</pre>
+                            <button className="btn-secondary btn-sm" onClick={() => copyText(T.supplierText, 'Supplier list')}>Copy supplier list</button>
+
+                            <div className="sub-title">Xactimate list (grouped by section)</div>
+                            <pre style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{T.xactText}</pre>
+                            <button className="btn-secondary btn-sm" onClick={() => copyText(T.xactText, 'Xactimate list')}>Copy Xactimate list</button>
+
+                            <div className="sub-title">Framing and demo hours</div>
+                            <HoursTable T={T} />
+
+                            <div className="sub-title">Interior demo and contents demo (hours per room)</div>
+                            <table>
+                                <thead><tr><th>Room</th><th>Interior demo hrs</th><th>Contents demo hrs</th><th></th></tr></thead>
+                                <tbody>
+                                    {est.totals.rooms.map((r, i) => (
+                                        <tr key={i}>
+                                            <td><input value={r.name} onChange={e => setRoom(i, 'name', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.interior} onChange={e => setRoom(i, 'interior', e.target.value)} /></td>
+                                            <td><input className="num" type="number" value={r.contents} onChange={e => setRoom(i, 'contents', e.target.value)} /></td>
+                                            <td><button className="btn-x" onClick={() => setTot('rooms', est.totals.rooms.filter((_, j) => j !== i))}>✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setTot('rooms', [...est.totals.rooms, { name: '', interior: '', contents: '' }])}>+ Add room</button>
+
+                            <div className="inline" style={{ marginTop: '12px' }}>
+                                <label>Interior dumpsters</label>
+                                <input className="num" type="number" value={est.totals.interiorDumpsters} onChange={e => setTot('interiorDumpsters', e.target.value)} />
+                                <label style={{ marginLeft: '16px' }}>Contents dumpsters</label>
+                                <input className="num" type="number" value={est.totals.contentsDumpsters} onChange={e => setTot('contentsDumpsters', e.target.value)} />
+                                <label style={{ marginLeft: '16px' }}>Dumpster price</label>
+                                <input className="num" type="number" value={est.totals.dumpsterPrice} onChange={e => setTot('dumpsterPrice', e.target.value)} />
+                            </div>
+                            <DemoTable T={T} />
+
+                            <button className="btn-secondary" style={{ marginTop: '16px' }} onClick={() => window.print()}>Print</button>
+                        </div>
+                        {ReactDOM.createPortal(<PrintView T={T} est={est} />, document.getElementById('print-root'))}
 
                         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
                         {message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>}
