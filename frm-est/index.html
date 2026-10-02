@@ -139,6 +139,10 @@
             roofSheath: {
                 sf: '',
                 type: '1/2',
+                autoFascia: true,
+                fasciaSize: '2x6',
+                manualEave: '',
+                manualBarge: '',
                 eaveOH: 2,
                 bargeOH: 2,
                 fascia: [],
@@ -312,6 +316,7 @@
             return {
                 slope, buyLen, sides, rafters, collars: r.collar !== false ? rafters * 0.5 : 0,
                 sheathSF: sloped * length * sides,   // overhang gets starter board instead
+                eave: length * sides,
                 barge: gables * sides * slope        // barge = rafter length with overhang
             };
         }
@@ -381,6 +386,7 @@
             return {
                 total, gables, commons: total - gables, each,
                 sheathSF: sloped * length * 2,
+                eave: length * 2,
                 barge: gables * 2 * (sloped + n(r.overhang))
             };
         }
@@ -416,20 +422,24 @@
         // Roof sheathing, fascia, starter, lookouts
         // Totals from both roof sections: sheathing SF and barge LF
         function roofTotals(est) {
-            let sf = 0, barge = 0;
-            (est.roof.rows || []).forEach(r => { const c = roofRow(r); if (c) { sf += c.sheathSF; barge += c.barge; } });
-            (est.trusses.rows || []).forEach(r => { const c = trussRow(r); if (c) { sf += c.sheathSF; barge += c.barge; } });
-            return { sf: Math.ceil(sf), barge: Math.ceil(barge) };
+            let sf = 0, barge = 0, eave = 0;
+            const add = (c) => { if (c) { sf += c.sheathSF; barge += c.barge; eave += c.eave; } };
+            (est.roof.rows || []).forEach(r => add(roofRow(r)));
+            (est.trusses.rows || []).forEach(r => add(trussRow(r)));
+            return { sf: Math.ceil(sf), barge: Math.ceil(barge), eave: Math.ceil(eave) };
         }
 
         // Starter board: (fascia LF x eave overhang + barge LF x barge overhang) / 7" coverage -> LF of 1x8 shiplap
-        function starterCalc(r, barge) {
-            const fasciaLF = (r.fascia || []).reduce((t, p) => t + n(p.lf), 0);
-            const sf = fasciaLF * n(r.eaveOH) + barge * n(r.bargeOH);
-            return { fasciaLF, sf, lf: sf / (7 / 12) };
+        // Calculated (from roof areas) or typed in by hand
+        function starterCalc(r, rt) {
+            const auto = r.autoFascia !== false;
+            const eave = auto ? rt.eave : n(r.manualEave);
+            const barge = auto ? rt.barge : n(r.manualBarge);
+            const sf = eave * n(r.eaveOH) + barge * n(r.bargeOH);
+            return { auto, eave, barge, fasciaLF: eave + barge, sf, lf: sf / (7 / 12) };
         }
 
-        function calcRoofSheath(r, waste, barge) {
+        function calcRoofSheath(r, waste, rt) {
             const sw = 1 + n(waste.supplier) / 100;
             const xw = 1 + n(waste.xact) / 100;
             const supplier = [], xact = [];
@@ -438,15 +448,13 @@
                 supplier.push(`${Math.ceil((n(r.sf) / 32) * sw)} - ${t}   (roof sheathing)`);
                 xact.push([t.replace('4 x 8 x ', '') + ' roof sheathing', Math.ceil(n(r.sf) * xw), 'SF']);
             }
-            [['fascia', 'fascia']].forEach(([key, label]) => {
-                const lf = {};
-                (r[key] || []).forEach(p => { if (n(p.lf)) lf[p.size] = (lf[p.size] || 0) + n(p.lf); });
-                Object.keys(lf).sort().forEach(k => {
-                    supplier.push(`${Math.ceil((lf[k] / 16) * sw)} - ${sp(k)} x 16   (${label})`);
-                    xact.push([`${k} ${label}`, Math.ceil(lf[k] * xw), 'LF']);
-                });
-            });
-            const st = starterCalc(r, barge);
+            const st = starterCalc(r, rt);
+            // Fascia: eaves + barge
+            if (st.fasciaLF) {
+                const fs = r.fasciaSize || '2x6';
+                supplier.push(`${Math.ceil((st.fasciaLF / 16) * sw)} - ${sp(fs)} x 16   (fascia)`);
+                xact.push([`${fs} fascia`, Math.ceil(st.fasciaLF * xw), 'LF']);
+            }
             if (st.lf) {
                 supplier.push(`${Math.ceil((st.lf / 16) * sw)} - 1 x 8 shiplap x 16   (starter board)`);
                 xact.push(['1x8 shiplap starter board', Math.ceil(st.lf * xw), 'LF']);
@@ -695,8 +703,8 @@
             const trussOut = est ? calcTrusses(tr, est.waste) : null;
             const rs = est && est.roofSheath;
             const rt = est ? roofTotals(est) : null;
-            const rsOut = est ? calcRoofSheath(rs, est.waste, rt.barge) : null;
-            const st = est ? starterCalc(rs, rt.barge) : null;
+            const rsOut = est ? calcRoofSheath(rs, est.waste, rt) : null;
+            const st = est ? starterCalc(rs, rt) : null;
 
             return (
                 <div>
@@ -899,10 +907,6 @@
                                                 <select value={r.sides} onChange={e => setRoofRow(i, 'sides', parseInt(e.target.value))}>
                                                     <option value={2}>2 (gable)</option><option value={1}>1 (shed)</option>
                                                 </select></div>
-                                            <div><label>Gable ends</label>
-                                                <select value={r.gables === undefined ? 2 : r.gables} onChange={e => setRoofRow(i, 'gables', parseInt(e.target.value))}>
-                                                    <option value={0}>0</option><option value={1}>1</option><option value={2}>2</option>
-                                                </select></div>
                                             <button className="btn-x" onClick={() => setRoof('rows', rf.rows.filter((_, j) => j !== i))}>✕</button>
                                         </div>
                                         <div className="inline" style={{ alignItems: 'flex-end', marginTop: '8px' }}>
@@ -994,10 +998,52 @@
                                 <button className="btn-secondary btn-sm" disabled={!rt.sf} onClick={() => setRS('sf', String(rt.sf))}>Use calculated</button>
                             </div>
 
-                            <LFTable title="Fascia" sizes={['2x6', '2x8', '2x10', '2x12']} list={rs.fascia} onChange={v => setRS('fascia', v)} />
-                            <div className="sub-title">Starter board (1x8 shiplap, 7" coverage)</div>
+                            <div className="sub-title">Roof areas</div>
+                            {(rf.rows.length + tr.rows.length) === 0 ? <div className="muted">No roof areas yet</div> : (
+                                <table>
+                                    <thead><tr><th>Roof area</th><th>Type</th><th>Sides</th><th>Gable ends</th><th>Eave LF</th><th>Barge LF</th><th>Sheathing SF</th></tr></thead>
+                                    <tbody>
+                                        {rf.rows.map((r, i) => { const c = roofRow(r); return (
+                                            <tr key={'c' + i}>
+                                                <td>{r.name || `Roof ${i + 1}`}</td><td>Conventional</td><td>{r.sides}</td>
+                                                <td><select style={{ width: 'auto' }} value={r.gables === undefined ? 2 : r.gables} onChange={e => setRoofRow(i, 'gables', parseInt(e.target.value))}>
+                                                    <option value={0}>0</option><option value={1}>1</option><option value={2}>2</option>
+                                                </select></td>
+                                                <td>{c ? Math.ceil(c.eave) : '-'}</td><td>{c ? Math.ceil(c.barge) : '-'}</td><td>{c ? Math.ceil(c.sheathSF).toLocaleString() : '-'}</td>
+                                            </tr>
+                                        ); })}
+                                        {tr.rows.map((r, i) => { const c = trussRow(r); return (
+                                            <tr key={'t' + i}>
+                                                <td>{r.name || `Trusses ${i + 1}`}</td><td>Truss</td><td>2</td>
+                                                <td><select style={{ width: 'auto' }} value={r.gables} onChange={e => setTrussRow(i, 'gables', parseInt(e.target.value))}>
+                                                    <option value={0}>0</option><option value={1}>1</option><option value={2}>2</option>
+                                                </select></td>
+                                                <td>{c ? Math.ceil(c.eave) : '-'}</td><td>{c ? Math.ceil(c.barge) : '-'}</td><td>{c ? Math.ceil(c.sheathSF).toLocaleString() : '-'}</td>
+                                            </tr>
+                                        ); })}
+                                    </tbody>
+                                </table>
+                            )}
+
+                            <div className="sub-title">Fascia & starter board (1x8 shiplap, 7" coverage)</div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', marginBottom: '8px' }}>
+                                <input type="checkbox" style={{ width: 'auto' }} checked={rs.autoFascia !== false} onChange={e => setRS('autoFascia', e.target.checked)} />
+                                Calculate eave and barge LF from roof areas (uncheck to type your own)
+                            </label>
+                            {rs.autoFascia === false && (
+                                <div className="inline" style={{ marginBottom: '8px' }}>
+                                    <label>Eave LF</label>
+                                    <input className="num" type="number" value={rs.manualEave} onChange={e => setRS('manualEave', e.target.value)} />
+                                    <label style={{ marginLeft: '16px' }}>Barge LF</label>
+                                    <input className="num" type="number" value={rs.manualBarge} onChange={e => setRS('manualBarge', e.target.value)} />
+                                </div>
+                            )}
                             <div className="inline">
-                                <label>Eave overhang</label>
+                                <label>Fascia</label>
+                                <select style={{ width: 'auto' }} value={rs.fasciaSize || '2x6'} onChange={e => setRS('fasciaSize', e.target.value)}>
+                                    {['2x6', '2x8', '2x10', '2x12'].map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                                <label style={{ marginLeft: '16px' }}>Eave overhang</label>
                                 <select style={{ width: 'auto' }} value={rs.eaveOH} onChange={e => setRS('eaveOH', parseInt(e.target.value))}>
                                     <option value={0}>None</option><option value={1}>1'</option><option value={2}>2'</option><option value={3}>3'</option>
                                 </select>
@@ -1006,7 +1052,8 @@
                                     <option value={0}>None</option><option value={1}>1'</option><option value={2}>2'</option><option value={3}>3'</option>
                                 </select>
                             </div>
-                            <div className="muted">Fascia {st.fasciaLF} LF × {n(rs.eaveOH)}' + barge {rt.barge} LF × {n(rs.bargeOH)}' = {Math.ceil(st.sf)} SF → {Math.ceil(st.lf)} LF of 1x8 shiplap</div>
+                            <div className="muted">Fascia: eave {st.eave} LF + barge {st.barge} LF = {st.fasciaLF} LF</div>
+                            <div className="muted">Starter: eave {st.eave} LF × {n(rs.eaveOH)}' + barge {st.barge} LF × {n(rs.bargeOH)}' = {Math.ceil(st.sf)} SF → {Math.ceil(st.lf)} LF of 1x8 shiplap</div>
                             <PieceTable title="Lookouts" sizes={['2x4', '2x6']} list={rs.lookouts} onChange={v => setRS('lookouts', v)} />
 
                             <div className="sub-title">Hours</div>
