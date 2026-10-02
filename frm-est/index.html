@@ -97,9 +97,9 @@
         const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
         const HARDWARE = ['Simpson H2.5A', 'Simpson A35', 'Simpson L50', 'Simpson LUS26', 'Simpson LUS28', 'Simpson LUS210',
             'Simpson LSU26', 'Simpson LSU210', 'Simpson HDU2', 'Simpson HDU4', 'Simpson MSTA24', 'Simpson MSTA36',
-            'Simpson CS16 coil strap', 'Simpson SDS 1/4 x 3', '16d sinkers', '8d common', '10d common', 'Joist hanger nails'];
+            'Simpson CS16 coil strap', 'Simpson SDS 1/4 x 3', '16d gun nails', '8d gun nails', '10d gun nails', '5 lbs teco nails'];
         const HW_UNITS = ['EA', 'Box', 'Roll', 'LF'];
-        const HW_SUPPLIER_WASTE = 5; // hardware supplier waste %, separate from lumber
+        const HW_SUPPLIER_WASTE = 0; // no supplier waste on hardware
         const newHW = () => ({ item: '', qty: '', unit: 'EA' });
         const newJoist = () => ({ name: '', size: '2x10', span: '', run: '', spacing: '16', extra: '' });
         const newLF = (size) => ({ size, lf: '' });
@@ -159,6 +159,7 @@
             },
             hardware: {
                 autoH25: true,
+                autoA35: true,
                 rows: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
@@ -497,6 +498,7 @@
                 xact.push([item, Math.ceil(qty * xw), unit || 'EA']);
             };
             if (h.autoH25 !== false && ties) push('Simpson H2.5A', ties, 'EA');
+            if (h.autoA35 !== false && ties) push('Simpson A35', Math.ceil(ties * 0.5), 'EA'); // half the hurricane ties
             (h.rows || []).forEach(r => { if (r.item.trim() && n(r.qty)) push(r.item.trim(), n(r.qty), r.unit); });
             return { supplier, xact };
         }
@@ -597,6 +599,7 @@
             const [dirty, setDirty] = useState(false);
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
+            const [savedItems, setSavedItems] = useState([]); // company-wide hardware names
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -624,6 +627,16 @@
                     list.sort((a, b) => (a.code || '').localeCompare(b.code || ''));
                     setJobs(list);
                 }, e => setMessage('Error loading jobs: ' + e.message));
+            }, [profile]);
+
+            // Company-wide hardware item list
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('hardwareItems').onSnapshot(snap => {
+                    const list = [];
+                    snap.forEach(doc => list.push(doc.data().name || ''));
+                    setSavedItems(list.filter(Boolean));
+                }, e => console.error('Hardware list error:', e));
             }, [profile]);
 
             // Load the saved estimate once when a job is picked
@@ -695,6 +708,16 @@
                         updatedAt: new Date()
                     };
                     await db.collection('frmEst').doc(jobId).set(data, { merge: true });
+                    // Add any new hardware item names to the company list (no duplicates, any case)
+                    const known = new Set([...HARDWARE, ...savedItems].map(x => x.trim().toLowerCase()));
+                    for (const r of (est.hardware.rows || [])) {
+                        const name = (r.item || '').trim();
+                        if (!name || known.has(name.toLowerCase())) continue;
+                        known.add(name.toLowerCase());
+                        const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                        try { await db.collection('hardwareItems').doc(id).set({ name, addedBy: profile.name || user.email, addedAt: new Date() }); }
+                        catch (e) { console.error('Hardware item not saved:', e.message); }
+                    }
                     setRecord({ ...(record || {}), ...data, updatedAt: { toDate: () => data.updatedAt } });
                     setDirty(false);
                     setMessage('Saved');
@@ -1110,7 +1133,11 @@
                             <div className="section-title">HARDWARE</div>
                             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', marginBottom: '8px' }}>
                                 <input type="checkbox" style={{ width: 'auto' }} checked={hw.autoH25 !== false} onChange={e => setHW('autoH25', e.target.checked)} />
-                                Simpson H2.5A hurricane ties: 1 per rafter and truss ({ties} before waste)
+                                Simpson H2.5A hurricane ties: 1 per rafter and truss ({ties})
+                            </label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', marginBottom: '8px' }}>
+                                <input type="checkbox" style={{ width: 'auto' }} checked={hw.autoA35 !== false} onChange={e => setHW('autoA35', e.target.checked)} />
+                                Simpson A35: half the hurricane ties ({Math.ceil(ties * 0.5)})
                             </label>
                             {hw.rows.length > 0 && (
                                 <table>
@@ -1129,7 +1156,7 @@
                                     </tbody>
                                 </table>
                             )}
-                            <datalist id="hw-items">{HARDWARE.map(h => <option key={h} value={h} />)}</datalist>
+                            <datalist id="hw-items">{[...new Set([...HARDWARE, ...savedItems])].sort().map(h => <option key={h} value={h} />)}</datalist>
                             <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setHW('rows', [...hw.rows, newHW()])}>+ Add hardware</button>
 
                             <div className="sub-title">Hours</div>
