@@ -37,13 +37,23 @@
         .unsaved { color: #cc6600; font-weight: 600; }
         .note { background: #fff7e6; border: 1px solid #f0a020; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
         .gone td { color: #888; }
+        .num { width: 110px; text-align: right; }
+        .money { text-align: right; white-space: nowrap; }
+        .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+        .inline label { margin: 0; }
+        .ws { background: #f9f9f9; border: 1px solid #e5e5e5; border-radius: 6px; padding: 14px; margin: 4px 0 10px; }
+        .ws table { background: white; }
+        .ws .sub-title:first-child { margin-top: 0; }
+        .sum td { font-weight: 700; border-top: 2px solid #ddd; }
+        .short { color: #cc6600; font-weight: 600; }
+        .over { color: #388e3c; font-weight: 600; }
     </style>
 </head>
 <body>
     <div class="container">
         <a class="back" href="/">← Dashboard</a>
         <h1>Trades-EST</h1>
-        <p class="subtitle">Freeman Restoration trade pricing: trade list per job</p>
+        <p class="subtitle">Freeman Restoration trade pricing: vendor price, retail needed, Xactimate comparison</p>
         <div id="app"></div>
     </div>
 
@@ -167,7 +177,7 @@
         const sortLines = (lines) => [...lines].sort((a, b) => cmpCode(a.code, b.code));
 
         // A new job starts with a blank copy of every trade on the start list
-        const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => ({ id: newId(), startId: l.id, code: l.code, name: l.name })));
+        const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => ({ id: newId(), startId: l.id, code: l.code, name: l.name, method: l.method || '' })));
 
         // What gets saved: no on-screen flags, no fully blank lines
         const cleanLines = (lines) => sortLines(lines)
@@ -178,9 +188,134 @@
         const fmtDay = (ts) => { const d = toDate(ts); return d ? d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' }) : ''; };
         const fmtStamp = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : ''; };
 
+        // Primary method per trade. Calculator and Factor come later.
+        const METHODS = [['', ''], ['quote', 'Quote']];
+        const DEFAULT_FACTOR = '0.70'; // retail needed = vendor price / 0.70
+        const UNITS = ['SF', 'LF', 'EA', 'SQ', 'SY', 'HR', 'DA', 'WK', 'MO'];
+
+        // Numbers are typed as text so $ and commas are fine
+        const n = (v) => { const x = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(x) ? 0 : x; };
+        const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
+        const money = (x) => (x < 0 ? '-' : '') + '$' + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const blankWs = () => ({ vendor: '', quote: '', pad: [], factor: DEFAULT_FACTOR, xact: [] });
+
+        // All the math for one trade's worksheet
+        function calcWs(ws) {
+            const padTotal = ws.pad.reduce((t, p) => t + n(p.amount), 0);
+            const vendorPrice = round2(n(ws.quote) + padTotal);          // quote + scratch pad
+            let factor = n(ws.factor);
+            if (factor > 1) factor = factor / 100;                        // 70 typed for 0.70
+            if (!(factor > 0)) factor = n(DEFAULT_FACTOR);
+            const retail = round2(vendorPrice / factor);                  // what Xactimate needs to total
+            const rows = ws.xact.map(x => ({ ...x, total: round2(n(x.qty) * n(x.price)) }));
+            const xactTotal = round2(rows.reduce((t, r) => t + r.total, 0));
+            // New unit prices: every line moves by the same percentage, rounded to the cent
+            const ratio = xactTotal > 0 ? retail / xactTotal : 0;
+            rows.forEach(r => { r.newPrice = round2(n(r.price) * ratio); r.newTotal = round2(n(r.qty) * r.newPrice); });
+            const newTotal = round2(rows.reduce((t, r) => t + r.newTotal, 0));
+            return {
+                vendorPrice, factor, retail, rows, xactTotal, newTotal,
+                diff: round2(xactTotal - retail),                         // + over, - short
+                margin: xactTotal > 0 ? (xactTotal - vendorPrice) / xactTotal : null,
+                leftover: round2(newTotal - retail)                       // rounding leftover at the new prices
+            };
+        }
+        const overShort = (x) => x === 0 ? <span>{money(0)}</span>
+            : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
+
+        // One trade's pricing worksheet (Quote method): vendor price, retail needed, Xactimate comparison
+        function Worksheet({ line, onChange }) {
+            const ws = { ...blankWs(), ...(line.ws || {}) };
+            const c = calcWs(ws);
+            const set = (k, v) => onChange({ ...ws, [k]: v });
+            const setRow = (list, id, k, v) => set(list, ws[list].map(r => r.id === id ? { ...r, [k]: v } : r));
+            const ready = c.vendorPrice > 0 && c.xactTotal > 0;
+
+            return (
+                <div className="ws">
+                    <div className="sub-title">Vendor price</div>
+                    <table>
+                        <thead><tr><th style={{ width: '110px' }}></th><th>Vendor / note</th><th className="num">Amount</th><th style={{ width: '40px' }}></th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td>Quote</td>
+                                <td><input value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" /></td>
+                                <td><input className="num" value={ws.quote} onChange={e => set('quote', e.target.value)} placeholder="0.00" /></td>
+                                <td></td>
+                            </tr>
+                            {ws.pad.map(p => (
+                                <tr key={p.id}>
+                                    <td>Scratch pad</td>
+                                    <td><input value={p.note} onChange={e => setRow('pad', p.id, 'note', e.target.value)} placeholder="What this number is" /></td>
+                                    <td><input className="num" value={p.amount} onChange={e => setRow('pad', p.id, 'amount', e.target.value)} placeholder="+ or -" /></td>
+                                    <td><button className="btn-x" title="Remove this line" onClick={() => set('pad', ws.pad.filter(x => x.id !== p.id))}>✕</button></td>
+                                </tr>
+                            ))}
+                            <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td></tr>
+                        </tbody>
+                    </table>
+                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
+                        onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+
+                    <div className="sub-title">Retail needed</div>
+                    <div className="inline">
+                        <label>Vendor price divided by</label>
+                        <input className="num" style={{ width: '80px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
+                        <span>= <strong>{money(c.retail)}</strong> retail needed in Xactimate</span>
+                    </div>
+
+                    <div className="sub-title">Xactimate lines (typed from the Work Order)</div>
+                    <table>
+                        <thead><tr>
+                            <th>Description</th><th className="num">Qty</th><th style={{ width: '70px' }}>Unit</th><th className="num">Unit price</th>
+                            <th className="money">Total</th><th className="money">New unit price</th><th className="money">New total</th><th style={{ width: '40px' }}></th>
+                        </tr></thead>
+                        <tbody>
+                            {c.rows.map(r => (
+                                <tr key={r.id}>
+                                    <td><input value={r.desc} onChange={e => setRow('xact', r.id, 'desc', e.target.value)} placeholder="Xactimate description" /></td>
+                                    <td><input className="num" value={r.qty} onChange={e => setRow('xact', r.id, 'qty', e.target.value)} /></td>
+                                    <td><input list="units" value={r.unit} onChange={e => setRow('xact', r.id, 'unit', e.target.value)} /></td>
+                                    <td><input className="num" value={r.price} onChange={e => setRow('xact', r.id, 'price', e.target.value)} /></td>
+                                    <td className="money">{money(r.total)}</td>
+                                    <td className="money">{ready ? money(r.newPrice) : '-'}</td>
+                                    <td className="money">{ready ? money(r.newTotal) : '-'}</td>
+                                    <td><button className="btn-x" title="Remove this line" onClick={() => set('xact', ws.xact.filter(x => x.id !== r.id))}>✕</button></td>
+                                </tr>
+                            ))}
+                            <tr className="sum">
+                                <td colSpan="4">Xactimate total</td>
+                                <td className="money">{money(c.xactTotal)}</td>
+                                <td></td>
+                                <td className="money">{ready ? money(c.newTotal) : '-'}</td>
+                                <td></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
+                        onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
+
+                    <div className="sub-title">Comparison</div>
+                    <table style={{ maxWidth: '520px' }}>
+                        <tbody>
+                            <tr><td>Vendor price</td><td className="money">{money(c.vendorPrice)}</td></tr>
+                            <tr><td>Retail needed</td><td className="money">{money(c.retail)}</td></tr>
+                            <tr><td>Xactimate total now</td><td className="money">{money(c.xactTotal)}</td></tr>
+                            <tr><td>Difference</td><td className="money">{ready ? overShort(c.diff) : '-'}</td></tr>
+                            <tr><td>Margin now</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
+                            <tr><td>Total at new unit prices</td><td className="money">{ready ? money(c.newTotal) : '-'}</td></tr>
+                            <tr><td>Left over from rounding</td><td className="money">{ready ? overShort(c.leftover) : '-'}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            );
+        }
+
         // Editable list of trades. Used for a job's list and for the start list.
-        function LineTable({ lines, onChange, me, canRestore }) {
+        // worksheets = true on a job (Open button and pricing worksheet); false on the start list
+        function LineTable({ lines, onChange, me, canRestore, worksheets }) {
             const [showGone, setShowGone] = useState(false);
+            const [openId, setOpenId] = useState(null); // trade whose worksheet is open
             const [addCode, setAddCode] = useState('');
             const [addName, setAddName] = useState('');
             const live = lines.filter(l => !l.deleted);
@@ -213,17 +348,38 @@
 
             return (
                 <div>
-                    <table>
-                        <thead><tr><th className="code">Trade code</th><th>Description</th><th style={{ width: '40px' }}></th></tr></thead>
+                    <table className="lines">
+                        <thead><tr>
+                            <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
+                            {worksheets && <th style={{ width: '70px' }}></th>}
+                            <th style={{ width: '40px' }}></th>
+                        </tr></thead>
                         <tbody>
                             {live.map(l => (
-                                <tr key={l.id}>
-                                    <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
-                                    <td><input value={l.name} onChange={e => edit(l.id, 'name', e.target.value)} /></td>
-                                    <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
-                                </tr>
+                                <React.Fragment key={l.id}>
+                                    <tr className="line">
+                                        <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
+                                        <td><input value={l.name} onChange={e => edit(l.id, 'name', e.target.value)} /></td>
+                                        <td>
+                                            <select value={l.method || ''} onChange={e => edit(l.id, 'method', e.target.value)}>
+                                                {METHODS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                                            </select>
+                                        </td>
+                                        {worksheets && (
+                                            <td>{l.method === 'quote' && (
+                                                <button className="btn-secondary btn-sm" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
+                                                    {openId === l.id ? 'Close' : 'Open'}
+                                                </button>
+                                            )}</td>
+                                        )}
+                                        <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
+                                    </tr>
+                                    {worksheets && openId === l.id && l.method === 'quote' && (
+                                        <tr><td colSpan="5"><Worksheet line={l} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                    )}
+                                </React.Fragment>
                             ))}
-                            {live.length === 0 && <tr><td colSpan="3" style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                            {live.length === 0 && <tr><td colSpan={worksheets ? 5 : 4} style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
                         </tbody>
                     </table>
 
@@ -492,7 +648,7 @@
                                 This is the list every new job starts with. Changes here do not touch jobs already saved in Trades-EST.
                             </div>
                             <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>{startText}{startDirty && <span className="unsaved"> | Unsaved changes</span>}</div>
-                            <LineTable lines={startEdit} me={me} canRestore={canRestore}
+                            <LineTable lines={startEdit} me={me} canRestore={canRestore} worksheets={false}
                                 onChange={next => { setStartEdit(next); setStartDirty(true); setMessage(''); }} />
                             <button className="btn-primary" onClick={saveStart} disabled={saving}>{saving ? 'Saving...' : 'Save start list'}</button>
                             <button className="btn-secondary" style={{ width: '100%', marginTop: '8px' }} onClick={closeStart} disabled={saving}>
@@ -505,8 +661,9 @@
                     {!editingStart && lines && (
                         <div className="section">
                             <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
-                            <LineTable lines={lines} me={me} canRestore={canRestore}
+                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
+                            <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
                             <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
                             {msg}
                         </div>
@@ -521,4 +678,3 @@
     </script>
 </body>
 </html>
-
