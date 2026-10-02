@@ -47,6 +47,14 @@
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
+        .calc-back { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .calc { background: white; border-radius: 8px; padding: 16px; width: 290px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .calc .res { text-align: right; font-size: 18px; font-weight: 700; min-height: 26px; margin-top: 6px; }
+        .calc .keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0; }
+        .calc .keys button { padding: 12px 0; font-size: 16px; background: #f0f0f0; color: #333; }
+        .calc .keys button:hover { background: #e0e0e0; }
+        .calc .keys button.op { background: #e3eefb; }
+        .calc .keys button.op:hover { background: #cfe0f5; }
     </style>
 </head>
 <body>
@@ -299,6 +307,73 @@
             return out;
         }
 
+        // Calculator math: + - x / and ( ), typed like 23600+575. Returns null until the math is complete.
+        function calcExpr(src) {
+            const s = String(src == null ? '' : src).replace(/[\s,$]/g, '').replace(/[x×]/gi, '*').replace(/÷/g, '/');
+            if (!s) return null;
+            let i = 0;
+            const factor = () => {
+                if (s[i] === '-') { i++; return -factor(); }
+                if (s[i] === '+') { i++; return factor(); }
+                if (s[i] === '(') { i++; const v = expr(); if (s[i] !== ')') throw new Error('paren'); i++; return v; }
+                const m = /^(\d+\.?\d*|\.\d+)/.exec(s.slice(i));
+                if (!m) throw new Error('number');
+                i += m[0].length;
+                return parseFloat(m[0]);
+            };
+            const term = () => {
+                let v = factor();
+                while (s[i] === '*' || s[i] === '/') { const op = s[i++]; const r = factor(); v = op === '*' ? v * r : v / r; }
+                return v;
+            };
+            const expr = () => {
+                let v = term();
+                while (s[i] === '+' || s[i] === '-') { const op = s[i++]; const r = term(); v = op === '+' ? v + r : v - r; }
+                return v;
+            };
+            try { const v = expr(); return i === s.length && isFinite(v) ? v : null; } catch (e) { return null; }
+        }
+
+        const CALC_KEYS = ['C', '(', ')', '←', '7', '8', '9', '÷', '4', '5', '6', '×', '1', '2', '3', '-', '0', '.', '=', '+'];
+
+        // Pop-up calculator. With onUse it shows a Use button that hands the answer back (to a scratch pad line).
+        function Calculator({ start, onUse, onClose }) {
+            const [text, setText] = useState(start ? String(start) : '');
+            const box = React.useRef(null);
+            const value = calcExpr(text);
+            const equals = () => { if (value !== null) setText(String(Math.round(value * 1e6) / 1e6)); };
+            const tap = (k) => {
+                if (k === 'C') setText('');
+                else if (k === '←') setText(text.slice(0, -1));
+                else if (k === '=') equals();
+                else setText(text + k);
+                if (box.current) box.current.focus();
+            };
+            return (
+                <div className="calc-back">
+                    <div className="calc">
+                        <div style={{ fontWeight: 700, marginBottom: '8px' }}>Calculator</div>
+                        <input ref={box} autoFocus value={text} placeholder="23600+575" style={{ textAlign: 'right', fontSize: '16px' }}
+                            onChange={e => setText(e.target.value.replace(/[^0-9.+\-*/()x×÷,$ ]/gi, ''))}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') { e.preventDefault(); equals(); }
+                                if (e.key === 'Escape') onClose();
+                            }} />
+                        <div className="res">{value !== null ? '= ' + value.toLocaleString('en-US', { maximumFractionDigits: 4 }) : ''}</div>
+                        <div className="keys">
+                            {CALC_KEYS.map(k => <button key={k} className={/[0-9.]/.test(k) ? '' : 'op'} onClick={() => tap(k)}>{k}</button>)}
+                        </div>
+                        {onUse && (
+                            <button className="btn-primary" style={{ marginTop: 0 }} disabled={value === null} onClick={() => onUse(String(round2(value)))}>
+                                {value !== null ? `Use ${money(round2(value))}` : 'Use'}
+                            </button>
+                        )}
+                        <button className="btn-secondary" style={{ width: '100%', marginTop: '8px' }} onClick={onClose}>Close</button>
+                    </div>
+                </div>
+            );
+        }
+
         const overShort = (x) => x === 0 ? <span>{money(0)}</span>
             : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
 
@@ -306,6 +381,7 @@
         function Worksheet({ line, me, onChange }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
+            const [calcFor, setCalcFor] = useState(null); // scratch pad line the calculator is open for
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const c = calcWs(ws);
             const set = (k, v) => onChange({ ...ws, [k]: v });
@@ -352,12 +428,13 @@
                 <div className="ws">
                     <div className="sub-title">Vendor price</div>
                     <table>
-                        <thead><tr><th style={{ width: '110px' }}></th><th>Vendor / note</th><th className="num">Amount</th><th style={{ width: '40px' }}></th></tr></thead>
+                        <thead><tr><th style={{ width: '110px' }}></th><th>Vendor / note</th><th className="num">Amount</th><th style={{ width: '56px' }}></th><th style={{ width: '40px' }}></th></tr></thead>
                         <tbody>
                             <tr>
                                 <td>Quote</td>
                                 <td><input value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" /></td>
                                 <td><input className="num" value={ws.quote} onChange={e => set('quote', e.target.value)} placeholder="0.00" /></td>
+                                <td></td>
                                 <td></td>
                             </tr>
                             {ws.pad.map(p => (
@@ -365,14 +442,20 @@
                                     <td>Scratch pad</td>
                                     <td><input value={p.note} onChange={e => setRow('pad', p.id, 'note', e.target.value)} placeholder="What this number is" /></td>
                                     <td><input className="num" value={p.amount} onChange={e => setRow('pad', p.id, 'amount', e.target.value)} placeholder="+ or -" /></td>
+                                    <td><button className="btn-secondary btn-sm" title="Open the calculator for this line" onClick={() => setCalcFor(p.id)}>Calc</button></td>
                                     <td><button className="btn-x" title="Remove this line" onClick={() => set('pad', ws.pad.filter(x => x.id !== p.id))}>✕</button></td>
                                 </tr>
                             ))}
-                            <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td></tr>
+                            <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
                     <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
                         onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+                    {calcFor && (
+                        <Calculator start={(ws.pad.find(x => x.id === calcFor) || {}).amount}
+                            onUse={v => { setRow('pad', calcFor, 'amount', v); setCalcFor(null); }}
+                            onClose={() => setCalcFor(null)} />
+                    )}
 
                     <div className="sub-title">Retail needed</div>
                     <div className="inline">
@@ -566,6 +649,7 @@
             const [startEdit, setStartEdit] = useState(null);   // start list on screen while editing
             const [startDirty, setStartDirty] = useState(false);
             const startRef = React.useRef(null);
+            const [showCalc, setShowCalc] = useState(false); // general calculator from the top button
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -744,8 +828,12 @@
                 <div>
                     <div className="row">
                         <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
-                        <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button className="btn-secondary" onClick={() => setShowCalc(true)}>Calculator</button>
+                            <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
+                        </div>
                     </div>
+                    {showCalc && <Calculator onClose={() => setShowCalc(false)} />}
 
                     <div className="section">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
