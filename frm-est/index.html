@@ -599,7 +599,8 @@
             const [dirty, setDirty] = useState(false);
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
-            const [savedItems, setSavedItems] = useState([]); // company-wide hardware names
+            const [savedItems, setSavedItems] = useState([]); // company-wide hardware items [{ id, name }]
+            const [showManage, setShowManage] = useState(false);
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -634,8 +635,9 @@
                 if (!profile) return;
                 return db.collection('hardwareItems').onSnapshot(snap => {
                     const list = [];
-                    snap.forEach(doc => list.push(doc.data().name || ''));
-                    setSavedItems(list.filter(Boolean));
+                    snap.forEach(doc => { if (doc.data().name) list.push({ id: doc.id, name: doc.data().name }); });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setSavedItems(list);
                 }, e => console.error('Hardware list error:', e));
             }, [profile]);
 
@@ -673,6 +675,11 @@
             const setTruss = (k, v) => change(p => ({ ...p, trusses: { ...p.trusses, [k]: v } }));
             const setTrussRow = (i, k, v) => setTruss('rows', est.trusses.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setRS = (k, v) => change(p => ({ ...p, roofSheath: { ...p.roofSheath, [k]: v } }));
+            const deleteSavedItem = async (it) => {
+                if (!window.confirm(`Delete "${it.name}" from the saved hardware list? Jobs that already use it keep it.`)) return;
+                try { await db.collection('hardwareItems').doc(it.id).delete(); }
+                catch (e) { setMessage('Error deleting item: ' + e.message); }
+            };
             const setHW = (k, v) => change(p => ({ ...p, hardware: { ...p.hardware, [k]: v } }));
             const setHWRow = (i, k, v) => setHW('rows', est.hardware.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
             const setWallRow = (i, k, v) => setWalls('rows', est.walls.rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
@@ -709,7 +716,7 @@
                     };
                     await db.collection('frmEst').doc(jobId).set(data, { merge: true });
                     // Add any new hardware item names to the company list (no duplicates, any case)
-                    const known = new Set([...HARDWARE, ...savedItems].map(x => x.trim().toLowerCase()));
+                    const known = new Set([...HARDWARE, ...savedItems.map(x => x.name)].map(x => x.trim().toLowerCase()));
                     for (const r of (est.hardware.rows || [])) {
                         const name = (r.item || '').trim();
                         if (!name || known.has(name.toLowerCase())) continue;
@@ -1156,8 +1163,25 @@
                                     </tbody>
                                 </table>
                             )}
-                            <datalist id="hw-items">{[...new Set([...HARDWARE, ...savedItems])].sort().map(h => <option key={h} value={h} />)}</datalist>
+                            <datalist id="hw-items">{[...new Set([...HARDWARE, ...savedItems.map(x => x.name)])].sort().map(h => <option key={h} value={h} />)}</datalist>
                             <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setHW('rows', [...hw.rows, newHW()])}>+ Add hardware</button>
+                            {['owner', 'admin'].includes(profile.role) && (
+                                <button className="btn-secondary btn-sm" style={{ marginTop: '6px', marginLeft: '8px' }} onClick={() => setShowManage(!showManage)}>
+                                    {showManage ? 'Hide saved items' : 'Manage saved items'}
+                                </button>
+                            )}
+                            {showManage && (
+                                <div style={{ marginTop: '8px', border: '1px solid #eee', borderRadius: '4px', padding: '8px' }}>
+                                    {savedItems.length === 0 ? <div className="muted" style={{ marginTop: 0 }}>No saved items yet</div>
+                                        : savedItems.map(it => (
+                                            <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #f3f3f3', fontSize: '13px' }}>
+                                                <span>{it.name}</span>
+                                                <button className="btn-x" onClick={() => deleteSavedItem(it)}>Delete</button>
+                                            </div>
+                                        ))}
+                                    <div className="muted">Built-in items (Simpson list, gun nails, teco nails) are in the code and don't show here.</div>
+                                </div>
+                            )}
 
                             <div className="sub-title">Hours</div>
                             <table><tbody>
