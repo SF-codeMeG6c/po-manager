@@ -454,6 +454,7 @@
                     const list = [];
                     snapshot.forEach(doc => {
                         const d = doc.data();
+                        if (d.deleted === true) return; // skip POs deleted in PO Manager
                         list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
                                     status: d.status || 'Pending', amount: toNumber(d.contractAmount) });
                     });
