@@ -99,7 +99,7 @@
             { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: id => `/po/?job=${id}` },
             { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: id => `/gpm/?job=${id}` },
             { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: id => `/frm-est/?job=${id}` },
-            { key: 'tradesest', name: 'Trades-EST',   url: null },
+            { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: id => `/trades-est/?job=${id}` },
             { key: 'notes',   name: 'Customer Notes', url: null },
             { key: 'cost',    name: 'Job Costing',    url: null },
             { key: 'extras',  name: 'Extras',         url: null },
