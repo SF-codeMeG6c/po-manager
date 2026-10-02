@@ -128,6 +128,7 @@
             const noteRef = React.useRef(null);
             const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
             const [sendingId, setSendingId] = useState(null); // PO being emailed
+            const [openVersions, setOpenVersions] = useState(null); // PO row showing its old versions
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
             const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
@@ -600,16 +601,25 @@ I prefer plain, brief instructions, one step at a time.`;
         const byMe = { uid: user.uid, name: (profile && profile.name) || user.email };
 
         if (editingPO) {
-            // Replace existing PO: update same row (notes/status kept), remove old file
-            await formsRef.doc(editingPO.id).update({ ...poData, editedBy: byMe, editedAt: new Date() });
-            try { await storage.refFromURL(editingPO.pdfUrl).delete(); } catch (e) { console.log('Old file not removed:', e.message); }
-            // Remove attachment files that were taken off this PO
-            const keptUrls = savedAttachments.map(a => a.url);
-            for (const old of (editingPO.attachments || [])) {
-                if (!keptUrls.includes(old.url)) {
-                    try { await storage.refFromURL(old.url).delete(); } catch (e) { console.log('Old attachment not removed:', e.message); }
-                }
-            }
+            // Update same row (notes/status kept). The previous version is kept in history; old files are NOT deleted.
+            const prev = {
+                fileName: editingPO.fileName || '',
+                pdfUrl: editingPO.pdfUrl || '',
+                poNumber: editingPO.poNumber || '',
+                subName: editingPO.subName || '',
+                category: editingPO.category || '',
+                contractAmount: editingPO.contractAmount || '',
+                scope: editingPO.scope || '',
+                attachments: editingPO.attachments || [],
+                savedAt: editingPO.pdfUpdatedAt || editingPO.dateCreated || null,
+                savedBy: editingPO.editedBy || editingPO.createdBy || null,
+                replacedAt: new Date(),
+                replacedBy: byMe
+            };
+            await formsRef.doc(editingPO.id).update({
+                ...poData, editedBy: byMe, editedAt: new Date(),
+                versions: firebase.firestore.FieldValue.arrayUnion(prev)
+            });
             setEditingPO(null);
             setMessage(`PO updated: ${fileName}`);
         } else {
@@ -1213,6 +1223,23 @@ I prefer plain, brief instructions, one step at a time.`;
                                                                     form.createdBy && `Created by ${form.createdBy.name}`,
                                                                     form.editedBy && `Edited by ${form.editedBy.name} ${form.editedAt && form.editedAt.toDate ? form.editedAt.toDate().toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : ''}`
                                                                 ].filter(Boolean).join(' · ')}
+                                                            </div>
+                                                        )}
+                                                        {(form.versions || []).length > 0 && (
+                                                            <div style={{ fontSize: '11px', marginTop: '2px' }}>
+                                                                <span style={{ color: '#0066cc', cursor: 'pointer' }}
+                                                                    onClick={() => setOpenVersions(openVersions === form.id ? null : form.id)}>
+                                                                    {openVersions === form.id ? 'Hide versions' : `Versions (${form.versions.length})`}
+                                                                </span>
+                                                                {openVersions === form.id && [...form.versions].reverse().map((v, i) => (
+                                                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 0', borderTop: '1px solid #f0f0f0', color: '#555' }}>
+                                                                        <span style={{ flex: 1, wordBreak: 'break-all' }}>
+                                                                            {v.fileName}
+                                                                            <span style={{ color: '#888' }}>{' · replaced ' + fmtTime(v.replacedAt) + (v.replacedBy ? ' by ' + v.replacedBy.name : '')}</span>
+                                                                        </span>
+                                                                        {v.pdfUrl && <button className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => window.open(v.pdfUrl)}>View</button>}
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         )}
                                                     </td>
