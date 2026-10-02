@@ -129,6 +129,7 @@
             const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
             const [sendingId, setSendingId] = useState(null); // PO being emailed
             const [openVersions, setOpenVersions] = useState(null); // PO row showing its old versions
+            const [showDeleted, setShowDeleted] = useState(false); // Owner/Admin: show hidden (deleted) POs
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
             const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
@@ -838,14 +839,32 @@ I prefer plain, brief instructions, one step at a time.`;
                 }
             };
 
+            // Delete hides the record (kept for records); Owner/Admin can restore it
             const handleDeleteForm = async (formId) => {
-                if (!currentJobId || !window.confirm('Delete this form record?')) return;
-                
+                if (!currentJobId || !window.confirm('Delete this PO? It will be hidden from the list. The record and PDF are kept.')) return;
                 try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).delete();
-                    setMessage('Form deleted');
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
+                        deleted: true,
+                        deletedBy: { uid: user.uid, name: (profile && profile.name) || user.email },
+                        deletedAt: new Date()
+                    });
+                    setMessage('PO deleted');
                 } catch (error) {
                     setMessage('Error deleting form: ' + error.message);
+                }
+            };
+
+            const handleRestoreForm = async (formId) => {
+                if (!currentJobId) return;
+                try {
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
+                        deleted: false,
+                        restoredBy: { uid: user.uid, name: (profile && profile.name) || user.email },
+                        restoredAt: new Date()
+                    });
+                    setMessage('PO restored');
+                } catch (error) {
+                    setMessage('Error restoring form: ' + error.message);
                 }
             };
 
@@ -1197,7 +1216,15 @@ I prefer plain, brief instructions, one step at a time.`;
 
                     {currentJobId && jobForms.length > 0 && (
                         <div className="section">
-                            <div className="section-title">JOB FORM COMPLETION TRACKER</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div className="section-title">JOB FORM COMPLETION TRACKER</div>
+                                {isAdminUser && jobForms.some(f => f.deleted === true) && (
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', margin: 0 }}>
+                                        <input type="checkbox" style={{ width: 'auto' }} checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} />
+                                        Show deleted ({jobForms.filter(f => f.deleted === true).length})
+                                    </label>
+                                )}
+                            </div>
                             <table>
                                 <thead>
                                     <tr>
@@ -1209,14 +1236,20 @@ I prefer plain, brief instructions, one step at a time.`;
                                 </thead>
                                 <tbody>
                                     {[...jobForms]
+                                        .filter(form => form.deleted !== true || (showDeleted && isAdminUser))
                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
                                         .map(form => {
                                             const status = (form.status === 'Complete' || form.status === 'Completed') ? 'Complete'
                                                 : form.status === 'Revised' ? 'Revised' : 'Pending';
                                             return (
-                                                <tr key={form.id}>
+                                                <tr key={form.id} style={form.deleted ? { background: '#fdecea', opacity: 0.8 } : undefined}>
                                                     <td>
                                                         {form.fileName}
+                                                        {form.deleted && (
+                                                            <div style={{ fontSize: '11px', color: '#d32f2f', fontWeight: 600, marginTop: '2px' }}>
+                                                                Deleted{form.deletedBy ? ' by ' + form.deletedBy.name : ''} {fmtTime(form.deletedAt)}
+                                                            </div>
+                                                        )}
                                                         {(form.createdBy || form.editedBy) && (
                                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
                                                                 {[
@@ -1270,11 +1303,13 @@ I prefer plain, brief instructions, one step at a time.`;
                                                     </td>
                                                     <td>
                                                         <div className="button-group" style={{ gap: '4px' }}>
-                                                            {form.poNumber && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
+                                                            {form.poNumber && !form.deleted && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
                                                             <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
-                                                            <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>
+                                                            {form.deleted
+                                                                ? <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => handleRestoreForm(form.id)}>Restore</button>
+                                                                : <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>}
                                                         </div>
-                                                        {form.poNumber && (
+                                                        {form.poNumber && !form.deleted && (
                                                             <button className="btn-primary btn-sm" style={{ width: 'auto', marginTop: '4px' }}
                                                                 onClick={() => handleSendToSub(form)}
                                                                 disabled={!form.email || sendingId === form.id}
