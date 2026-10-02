@@ -1,1 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+
+        .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; font-size: 13px; color: #666; }
+        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+        .job-code { font-size: 18px; font-weight: 600; color: #333; }
+        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
+
+        .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+        .tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+                padding: 18px 10px; border: 1px solid #ddd; border-radius: 6px; background: white;
+                color: #333; text-decoration: none; font-size: 13px; font-weight: 500; text-align: center; min-height: 110px; }
+        a.tool:hover { border-color: #0066cc; background: #f3f8fd; }
+        a.tool:focus-visible { outline: 2px solid #0066cc; outline-offset: 2px; }
+        a.tool svg { color: #0066cc; }
+        .tool.soon { background: #fafafa; color: #999; border-style: dashed; cursor: default; }
+        .tool.soon svg { color: #bbb; }
+        .tool small { font-size: 11px; font-weight: 400; color: #aaa; }
+        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-top: 8px; font-weight: normal; }
+        .check input { width: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Freeman Job Tools</h1>
+        <p class="subtitle">Pick a job to open its tools</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Same Firebase project as PO Manager and GPM
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Simple line icons
+        const Icon = ({ d }) => (
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {d.map((p, i) => <path key={i} d={p} />)}
+            </svg>
+        );
+        const ICONS = {
+            po:      ['M7 3h8l4 4v14H7z', 'M15 3v4h4', 'M10 12h6', 'M10 16h6'],
+            gpm:     ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M22 20H2'],
+            frmest:  ['M3 11l9-7 9 7', 'M5 10v10', 'M19 10v10', 'M9 20v-9', 'M15 20v-9', 'M3 20h18'],
+            tradesest: ['M3 9h18v10H3z', 'M8 9V6h8v3', 'M3 13h18'],
+            notes:   ['M4 5h16v11H9l-5 4z', 'M8 9h8', 'M8 12h5'],
+            cost:    ['M12 3v18', 'M16 7h-5a2.5 2.5 0 0 0 0 5h2a2.5 2.5 0 0 1 0 5H7'],
+            extras:  ['M12 5v14', 'M5 12h14'],
+            credits: ['M5 12h14'],
+            stmt:    ['M6 3h12v18H6z', 'M9 7h6', 'M9 11h6', 'M9 15h4'],
+            approve: ['M4 12l5 5L20 6'],
+            ar:      ['M3 7h18v10H3z', 'M12 10v4', 'M7 12h.01', 'M17 12h.01'],
+            wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2']
+        };
+
+        // Tools for one job. roles = who sees a live tool; url = where it opens (null = coming soon)
+        const JOB_TOOLS = [
+            { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: id => `/po/?job=${id}` },
+            { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: id => `/gpm/?job=${id}` },
+            { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: id => `/frm-est/?job=${id}` },
+            { key: 'tradesest', name: 'Trades-EST',   url: null },
+            { key: 'notes',   name: 'Customer Notes', url: null },
+            { key: 'cost',    name: 'Job Costing',    url: null },
+            { key: 'extras',  name: 'Extras',         url: null },
+            { key: 'credits', name: 'Credits',        url: null },
+            { key: 'stmt',    name: 'Statement',      url: null }
+        ];
+
+        // Reports across all jobs (not shown to Supers)
+        const COMPANY_TOOLS = [
+            { key: 'approve', name: 'PO Approval',         url: null },
+            { key: 'ar',      name: 'Accounts Receivable', url: null },
+            { key: 'wip',     name: 'WIP',                 url: null }
+        ];
+
+        const LAST_JOB_KEY = 'dashboardLastJob';
+
+        function ToolTile({ tool, href }) {
+            if (href) {
+                return <a className="tool" href={href}><Icon d={ICONS[tool.key]} />{tool.name}</a>;
+            }
+            return <div className="tool soon" aria-disabled="true"><Icon d={ICONS[tool.key]} />{tool.name}<small>Coming soon</small></div>;
+        }
+
+        function Dashboard() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
+            const [authError, setAuthError] = useState('');
+            const [jobs, setJobs] = useState([]);
+            const [jobId, setJobId] = useState('');
+            const [showArchived, setShowArchived] = useState(false);
+            const [message, setMessage] = useState('');
+
+            // Sign-in and role check. New people get a pending record (same as PO Manager).
+            useEffect(() => {
+                auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        if (snap.exists && snap.data().active === true) {
+                            setProfile({ uid: currentUser.uid, ...snap.data() });
+                        } else if (!snap.exists) {
+                            try {
+                                await db.collection('users').doc(currentUser.uid).set({
+                                    name: currentUser.displayName || currentUser.email || '',
+                                    email: currentUser.email || '',
+                                    role: 'pending',
+                                    active: false,
+                                    requestedAt: new Date()
+                                });
+                                setProfile('pending');
+                            } catch (e) {
+                                setProfile(false);
+                            }
+                        } else {
+                            setProfile(snap.data().role === 'pending' ? 'pending' : false);
+                        }
+                    } catch (err) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            // Job list: all jobs, or only assigned jobs for Supers
+            useEffect(() => {
+                if (!profile || typeof profile !== 'object') return;
+                let query = db.collection('jobs');
+                if (profile.role === 'super') query = query.where('assignedSupers', 'array-contains', profile.uid);
+                const unsub = query.onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                    });
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                    // Reopen the last job picked on this computer
+                    let last = '';
+                    try { last = localStorage.getItem(LAST_JOB_KEY) || ''; } catch (e) {}
+                    setJobId(prev => prev || (list.some(j => j.id === last) ? last : ''));
+                }, error => setMessage('Error loading jobs: ' + error.message));
+                return () => unsub();
+            }, [profile]);
+
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
+            const handleLogout = () => {
+                setJobs([]);
+                setJobId('');
+                auth.signOut();
+            };
+
+            const handlePickJob = (id) => {
+                setJobId(id);
+                try { id ? localStorage.setItem(LAST_JOB_KEY, id) : localStorage.removeItem(LAST_JOB_KEY); } catch (e) {}
+            };
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Sign in</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) return <div className="section">Loading...</div>;
+
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">Waiting for approval</div>
+                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Account not set up</div>
+                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            const role = profile.role;
+            const job = jobs.find(j => j.id === jobId);
+            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
+            const liveTools = JOB_TOOLS.filter(t => t.url && t.roles.includes(role));
+            const soonTools = JOB_TOOLS.filter(t => !t.url);
+
+            return (
+                <div>
+                    <div className="topbar">
+                        <span>Signed in as {profile.name || user.email}</span>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+
+                    <div className="section">
+                        <div className="section-title">Job</div>
+                        <label htmlFor="job-pick">Pick a job</label>
+                        <select id="job-pick" value={jobId} onChange={e => handlePickJob(e.target.value)}>
+                            <option value="">-- Pick a job --</option>
+                            {visibleJobs.map(j => (
+                                <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
+                            ))}
+                        </select>
+                        <label className="check">
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            Show archived jobs
+                        </label>
+                        {jobs.length === 0 && role === 'super' && <p style={{ marginTop: '12px', color: '#888' }}>No jobs assigned to you yet.</p>}
+                        {message && <div className="error">{message}</div>}
+                    </div>
+
+                    {job && (
+                        <div className="section">
+                            <div className="job-head">
+                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
+                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
+                            </div>
+                            <div className="tools">
+                                {liveTools.map(t => <ToolTile key={t.key} tool={t} href={t.url(job.id)} />)}
+                                {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
+                            </div>
+                        </div>
+                    )}
+
+                    {role !== 'super' && (
+                        <div className="section">
+                            <div className="section-title">All jobs</div>
+                            <div className="tools">
+                                {COMPANY_TOOLS.map(t => <ToolTile key={t.key} tool={t} />)}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<Dashboard />, document.getElementById('app'));
+    </script>
+</body>
+</html>
 
