@@ -351,6 +351,8 @@
             const pickedTotal = round2(picked.reduce((t, l) => t + (l.total || 0), 0));
             const toggleCat = (k) => setCats(cats.includes(k) ? cats.filter(x => x !== k) : present.filter(x => x === k || cats.includes(x)));
             const setAll = (k, on) => { const o = { ...off }; linesOf(k).forEach(x => { if (on) delete o[x.i]; else o[x.i] = true; }); setOff(o); };
+            // Pick only one activity in a category: M = material lines, I = install (labor) lines
+            const setOnly = (k, act) => { const o = { ...off }; linesOf(k).forEach(x => { if (x.l.act === act) delete o[x.i]; else o[x.i] = true; }); setOff(o); };
             const doImport = () => onImport(picked, cats, wo.lines.filter((l, i) => cats.includes(l.cat) && off[i]).map(l => l.key));
 
             return (
@@ -386,6 +388,8 @@
                                             <span style={{ color: '#666' }}>{on} of {ls.length} picked</span>
                                             <button className="btn-secondary btn-sm" onClick={() => setAll(k, true)}>All</button>
                                             <button className="btn-secondary btn-sm" onClick={() => setAll(k, false)}>None</button>
+                                            {ls.some(x => x.l.act === 'M') && <button className="btn-secondary btn-sm" title="Pick only the material lines" onClick={() => setOnly(k, 'M')}>M only</button>}
+                                            {ls.some(x => x.l.act === 'I') && <button className="btn-secondary btn-sm" title="Pick only the install (labor) lines" onClick={() => setOnly(k, 'I')}>I only</button>}
                                         </div>
                                         <table>
                                             <tbody>
