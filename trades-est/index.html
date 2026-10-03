@@ -488,7 +488,7 @@
 
         // One trade's pricing worksheet.
         //   Quote:  vendor price, retail needed, Xactimate lines with new unit prices, comparison
-        //   Factor: Xactimate lines, vendor price = total x factor (+ scratch pad), comparison
+        //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
         function Worksheet({ line, me, onChange }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
@@ -647,8 +647,8 @@
             if (isFactor) {
                 return (
                     <div className="ws">
-                        {xactBlock}
                         {vendorBlock}
+                        {xactBlock}
                         <div className="sub-title">Comparison</div>
                         <table style={{ maxWidth: '520px' }}>
                             <tbody>
