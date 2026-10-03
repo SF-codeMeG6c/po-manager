@@ -207,25 +207,24 @@
         const fmtDay = (ts) => { const d = toDate(ts); return d ? d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' }) : ''; };
         const fmtStamp = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : ''; };
 
-        // Primary method per trade. Calculator and Factor come later.
-        const METHODS = [['', ''], ['quote', 'Quote']];
-        const DEFAULT_FACTOR = '0.70'; // retail needed = vendor price / 0.70
+        // Primary method per trade. Calculator comes later.
+        //   Quote:  vendor price is typed in; the CES may need new unit prices to hold margin
+        //   Factor: vendor price = Xactimate total x factor; the CES does not change
+        const METHODS = [['', ''], ['quote', 'Quote'], ['factor', 'Factor']];
+        const hasWorksheet = (m) => m === 'quote' || m === 'factor';
+        const DEFAULT_FACTOR = '0.70'; // Quote: retail needed = vendor price / 0.70
+        const DEFAULT_MULT = '0.50';   // Factor: vendor price = Xactimate total x 0.50
         const UNITS = ['SF', 'LF', 'EA', 'SQ', 'SY', 'HR', 'DA', 'WK', 'MO'];
 
         // Numbers are typed as text so $ and commas are fine
         const n = (v) => { const x = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(x) ? 0 : x; };
         const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
         const money = (x) => (x < 0 ? '-' : '') + '$' + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const blankWs = () => ({ vendor: '', quote: '', pad: [], factor: DEFAULT_FACTOR, xact: [] });
+        const blankWs = () => ({ vendor: '', quote: '', pad: [], factor: DEFAULT_FACTOR, mult: DEFAULT_MULT, xact: [] });
 
         // All the math for one trade's worksheet
-        function calcWs(ws) {
+        function calcWs(ws, method) {
             const padTotal = ws.pad.reduce((t, p) => t + n(p.amount), 0);
-            const vendorPrice = round2(n(ws.quote) + padTotal);          // quote + scratch pad
-            let factor = n(ws.factor);
-            if (factor > 1) factor = factor / 100;                        // 70 typed for 0.70
-            if (!(factor > 0)) factor = n(DEFAULT_FACTOR);
-            const retail = round2(vendorPrice / factor);                  // what Xactimate needs to total
             const rows = ws.xact.map(x => {
                 // Lines marked CHANGE, OPEN-ITEM, BID ITEM... carry no dollars, same as on the Work Order
                 if (x.marker) return { ...x, total: 0 };
@@ -234,6 +233,21 @@
                 return { ...x, total: asPrinted ? x.woTotal : round2(n(x.qty) * n(x.price)) };
             });
             const xactTotal = round2(rows.reduce((t, r) => t + r.total, 0));
+
+            if (method === 'factor') {
+                let mult = n(ws.mult);
+                if (mult > 3) mult = mult / 100;                          // 50 typed for 0.50 (1.2 stays 1.2)
+                if (!(mult > 0)) mult = n(DEFAULT_MULT);
+                const base = round2(xactTotal * mult);                    // Xactimate total x factor
+                const vendorPrice = round2(base + padTotal);              // plus scratch pad
+                return { rows, xactTotal, mult, base, vendorPrice, margin: xactTotal > 0 ? (xactTotal - vendorPrice) / xactTotal : null };
+            }
+
+            const vendorPrice = round2(n(ws.quote) + padTotal);          // quote + scratch pad
+            let factor = n(ws.factor);
+            if (factor > 1) factor = factor / 100;                        // 70 typed for 0.70
+            if (!(factor > 0)) factor = n(DEFAULT_FACTOR);
+            const retail = round2(vendorPrice / factor);                  // what Xactimate needs to total
             // New unit prices: every priced line moves by the same percentage, rounded to the cent
             const ratio = xactTotal > 0 ? retail / xactTotal : 0;
             rows.forEach(r => {
@@ -250,8 +264,8 @@
         }
         const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-        // Xactimate categories a trade code pulls from the Work Order: "INS" -> INS, "FNC/DOR #2" -> FNC and DOR
-        const catsFor = (code) => (code || '').toUpperCase().split(/[\s#]/)[0].split('/').filter(t => /^[A-Z]{3}$/.test(t));
+        // Xactimate categories a trade code starts with on the picker: "INS" -> INS, "FNC/DOR #2" -> FNC and DOR, "PNT-DEO" -> PNT
+        const catsFor = (code) => (code || '').toUpperCase().split(/[\s#]/)[0].split(/[\/-]/).filter(t => /^[A-Z]{3}$/.test(t));
 
         // Read an Xactimate Work Order PDF (already opened with pdf.js) into its line items
         async function parseWorkOrder(pdf) {
@@ -472,17 +486,20 @@
         const overShort = (x) => x === 0 ? <span>{money(0)}</span>
             : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
 
-        // One trade's pricing worksheet (Quote method): vendor price, retail needed, Xactimate comparison
+        // One trade's pricing worksheet.
+        //   Quote:  vendor price, retail needed, Xactimate lines with new unit prices, comparison
+        //   Factor: Xactimate lines, vendor price = total x factor (+ scratch pad), comparison
         function Worksheet({ line, me, onChange }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad line the calculator is open for
             const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
             const ws = { ...blankWs(), ...(line.ws || {}) };
-            const c = calcWs(ws);
+            const isFactor = line.method === 'factor';
+            const c = calcWs(ws, line.method);
             const set = (k, v) => onChange({ ...ws, [k]: v });
             const setRow = (list, id, k, v) => set(list, ws[list].map(r => r.id === id ? { ...r, [k]: v } : r));
-            const ready = c.vendorPrice > 0 && c.xactTotal > 0;
+            const ready = isFactor ? c.xactTotal > 0 : (c.vendorPrice > 0 && c.xactTotal > 0);
 
             // Read a Work Order PDF, then open the picker. Nothing changes until lines are imported.
             const upload = async (e) => {
@@ -513,19 +530,41 @@
                 setPick(null);
             };
 
-            return (
-                <div className="ws">
+            const vendorBlock = (<>
                     <div className="sub-title">Vendor price</div>
                     <table>
                         <thead><tr><th style={{ width: '110px' }}></th><th>Vendor / note</th><th className="num">Amount</th><th style={{ width: '56px' }}></th><th style={{ width: '40px' }}></th></tr></thead>
                         <tbody>
-                            <tr>
-                                <td>Quote</td>
-                                <td><input value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" /></td>
-                                <td><input className="num" value={ws.quote} onChange={e => set('quote', e.target.value)} placeholder="0.00" /></td>
-                                <td></td>
-                                <td></td>
-                            </tr>
+                            {!isFactor && (
+                                <tr>
+                                    <td>Quote</td>
+                                    <td><input value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" /></td>
+                                    <td><input className="num" value={ws.quote} onChange={e => set('quote', e.target.value)} placeholder="0.00" /></td>
+                                    <td></td>
+                                    <td></td>
+                                </tr>
+                            )}
+                            {isFactor && (<>
+                                <tr>
+                                    <td>Vendor</td>
+                                    <td><input value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" /></td>
+                                    <td></td>
+                                    <td></td>
+                                    <td></td>
+                                </tr>
+                                <tr>
+                                    <td>Factor</td>
+                                    <td>
+                                        <div className="inline" style={{ fontSize: '13px' }}>
+                                            <span>Xactimate total {money(c.xactTotal)} x</span>
+                                            <input className="num" style={{ width: '80px' }} value={ws.mult} onChange={e => set('mult', e.target.value)} />
+                                        </div>
+                                    </td>
+                                    <td className="money">{money(c.base)}</td>
+                                    <td></td>
+                                    <td></td>
+                                </tr>
+                            </>)}
                             {ws.pad.map(p => (
                                 <tr key={p.id}>
                                     <td>Scratch pad</td>
@@ -545,14 +584,18 @@
                             onUse={v => { setRow('pad', calcFor, 'amount', v); setCalcFor(null); }}
                             onClose={() => setCalcFor(null)} />
                     )}
+            </>);
 
+            const retailBlock = (<>
                     <div className="sub-title">Retail needed</div>
                     <div className="inline">
                         <label>Vendor price divided by</label>
                         <input className="num" style={{ width: '80px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
                         <span>= <strong>{money(c.retail)}</strong> retail needed in Xactimate</span>
                     </div>
+            </>);
 
+            const xactBlock = (<>
                     <div className="sub-title">Xactimate lines</div>
                     <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
                         <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333' }}>
@@ -570,7 +613,10 @@
                     <table>
                         <thead><tr>
                             <th>Description</th><th className="num">Qty</th><th style={{ width: '70px' }}>Unit</th><th className="num">Unit price</th>
-                            <th className="money">Total</th><th className="money">New unit price</th><th className="money">New total</th><th style={{ width: '40px' }}></th>
+                            <th className="money">Total</th>
+                            {!isFactor && <th className="money">New unit price</th>}
+                            {!isFactor && <th className="money">New total</th>}
+                            <th style={{ width: '40px' }}></th>
                         </tr></thead>
                         <tbody>
                             {c.rows.map(r => (
@@ -580,23 +626,46 @@
                                     <td><input list="units" value={r.unit} onChange={e => setRow('xact', r.id, 'unit', e.target.value)} /></td>
                                     <td><input className="num" value={r.price} onChange={e => setRow('xact', r.id, 'price', e.target.value)} /></td>
                                     <td className="money">{r.marker || money(r.total)}</td>
-                                    <td className="money">{ready && !r.marker ? money(r.newPrice) : '-'}</td>
-                                    <td className="money">{ready && !r.marker ? money(r.newTotal) : '-'}</td>
+                                    {!isFactor && <td className="money">{ready && !r.marker ? money(r.newPrice) : '-'}</td>}
+                                    {!isFactor && <td className="money">{ready && !r.marker ? money(r.newTotal) : '-'}</td>}
                                     <td><button className="btn-x" title="Remove this line" onClick={() => set('xact', ws.xact.filter(x => x.id !== r.id))}>✕</button></td>
                                 </tr>
                             ))}
                             <tr className="sum">
                                 <td colSpan="4">Xactimate total</td>
                                 <td className="money">{money(c.xactTotal)}</td>
-                                <td></td>
-                                <td className="money">{ready ? money(c.newTotal) : '-'}</td>
+                                {!isFactor && <td></td>}
+                                {!isFactor && <td className="money">{ready ? money(c.newTotal) : '-'}</td>}
                                 <td></td>
                             </tr>
                         </tbody>
                     </table>
                     <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
                         onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
+            </>);
 
+            if (isFactor) {
+                return (
+                    <div className="ws">
+                        {xactBlock}
+                        {vendorBlock}
+                        <div className="sub-title">Comparison</div>
+                        <table style={{ maxWidth: '520px' }}>
+                            <tbody>
+                                <tr><td>Xactimate total</td><td className="money">{money(c.xactTotal)}</td></tr>
+                                <tr><td>Vendor price</td><td className="money">{money(c.vendorPrice)}</td></tr>
+                                <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="ws">
+                    {vendorBlock}
+                    {retailBlock}
+                    {xactBlock}
                     <div className="sub-title">Comparison</div>
                     <table style={{ maxWidth: '520px' }}>
                         <tbody>
@@ -668,7 +737,7 @@
                                             </select>
                                         </td>
                                         {worksheets && (
-                                            <td>{l.method === 'quote' && (
+                                            <td>{hasWorksheet(l.method) && (
                                                 <button className="btn-secondary btn-sm" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Open'}
                                                 </button>
@@ -676,7 +745,7 @@
                                         )}
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
-                                    {worksheets && openId === l.id && l.method === 'quote' && (
+                                    {worksheets && openId === l.id && hasWorksheet(l.method) && (
                                         <tr><td colSpan="5"><Worksheet line={l} me={me} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
                                     )}
                                 </React.Fragment>
