@@ -47,6 +47,16 @@
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
+        .pick-back { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .pick { background: white; border-radius: 8px; width: 94%; max-width: 980px; max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .pick-head { padding: 16px 18px 10px; border-bottom: 1px solid #eee; }
+        .pick-body { padding: 4px 18px 14px; overflow-y: auto; flex: 1; }
+        .pick-foot { padding: 12px 18px; border-top: 1px solid #eee; display: flex; align-items: center; gap: 10px; }
+        .pick input[type=checkbox] { width: auto; }
+        .pick-cats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 16px; font-size: 13px; }
+        .pick-cats label { display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; padding: 3px 0; color: #333; cursor: pointer; }
+        .pick-cats label.on { font-weight: 600; }
+        .pick tr.skip td { color: #999; }
         .calc-back { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
         .calc { background: white; border-radius: 8px; padding: 16px; width: 290px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
         .calc .res { text-align: right; font-size: 18px; font-weight: 700; min-height: 26px; margin-top: 6px; }
@@ -246,7 +256,7 @@
         // Read an Xactimate Work Order PDF (already opened with pdf.js) into its line items
         async function parseWorkOrder(pdf) {
             const num = (s) => parseFloat(String(s).replace(/,/g, ''));
-            const out = { date: '', estimate: '', lines: [], catTotals: {} };
+            const out = { date: '', estimate: '', lines: [], catTotals: {}, catNames: {} };
             let cat = '';     // category section we are in
             let cur = null;   // item waiting for its quantity/price row
             let last = null;  // last finished item (a marker like "ROOF BID ITEM" can wrap to a second row)
@@ -284,7 +294,7 @@
                     // Rest of a marker that wrapped ("ROOF BID" / "ITEM")
                     if (!cur && last && last.marker && row.parts.length === 1 && x0 > 480) { last.marker += ' ' + text; last = null; return; }
                     // Category heading: "INS INSULATION" (starts further left than the items)
-                    if (x0 < 42 && (m = text.match(/^([A-Z]{3}) [A-Z]/))) { cat = m[1]; cur = null; last = null; return; }
+                    if (x0 < 42 && (m = text.match(/^([A-Z]{3}) [A-Z]/))) { cat = m[1]; out.catNames[cat] = text.slice(4); cur = null; last = null; return; }
                     // Item row: category, selector, activity, description
                     if (x0 >= 42 && x0 < 60) {
                         if (/^[A-Z]{3}$/.test(row.parts[0].s)) {
@@ -304,7 +314,92 @@
                     if (cur && x0 >= 182) cur.desc += ' ' + text;
                 });
             }
+            // Key per line = its text plus which copy it is (the same item can be listed more than once)
+            const seen = {};
+            out.lines.forEach(l => {
+                const k = `${l.cat}|${l.sel}|${l.act}|${l.desc}`;
+                seen[k] = (seen[k] || 0) + 1;
+                l.key = `${k}#${seen[k]}`;
+            });
             return out;
+        }
+
+        // Pick which Work Order categories and lines go into one trade
+        function WorkOrderPicker({ wo, line, prev, existing, onImport, onCancel }) {
+            const present = [...new Set(wo.lines.map(l => l.cat))];
+            const skippedBefore = new Set((prev && prev.skipped) || []);
+            // Start from the last picks for this trade; first time, from the trade's own category
+            const [cats, setCats] = useState(() => ((prev && prev.cats && prev.cats.length) ? prev.cats : catsFor(line.code)).filter(k => present.includes(k)));
+            const [off, setOff] = useState(() => { const o = {}; wo.lines.forEach((l, i) => { if (skippedBefore.has(l.key)) o[i] = true; }); return o; });
+
+            const linesOf = (k) => wo.lines.map((l, i) => ({ l, i })).filter(x => x.l.cat === k);
+            const picked = wo.lines.filter((l, i) => cats.includes(l.cat) && !off[i]);
+            const pickedTotal = round2(picked.reduce((t, l) => t + (l.total || 0), 0));
+            const toggleCat = (k) => setCats(cats.includes(k) ? cats.filter(x => x !== k) : present.filter(x => x === k || cats.includes(x)));
+            const setAll = (k, on) => { const o = { ...off }; linesOf(k).forEach(x => { if (on) delete o[x.i]; else o[x.i] = true; }); setOff(o); };
+            const doImport = () => onImport(picked, cats, wo.lines.filter((l, i) => cats.includes(l.cat) && off[i]).map(l => l.key));
+
+            return (
+                <div className="pick-back">
+                    <div className="pick">
+                        <div className="pick-head">
+                            <div style={{ fontWeight: 700 }}>Pick Work Order lines for {line.code} {line.name}</div>
+                            <div className="muted" style={{ marginTop: '4px' }}>Work Order dated {wo.date}{wo.estimate ? ` (${wo.estimate})` : ''}. Only this trade changes.</div>
+                        </div>
+                        <div className="pick-body">
+                            <div className="sub-title">1. Categories</div>
+                            <div className="pick-cats">
+                                {present.map(k => {
+                                    const ls = linesOf(k);
+                                    return (
+                                        <label key={k} className={cats.includes(k) ? 'on' : ''}>
+                                            <input type="checkbox" checked={cats.includes(k)} onChange={() => toggleCat(k)} />
+                                            <span>{k} {wo.catNames[k] || ''}, {ls.length} line{ls.length === 1 ? '' : 's'}, {money(wo.catTotals[k] || 0)}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="sub-title">2. Lines</div>
+                            {cats.length === 0 && <div className="muted" style={{ marginTop: 0 }}>Check a category above to see its lines.</div>}
+                            {cats.map(k => {
+                                const ls = linesOf(k);
+                                const on = ls.filter(x => !off[x.i]).length;
+                                return (
+                                    <div key={k} style={{ marginBottom: '14px' }}>
+                                        <div className="inline" style={{ fontSize: '13px', marginBottom: '4px' }}>
+                                            <strong>{k} {wo.catNames[k] || ''}</strong>
+                                            <span style={{ color: '#666' }}>{on} of {ls.length} picked</span>
+                                            <button className="btn-secondary btn-sm" onClick={() => setAll(k, true)}>All</button>
+                                            <button className="btn-secondary btn-sm" onClick={() => setAll(k, false)}>None</button>
+                                        </div>
+                                        <table>
+                                            <tbody>
+                                                {ls.map(({ l, i }) => (
+                                                    <tr key={i} className={off[i] ? 'skip' : ''} style={{ cursor: 'pointer' }} onClick={() => setOff(off[i] ? (({ [i]: _, ...rest }) => rest)(off) : { ...off, [i]: true })}>
+                                                        <td style={{ width: '28px' }}><input type="checkbox" checked={!off[i]} readOnly /></td>
+                                                        <td>{l.sel} {l.act} {l.desc}</td>
+                                                        <td className="money" style={{ width: '110px' }}>{l.qty} {l.unit}</td>
+                                                        <td className="money" style={{ width: '90px' }}>{l.price}</td>
+                                                        <td className="money" style={{ width: '120px' }}>{l.marker || money(l.total)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="pick-foot">
+                            <span style={{ flex: 1, fontSize: '14px' }}><strong>{picked.length} line{picked.length === 1 ? '' : 's'} picked, {money(pickedTotal)}</strong></span>
+                            <button className="btn-secondary" onClick={onCancel}>Cancel</button>
+                            <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '10px 16px' }} disabled={picked.length === 0} onClick={doImport}>
+                                {existing ? `Replace this trade's ${existing} line${existing === 1 ? '' : 's'} with ${picked.length} picked` : `Import ${picked.length} line${picked.length === 1 ? '' : 's'}`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
         }
 
         // Calculator math: + - x / and ( ), typed like 23600+575. Returns null until the math is complete.
@@ -353,7 +448,7 @@
                 <div className="calc-back">
                     <div className="calc">
                         <div style={{ fontWeight: 700, marginBottom: '8px' }}>Calculator</div>
-                        <input ref={box} autoFocus value={text} placeholder="23600+575" style={{ textAlign: 'right', fontSize: '16px' }}
+                        <input ref={box} autoFocus value={text} style={{ textAlign: 'right', fontSize: '16px' }}
                             onChange={e => setText(e.target.value.replace(/[^0-9.+\-*/()x×÷,$ ]/gi, ''))}
                             onKeyDown={e => {
                                 if (e.key === 'Enter') { e.preventDefault(); equals(); }
@@ -382,46 +477,40 @@
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad line the calculator is open for
+            const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const c = calcWs(ws);
             const set = (k, v) => onChange({ ...ws, [k]: v });
             const setRow = (list, id, k, v) => set(list, ws[list].map(r => r.id === id ? { ...r, [k]: v } : r));
             const ready = c.vendorPrice > 0 && c.xactTotal > 0;
 
-            // Fill this trade's Xactimate lines from a Work Order PDF. Only this trade changes.
+            // Read a Work Order PDF, then open the picker. Nothing changes until lines are imported.
             const upload = async (e) => {
                 const file = e.target.files[0];
                 e.target.value = '';
                 if (!file) return;
-                const cats = catsFor(line.code);
-                if (!cats.length) { setNote('Error: the trade code needs to start with a 3-letter Xactimate category, like INS, to match Work Order lines.'); return; }
                 setBusy(true);
                 setNote('');
                 try {
                     if (!pdfjsLib.GlobalWorkerOptions.workerSrc) pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
                     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
                     const wo = await parseWorkOrder(pdf);
-                    const found = wo.lines.filter(l => cats.includes(l.cat));
-                    if (!wo.lines.length) {
-                        setNote('Error: no Work Order lines found in that PDF. It needs to be the Xactimate Work Order report. Nothing changed.');
-                    } else if (!found.length) {
-                        setNote(`No ${cats.join(' or ')} lines in that Work Order. Nothing changed.`);
-                    } else if (!ws.xact.length || window.confirm(`Replace this trade's ${ws.xact.length} Xactimate line(s) with ${found.length} line(s) from the Work Order dated ${wo.date}?`)) {
-                        const xact = found.map(l => ({
-                            id: newId(), desc: `${l.sel} ${l.act} ${l.desc}`, qty: l.qty, unit: l.unit, price: l.price,
-                            woQty: l.qty, woPrice: l.price, woTotal: l.total, marker: l.marker
-                        }));
-                        const catTotal = round2(cats.reduce((t, k) => t + (wo.catTotals[k] || 0), 0));
-                        const sum = round2(found.reduce((t, l) => t + (l.total || 0), 0));
-                        onChange({ ...ws, xact, wo: { fileName: file.name, date: wo.date, estimate: wo.estimate, cats, catTotal, lines: found.length, uploadedBy: me, uploadedAt: new Date() } });
-                        setNote(sum === catTotal
-                            ? `${found.length} line(s) loaded from the Work Order dated ${wo.date}. Click Save to keep them.`
-                            : `Error: ${found.length} line(s) loaded, but they add to ${money(sum)} and the Work Order total is ${money(catTotal)}. Check the lines.`);
-                    }
+                    if (!wo.lines.length) setNote('Error: no Work Order lines found in that PDF. It needs to be the Xactimate Work Order report. Nothing changed.');
+                    else setPick({ wo, fileName: file.name });
                 } catch (err) {
                     setNote('Error reading the PDF: ' + err.message);
                 }
                 setBusy(false);
+            };
+            // Bring the picked lines into this trade only
+            const importPicked = (picked, cats, skipped) => {
+                const xact = picked.map(l => ({
+                    id: newId(), desc: `${l.cat} ${l.sel} ${l.act} ${l.desc}`, qty: l.qty, unit: l.unit, price: l.price,
+                    woQty: l.qty, woPrice: l.price, woTotal: l.total, marker: l.marker
+                }));
+                onChange({ ...ws, xact, wo: { fileName: pick.fileName, date: pick.wo.date, estimate: pick.wo.estimate, cats, skipped, lines: picked.length, uploadedBy: me, uploadedAt: new Date() } });
+                setNote(`${picked.length} line(s) loaded from the Work Order dated ${pick.wo.date}. Click Save to keep them.`);
+                setPick(null);
             };
 
             return (
@@ -472,11 +561,12 @@
                         </label>
                         <span style={{ color: '#666' }}>
                             {ws.wo
-                                ? `From the Work Order dated ${ws.wo.date}${ws.wo.estimate ? ' (' + ws.wo.estimate + ')' : ''}, uploaded by ${ws.wo.uploadedBy ? ws.wo.uploadedBy.name : ''} on ${fmtStamp(ws.wo.uploadedAt)}`
+                                ? `From the Work Order dated ${ws.wo.date}${ws.wo.estimate ? ' (' + ws.wo.estimate + ')' : ''}, ${(ws.wo.cats || []).join(' + ')}, uploaded by ${ws.wo.uploadedBy ? ws.wo.uploadedBy.name : ''} on ${fmtStamp(ws.wo.uploadedAt)}`
                                 : 'No Work Order uploaded for this trade yet. Upload one, or add lines by hand.'}
                         </span>
                     </div>
                     {note && <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
+                    {pick && <WorkOrderPicker wo={pick.wo} line={line} prev={ws.wo} existing={ws.xact.length} onImport={importPicked} onCancel={() => setPick(null)} />}
                     <table>
                         <thead><tr>
                             <th>Description</th><th className="num">Qty</th><th style={{ width: '70px' }}>Unit</th><th className="num">Unit price</th>
