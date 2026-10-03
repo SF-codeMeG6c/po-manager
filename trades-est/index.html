@@ -215,9 +215,9 @@
         const hasWorksheet = (m) => m === 'quote' || m === 'factor' || m === 'allowance';
         const DEFAULT_FACTOR = '0.70'; // Quote: retail needed = vendor price / 0.70
         const DEFAULT_MULT = '0.50';   // Factor: vendor price = Xactimate total x 0.50
-        const DEFAULT_LABOR_MULT = '0.60'; // Allowance: labor = I lines x 0.60
+        const DEFAULT_LABOR_MULT = '0.80'; // Allowance: labor = I lines x 0.80
         const DEFAULT_MAT_MULT = '1.00';   // Allowance: material = M lines x 1.00 (no margin on allowances)
-        const DEFAULT_SPLIT = '0.60';      // Allowance split line: retail x 0.60 ...
+        const DEFAULT_SPLIT = '0.80';      // Allowance split line: retail x 0.80 ...
         const DEFAULT_LABOR_PCT = '50';    // ... then this percent to labor, the rest to material
         const UNITS = ['SF', 'LF', 'EA', 'SQ', 'SY', 'HR', 'DA', 'WK', 'MO'];
 
@@ -703,8 +703,9 @@
                                     <td>Scratch pad</td>
                                     <td>
                                         <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '13px' }}>
-                                            <input style={{ flex: 1 }} value={p.note} onChange={e => setRow('apad', p.id, 'note', e.target.value)} placeholder="What this is" />
-                                            <input className="num" style={{ width: '100px' }} value={p.retail} onChange={e => setRow('apad', p.id, 'retail', e.target.value)} placeholder="Retail" />
+                                            <input style={{ flex: 1 }} value={p.note} onChange={e => setRow('apad', p.id, 'note', e.target.value)} placeholder="Note" />
+                                            <span>retail</span>
+                                            <input className="num" style={{ width: '100px' }} value={p.retail} onChange={e => setRow('apad', p.id, 'retail', e.target.value)} placeholder="0.00" />
                                             <span>x</span>
                                             <input className="num" style={{ width: '58px' }} value={p.factor} onChange={e => setRow('apad', p.id, 'factor', e.target.value)} title="Factor" />
                                             <span>labor</span>
