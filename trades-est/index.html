@@ -521,9 +521,15 @@
                 const of = (st) => mine.filter(r => r.status === st);
                 return { cat: k, name: wo.catNames[k] || '', rows: mine, count: mine.length, total: sum(mine), ok: sum(of('ok')), un: sum(of('un')), unCount: of('un').length, twice: sum(of('twice')), twiceCount: of('twice').length };
             });
-            // Categories that still need attention first, biggest unassigned amount on top
-            cats.sort((a, b) => ((b.unCount + b.twiceCount > 0) - (a.unCount + a.twiceCount > 0)) || (b.un + b.twice) - (a.un + a.twice) || (a.cat < b.cat ? -1 : 1));
-            return { rows, cats, stale, ok: group('ok'), un: group('un'), twice: group('twice'), none: group('none'), count: rows.length, total: sum(rows) };
+            cats.sort((a, b) => (a.cat < b.cat ? -1 : a.cat > b.cat ? 1 : 0)); // alphabetical by category
+            // Compare the Work Order's categories with the job's trade list, both ways
+            const live = lines.filter(t => !t.deleted);
+            const listed = new Set();
+            live.forEach(t => catsFor(t.code).forEach(k => listed.add(k)));
+            const onWo = new Set(cats.map(k => k.cat));
+            const missing = cats.filter(k => !listed.has(k.cat));                              // on the Work Order, no trade for it on the list
+            const absent = live.filter(t => !catsFor(t.code).some(k => onWo.has(k)));           // on the list, nothing for it on the Work Order
+            return { rows, cats, stale, missing, absent, ok: group('ok'), un: group('un'), twice: group('twice'), none: group('none'), count: rows.length, total: sum(rows) };
         }
 
         // The report for the Work Order check. Read-only.
@@ -565,7 +571,38 @@
                                 </table>
                             </>)}
 
-                            <div className="sub-title">By category (click a category to see its lines)</div>
+                            <div className="sub-title">On the Work Order, not on this job's trade list</div>
+                            {c.missing.length === 0
+                                ? <div className="muted" style={{ marginTop: 0 }}>None. Every Work Order category has a trade on the list.</div>
+                                : (
+                                    <table style={{ maxWidth: '760px' }}>
+                                        <thead><tr><th>Category</th><th className="money">Lines</th><th className="money">Retail</th><th className="money">Unassigned</th></tr></thead>
+                                        <tbody>
+                                            {c.missing.map(k => (
+                                                <tr key={k.cat}>
+                                                    <td>{k.cat} {k.name}</td>
+                                                    <td className="money">{k.count}</td>
+                                                    <td className="money">{money(k.total)}</td>
+                                                    <td className="money">{k.unCount ? <span className="short">{money(k.un)} ({k.unCount})</span> : money(0)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+
+                            <div className="sub-title">On this job's trade list, not on the Work Order</div>
+                            {c.absent.length === 0
+                                ? <div className="muted" style={{ marginTop: 0 }}>None. Every trade on the list has lines on the Work Order.</div>
+                                : (
+                                    <table style={{ maxWidth: '760px' }}>
+                                        <thead><tr><th className="code">Trade code</th><th>Description</th></tr></thead>
+                                        <tbody>
+                                            {c.absent.map(t => <tr key={t.id}><td>{t.code}</td><td>{t.name}</td></tr>)}
+                                        </tbody>
+                                    </table>
+                                )}
+
+                            <div className="sub-title">By category, A to Z (click a category to see its lines)</div>
                             <table>
                                 <thead><tr><th>Category</th><th className="money">Lines</th><th className="money">Retail</th><th className="money">Assigned</th><th className="money">Unassigned</th><th className="money">Picked twice</th></tr></thead>
                                 <tbody>
