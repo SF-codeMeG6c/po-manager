@@ -196,6 +196,12 @@
         const sortLines = (lines) => [...lines].sort((a, b) => cmpCode(a.code, b.code));
 
         // A new job starts with a blank copy of every trade on the start list
+        // The start list trade a job trade came from: matched by where the line came from, else by code and description
+        const findStart = (startList, l) => {
+            const live = (startList || []).filter(x => !x.deleted);
+            const same = (a, b) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+            return live.find(x => l.startId && x.id === l.startId) || live.find(x => same(x.code, l.code) && same(x.name, l.name)) || null;
+        };
         // Price list items saved on a start list trade, as blank job items (quantity and note empty)
         const jobItems = (items) => (items || []).filter(i => (i.name || '').trim()).map(i => ({ id: newId(), name: i.name, price: i.price || '', qty: '', note: '' }));
         const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => {
@@ -552,11 +558,12 @@
         //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
         //   Allowance: labor and material vendor prices, Xactimate lines (each goes to labor, material or a split), comparison
         //   Calculator: same as Quote, with a price list (quantity x price each) in place of the typed quote
-        function Worksheet({ line, me, onChange, startItems }) {
+        function Worksheet({ line, me, onChange, startItems, onSaveToStart }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad box the calculator is open for: { list, id, field }
             const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
+            const [itemNote, setItemNote] = useState('');  // result of saving the price list to the start list
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const isFactor = line.method === 'factor';
             const isAllow = line.method === 'allowance';
@@ -621,6 +628,23 @@
                 set('citems', [...merged, ...mine.filter(m => !used[m.id])]);
             };
 
+            // Send this job's item names and prices (not quantities or notes) up to the start list for this trade
+            const saveToStart = async () => {
+                const named = (ws.citems || []).filter(i => (i.name || '').trim());
+                if (!named.length) { setItemNote('Error: there are no named items to save.'); return; }
+                const ask = startItems.length
+                    ? `Replace the start list price list for ${line.code} (${startItems.length} item${startItems.length === 1 ? '' : 's'}) with these ${named.length} item${named.length === 1 ? '' : 's'} and prices? Every new job will start with them.`
+                    : `Save these ${named.length} item${named.length === 1 ? '' : 's'} and prices as the start list price list for ${line.code}? Every new job will start with them.`;
+                if (!window.confirm(ask)) return;
+                setItemNote('');
+                try {
+                    const count = await onSaveToStart(named);
+                    setItemNote(`Saved to the start list: ${count} item${count === 1 ? '' : 's'}. New jobs will start with them.`);
+                } catch (err) {
+                    setItemNote('Error saving to the start list: ' + err.message);
+                }
+            };
+
             // Calculator: the job's price list
             const itemsBlock = isCalc && (<>
                     <div className="sub-title">Price list</div>
@@ -643,10 +667,12 @@
                     </table>
                     <div className="inline" style={{ marginTop: '6px', fontSize: '13px' }}>
                         <button className="btn-secondary btn-sm" onClick={() => set('citems', [...ws.citems, { id: newId(), name: '', price: '', qty: '', note: '' }])}>+ Add item</button>
-                        {startItems && startItems.length > 0
-                            ? <button className="btn-secondary btn-sm" onClick={loadItems}>Load items from start list</button>
-                            : <span style={{ color: '#666' }}>No price list saved for this trade on the start list yet. Add one under Edit start list, or add items here for this job only.</span>}
+                        {startItems && startItems.length > 0 && <button className="btn-secondary btn-sm" onClick={loadItems}>Load items from start list</button>}
+                        {startItems && <button className="btn-secondary btn-sm" onClick={saveToStart}>Save these items to the start list</button>}
+                        {startItems && startItems.length === 0 && <span style={{ color: '#666' }}>No price list saved for this trade on the start list yet.</span>}
+                        {!startItems && <span style={{ color: '#666' }}>This trade is not on the start list, so its items stay on this job.</span>}
                     </div>
+                    {itemNote && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: itemNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{itemNote}</div>}
             </>);
 
             const vendorBlock = (<>
@@ -956,15 +982,13 @@
 
         // Editable list of trades. Used for a job's list and for the start list.
         // worksheets = true on a job (Open button and pricing worksheet); false on the start list
-        function LineTable({ lines, onChange, me, canRestore, worksheets, startList }) {
+        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
-            // The start list's price list for a job trade: matched by where the line came from, else by code and description
+            // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
             const startItemsFor = (l) => {
-                const live = (startList || []).filter(x => !x.deleted);
-                const same = (a, b) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
-                const hit = live.find(x => l.startId && x.id === l.startId) || live.find(x => same(x.code, l.code) && same(x.name, l.name));
-                return hit && hit.items ? hit.items.filter(i => (i.name || '').trim()) : null;
+                const hit = findStart(startList, l);
+                return hit ? (hit.items || []).filter(i => (i.name || '').trim()) : null;
             };
             const [addCode, setAddCode] = useState('');
             const [addName, setAddName] = useState('');
@@ -1030,7 +1054,7 @@
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
-                                        <tr><td colSpan="5"><Worksheet line={l} me={me} startItems={startItemsFor(l)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                        <tr><td colSpan="5"><Worksheet line={l} me={me} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
                                     )}
                                     {!worksheets && openId === l.id && l.method === 'calculator' && (
                                         <tr><td colSpan="5"><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
@@ -1224,6 +1248,23 @@
                 setSaving(false);
             };
 
+            // Save a job's price list (item names and prices only) as the start list price list for that trade
+            const saveItemsToStart = async (line, items) => {
+                const list = startRef.current || [];
+                const hit = findStart(list, line);
+                if (!hit) throw new Error('This trade is not on the start list.');
+                const priceList = items.filter(i => (i.name || '').trim()).map(i => ({ id: newId(), name: i.name.trim(), price: i.price || '' }));
+                const by = { uid: user.uid, name: profile.name || user.email };
+                const now = new Date();
+                const clean = cleanLines(list.map(x => x.id === hit.id ? { ...x, method: 'calculator', items: priceList } : x));
+                const ref = db.collection('tradesEstStart').doc('list');
+                const batch = db.batch();
+                batch.set(ref, { lines: clean, updatedBy: by, updatedAt: now }, { merge: true });
+                batch.set(ref.collection('versions').doc(), { lines: clean, savedBy: by, savedAt: now });
+                await batch.commit();
+                return priceList.length;
+            };
+
             const openStart = () => {
                 setStartEdit(startLines.map(l => ({ ...l })));
                 setStartDirty(false);
@@ -1324,7 +1365,7 @@
                     {!editingStart && lines && (
                         <div className="section">
                             <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
-                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} startList={startLines}
+                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} startList={startLines} onSaveItems={saveItemsToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
                             <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
                             <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
