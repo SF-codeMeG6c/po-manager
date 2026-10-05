@@ -236,6 +236,7 @@
         const DEFAULT_MAT_MULT = '1.00';   // Allowance: material = M lines x 1.00 (no margin on allowances)
         const DEFAULT_SPLIT = '0.80';      // Allowance split line: retail x 0.80 ...
         const DEFAULT_LABOR_PCT = '50';    // ... then this percent to labor, the rest to material
+        const BASEBOARD_LABOR_PER_LF = 2.25; // vendor labor price to install baseboard, used in the baseboard reminder
         const UNITS = ['SF', 'LF', 'EA', 'SQ', 'SY', 'HR', 'DA', 'WK', 'MO'];
 
         // Numbers are typed as text so $ and commas are fine
@@ -1010,6 +1011,44 @@
                     </div>
             </>);
 
+            // Baseboard reminder: finish carpentry baseboard lines that carry labor and material together.
+            // The finish hardware vendor often installs the base, so the labor may belong on that PO. Reminder only; changes no numbers.
+            const baseLines = catsFor(line.code).includes('FNH') ? [] : c.rows.filter(r => !r.marker && /^FNC /.test(r.desc || '') && /baseboard/i.test(r.desc) && !['I', 'M'].includes(actOf(r)));
+            const baseLf = round2(baseLines.reduce((t, r) => t + n(r.qty), 0));
+            const baseLabor = round2(baseLf * BASEBOARD_LABOR_PER_LF);
+            const lfText = (v) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const facText = (v) => { const t = v.toFixed(3); return t.endsWith('0') ? t.slice(0, -1) : t; };
+            // What to type on each baseboard line so its labor comes off and its material share stays the same
+            const baseSteps = baseLines.map(r => {
+                const f = factorOf(own(r.sf) ? r.sf : ws.defSf, DEFAULT_SPLIT);
+                const pct = pctOf(own(r.sl) ? r.sl : ws.defSl, DEFAULT_LABOR_PCT);
+                return { id: r.id, name: (r.desc || '').replace(/^FNC /, ''), lf: n(r.qty), f, pct, newF: Math.round(f * (1 - pct) * 1000) / 1000, mat: r.mat || 0 };
+            });
+            const baseNote = baseLines.length > 0 && (ws.baseNoteOff
+                ? <div style={{ marginBottom: '8px' }}><button className="btn-secondary btn-sm" onClick={() => set('baseNoteOff', false)}>Show baseboard note</button></div>
+                : (
+                    <div className="note">
+                        <div><strong>Baseboard on this trade: {lfText(baseLf)} LF.</strong> Is the finish hardware vendor installing it? If so, split the cost by hand:</div>
+                        {isAllow && (<>
+                            <div style={{ margin: '6px 0 0 14px' }}>1. On this worksheet, take the labor off each baseboard line so only its material stays:</div>
+                            {baseSteps.map(b => (
+                                <div key={b.id} style={{ margin: '2px 0 0 30px' }}>
+                                    {b.name} ({lfText(b.lf)} LF): {b.pct === 0
+                                        ? 'labor is already off this line.'
+                                        : <>change x <strong>{facText(b.f)}</strong> to <strong>{facText(b.newF)}</strong> and labor <strong>{Math.round(b.pct * 100)}</strong>% to <strong>0</strong>%. Its material stays at {money(b.mat)}.</>}
+                                </div>
+                            ))}
+                            <div style={{ margin: '4px 0 0 14px' }}>2. On finish hardware, add a scratch pad line for the labor: retail <strong>{money(baseLabor)}</strong> ({lfText(baseLf)} LF x {money(BASEBOARD_LABOR_PER_LF)} per LF), factor 1, labor 100%.</div>
+                        </>)}
+                        {!isAllow && (<>
+                            <div style={{ margin: '6px 0 0 14px' }}>1. Set this trade's Method to Allowance. This note will then show what to change on each baseboard line.</div>
+                            <div style={{ margin: '2px 0 0 14px' }}>2. On finish hardware, add a scratch pad line for the labor: retail <strong>{money(baseLabor)}</strong> ({lfText(baseLf)} LF x {money(BASEBOARD_LABOR_PER_LF)} per LF), factor 1, labor 100%.</div>
+                        </>)}
+                        <div style={{ margin: '6px 0 0 0' }}>If the finish carpenter is installing it, leave everything as is.</div>
+                        <button className="btn-secondary btn-sm" style={{ marginTop: '8px' }} onClick={() => set('baseNoteOff', true)}>Hide this note</button>
+                    </div>
+                ));
+
             const xactBlock = (<>
                     <div className="sub-title">Xactimate lines</div>
                     <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
@@ -1024,6 +1063,7 @@
                         </span>
                     </div>
                     {note && <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
+                    {baseNote}
                     {pick && <WorkOrderPicker wo={pick.wo} line={line} prev={ws.wo} existing={ws.xact.length} onImport={importPicked} onCancel={() => setPick(null)} />}
                     <table>
                         <thead><tr>
