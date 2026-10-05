@@ -206,7 +206,7 @@
         const jobItems = (items) => (items || []).filter(i => (i.name || '').trim()).map(i => ({ id: newId(), name: i.name, price: i.price || '', qty: '', note: '' }));
         const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => {
             const line = { id: newId(), startId: l.id, code: l.code, name: l.name, method: l.method || '' };
-            if (l.method === 'calculator' && l.items && l.items.length) line.ws = { citems: jobItems(l.items) };
+            if ((l.method === 'calculator' || l.method === 'calcleft') && l.items && l.items.length) line.ws = { citems: jobItems(l.items) };
             return line;
         }));
 
@@ -224,8 +224,11 @@
         //   Factor: vendor price = Xactimate total x factor; the CES does not change
         //   Allowance: labor (I lines) and material (M lines) each get a factor and their own total
         //   Calculator: vendor price = a price list (quantity x price each); otherwise the same as Quote
-        const METHODS = [['', ''], ['quote', 'Quote'], ['factor', 'Factor'], ['allowance', 'Allowance'], ['calculator', 'Calculator']];
-        const hasWorksheet = (m) => m === 'quote' || m === 'factor' || m === 'allowance' || m === 'calculator';
+        //   Calc + material: labor = a price list; material = what's left of the budget (Xactimate total x 0.70) after labor
+        const METHODS = [['', ''], ['quote', 'Quote'], ['factor', 'Factor'], ['allowance', 'Allowance'], ['calculator', 'Calculator'], ['calcleft', 'Calc + material']];
+        const hasWorksheet = (m) => ['quote', 'factor', 'allowance', 'calculator', 'calcleft'].includes(m);
+        const usesItems = (m) => m === 'calculator' || m === 'calcleft'; // methods with a price list
+        const DEFAULT_BUDGET = '0.70';     // Calc + material: budget = Xactimate total x 0.70
         const DEFAULT_FACTOR = '0.70'; // Quote: retail needed = vendor price / 0.70
         const DEFAULT_MULT = '0.50';   // Factor: vendor price = Xactimate total x 0.50
         const DEFAULT_LABOR_MULT = '0.80'; // Allowance: labor = I lines x 0.80
@@ -238,7 +241,7 @@
         const n = (v) => { const x = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(x) ? 0 : x; };
         const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
         const money = (x) => (x < 0 ? '-' : '') + '$' + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const blankWs = () => ({ vendor: '', matVendor: '', quote: '', pad: [], apad: [], citems: [], factor: DEFAULT_FACTOR, mult: DEFAULT_MULT, laborMult: DEFAULT_LABOR_MULT, matMult: DEFAULT_MAT_MULT, xact: [] });
+        const blankWs = () => ({ vendor: '', matVendor: '', quote: '', pad: [], apad: [], citems: [], factor: DEFAULT_FACTOR, mult: DEFAULT_MULT, laborMult: DEFAULT_LABOR_MULT, matMult: DEFAULT_MAT_MULT, budget: DEFAULT_BUDGET, xact: [] });
         // A typed factor: 60 works as 0.60 (1.2 stays 1.2); blank falls back to the default
         const factorOf = (v, def) => { let x = n(v); if (x > 3) x = x / 100; return x > 0 ? x : n(def); };
         // A typed percent, 0 to 100; blank falls back to the default
@@ -292,6 +295,17 @@
                     iTotal: round2(iTotal), mTotal: round2(mTotal), oTotal: round2(oTotal), oLabor: round2(oLabor), oMat: round2(oMat),
                     margin: retailBase > 0 ? (retailBase - vendorPrice) / retailBase : null
                 };
+            }
+
+            if (method === 'calcleft') {
+                const items = (ws.citems || []).map(i => ({ ...i, total: round2(n(i.qty) * n(i.price)) }));
+                const itemsTotal = round2(items.reduce((t, i) => t + i.total, 0));
+                const labor = round2(itemsTotal + padTotal);                          // price list + scratch pad
+                const budgetFactor = factorOf(ws.budget, DEFAULT_BUDGET);
+                const budget = round2(xactTotal * budgetFactor);                      // what labor and material can cost together
+                const material = round2(budget - labor);                              // what's left
+                const vendorPrice = round2(labor + material);
+                return { rows, xactTotal, items, itemsTotal, labor, budget, budgetFactor, material, vendorPrice, margin: xactTotal > 0 ? (xactTotal - vendorPrice) / xactTotal : null };
             }
 
             if (method === 'factor') {
@@ -558,6 +572,7 @@
         //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
         //   Allowance: labor and material vendor prices, Xactimate lines (each goes to labor, material or a split), comparison
         //   Calculator: same as Quote, with a price list (quantity x price each) in place of the typed quote
+        //   Calc + material: price list for labor; material is what's left of the budget; two totals for two POs
         function Worksheet({ line, me, onChange, startItems, onSaveToStart }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
@@ -567,12 +582,13 @@
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const isFactor = line.method === 'factor';
             const isAllow = line.method === 'allowance';
-            const isCalc = line.method === 'calculator';
-            const plain = isFactor || isAllow; // no "new unit price" columns: the CES does not change
+            const isLeft = line.method === 'calcleft';
+            const isCalc = line.method === 'calculator' || isLeft; // has a price list
+            const plain = isFactor || isAllow || isLeft; // no "new unit price" columns: the CES does not change
             const c = calcWs(ws, line.method);
             const set = (k, v) => onChange({ ...ws, [k]: v });
             const setRow = (list, id, k, v) => set(list, ws[list].map(r => r.id === id ? { ...r, [k]: v } : r));
-            const ready = isAllow ? c.retailBase > 0 : isFactor ? c.xactTotal > 0 : (c.vendorPrice > 0 && c.xactTotal > 0);
+            const ready = isAllow ? c.retailBase > 0 : (isFactor || isLeft) ? c.xactTotal > 0 : (c.vendorPrice > 0 && c.xactTotal > 0);
 
             // Read a Work Order PDF, then open the picker. Nothing changes until lines are imported.
             const upload = async (e) => {
@@ -892,6 +908,75 @@
                         onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
             </>);
 
+            // Calc + material: labor from the price list, material is what's left of the budget
+            const leftBlock = isLeft && (<>
+                    <div className="sub-title">Vendor price</div>
+                    <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
+                        <label>Labor vendor</label>
+                        <input style={{ width: '230px' }} value={ws.vendor} onChange={e => set('vendor', e.target.value)} placeholder="Vendor name" />
+                        <label>Material vendor</label>
+                        <input style={{ width: '230px' }} value={ws.matVendor} onChange={e => set('matVendor', e.target.value)} placeholder="Vendor name" />
+                    </div>
+                    <table>
+                        <thead><tr><th style={{ width: '110px' }}></th><th>Detail</th><th className="num">Amount</th><th style={{ width: '56px' }}></th><th style={{ width: '40px' }}></th></tr></thead>
+                        <tbody>
+                            <tr><td>Items</td><td style={{ fontSize: '13px' }}>Price list total</td><td className="money">{money(c.itemsTotal)}</td><td></td><td></td></tr>
+                            {ws.pad.map(p => (
+                                <tr key={p.id}>
+                                    <td>Scratch pad</td>
+                                    <td><input value={p.note} onChange={e => setRow('pad', p.id, 'note', e.target.value)} placeholder="What this number is" /></td>
+                                    <td><input className="num" value={p.amount} onChange={e => setRow('pad', p.id, 'amount', e.target.value)} placeholder="+ or -" /></td>
+                                    <td><button className="btn-secondary btn-sm" title="Open the calculator for this line" onClick={() => setCalcFor({ list: 'pad', id: p.id, field: 'amount' })}>Calc</button></td>
+                                    <td><button className="btn-x" title="Remove this line" onClick={() => set('pad', ws.pad.filter(x => x.id !== p.id))}>✕</button></td>
+                                </tr>
+                            ))}
+                            <tr className="sum"><td colSpan="2">Labor vendor price</td><td className="money">{money(c.labor)}</td><td></td><td></td></tr>
+                            <tr>
+                                <td>Budget</td>
+                                <td>
+                                    <div className="inline" style={{ fontSize: '13px' }}>
+                                        <span>Xactimate total {money(c.xactTotal)} x</span>
+                                        <input className="num" style={{ width: '70px' }} value={ws.budget} onChange={e => set('budget', e.target.value)} />
+                                    </div>
+                                </td>
+                                <td className="money">{money(c.budget)}</td>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                            <tr><td>Less labor</td><td></td><td className="money">{money(-c.labor)}</td><td></td><td></td></tr>
+                            <tr className="sum">
+                                <td colSpan="2">Material vendor price (what's left)</td>
+                                <td className="money">{c.material < 0 ? <span className="short">{money(-c.material)} over budget</span> : money(c.material)}</td>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
+                        onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line (labor)</button>
+            </>);
+
+            if (isLeft) {
+                return (
+                    <div className="ws">
+                        {itemsBlock}
+                        {leftBlock}
+                        {calcBlock}
+                        {xactBlock}
+                        <div className="sub-title">Comparison</div>
+                        <table style={{ maxWidth: '520px' }}>
+                            <tbody>
+                                <tr><td>Xactimate total</td><td className="money">{money(c.xactTotal)}</td></tr>
+                                <tr><td>Budget</td><td className="money">{money(c.budget)}</td></tr>
+                                <tr><td>Labor vendor price</td><td className="money">{money(c.labor)}</td></tr>
+                                <tr><td>Material vendor price</td><td className="money">{c.material < 0 ? <span className="short">{money(-c.material)} over budget</span> : money(c.material)}</td></tr>
+                                <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                );
+            }
+
             if (isAllow) {
                 return (
                     <div className="ws">
@@ -1024,7 +1109,7 @@
                 <div>
                     <table className="lines">
                         <thead><tr>
-                            <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
+                            <th className="code">Trade code</th><th>Description</th><th style={{ width: '150px' }}>Method</th>
                             <th style={{ width: '70px' }}></th>
                             <th style={{ width: '40px' }}></th>
                         </tr></thead>
@@ -1045,7 +1130,7 @@
                                                     {openId === l.id ? 'Close' : 'Open'}
                                                 </button>
                                             )}
-                                            {!worksheets && l.method === 'calculator' && (
+                                            {!worksheets && usesItems(l.method) && (
                                                 <button className="btn-secondary btn-sm" title="Items and prices for this trade" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Items'}
                                                 </button>
@@ -1056,7 +1141,7 @@
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
                                         <tr><td colSpan="5"><Worksheet line={l} me={me} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
                                     )}
-                                    {!worksheets && openId === l.id && l.method === 'calculator' && (
+                                    {!worksheets && openId === l.id && usesItems(l.method) && (
                                         <tr><td colSpan="5"><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
                                     )}
                                 </React.Fragment>
@@ -1256,7 +1341,7 @@
                 const priceList = items.filter(i => (i.name || '').trim()).map(i => ({ id: newId(), name: i.name.trim(), price: i.price || '' }));
                 const by = { uid: user.uid, name: profile.name || user.email };
                 const now = new Date();
-                const clean = cleanLines(list.map(x => x.id === hit.id ? { ...x, method: 'calculator', items: priceList } : x));
+                const clean = cleanLines(list.map(x => x.id === hit.id ? { ...x, method: usesItems(line.method) ? line.method : 'calculator', items: priceList } : x));
                 const ref = db.collection('tradesEstStart').doc('list');
                 const batch = db.batch();
                 batch.set(ref, { lines: clean, updatedBy: by, updatedAt: now }, { merge: true });
