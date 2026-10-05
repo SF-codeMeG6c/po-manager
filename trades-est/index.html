@@ -57,6 +57,9 @@
         .pick-cats label { display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; padding: 3px 0; color: #333; cursor: pointer; }
         .pick-cats label.on { font-weight: 600; }
         .pick tr.skip td { color: #999; }
+        .chk-cat { cursor: pointer; }
+        .chk-cat:hover { background: #fafafa; }
+        .bad { color: #d32f2f; font-weight: 600; }
         .calc-back { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
         .calc { background: white; border-radius: 8px; padding: 16px; width: 290px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
         .calc .res { text-align: right; font-size: 18px; font-weight: 700; min-height: 26px; margin-top: 6px; }
@@ -480,6 +483,123 @@
                             <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '10px 16px' }} disabled={picked.length === 0} onClick={doImport}>
                                 {existing ? `Replace this trade's ${existing} line${existing === 1 ? '' : 's'} with ${picked.length} picked` : `Import ${picked.length} line${picked.length === 1 ? '' : 's'}`}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Work Order check: compare every Work Order line with the lines the job's trades have imported. Changes nothing.
+        function checkWorkOrder(wo, lines) {
+            const text = (l) => `${l.cat} ${l.sel} ${l.act} ${l.desc}`;
+            const byKey = {};
+            wo.lines.forEach((l, i) => { byKey[l.key] = i; });
+            const hits = wo.lines.map(() => []);   // trades holding each Work Order line
+            const stale = [];                      // trades whose imported lines no longer match this Work Order
+            lines.filter(t => !t.deleted && hasWorksheet(t.method) && t.ws && t.ws.xact).forEach(t => {
+                let changed = 0, gone = 0;
+                const used = {};
+                t.ws.xact.forEach(x => {
+                    if (x.woQty == null) return;   // typed by hand: nothing to compare
+                    let i = x.key != null && byKey[x.key] != null ? byKey[x.key] : -1;
+                    if (i < 0) i = wo.lines.findIndex((l, k) => !used[k] && text(l) === x.desc); // imported before keys were kept
+                    if (i < 0 || used[i]) { gone++; return; }
+                    used[i] = true;
+                    hits[i].push(t);
+                    const l = wo.lines[i];
+                    const same = l.qty === x.woQty && l.price === x.woPrice && (l.total == null ? null : l.total) === (x.woTotal == null ? null : x.woTotal) && (l.marker || '') === (x.marker || '');
+                    if (!same) changed++;
+                });
+                if (changed || gone) stale.push({ id: t.id, code: t.code, name: t.name, changed, gone });
+            });
+            // Each line: none = no dollars on the Work Order, un = not in any trade, ok = in one trade, twice = in two or more
+            const rows = wo.lines.map((l, i) => ({ l, trades: hits[i], status: l.marker ? 'none' : hits[i].length === 0 ? 'un' : hits[i].length === 1 ? 'ok' : 'twice' }));
+            const sum = (list) => round2(list.reduce((t, r) => t + (r.l.total || 0), 0));
+            const group = (st) => { const list = rows.filter(r => r.status === st); return { count: list.length, total: sum(list) }; };
+            const cats = [...new Set(wo.lines.map(l => l.cat))].map(k => {
+                const mine = rows.filter(r => r.l.cat === k);
+                const of = (st) => mine.filter(r => r.status === st);
+                return { cat: k, name: wo.catNames[k] || '', rows: mine, count: mine.length, total: sum(mine), ok: sum(of('ok')), un: sum(of('un')), unCount: of('un').length, twice: sum(of('twice')), twiceCount: of('twice').length };
+            });
+            // Categories that still need attention first, biggest unassigned amount on top
+            cats.sort((a, b) => ((b.unCount + b.twiceCount > 0) - (a.unCount + a.twiceCount > 0)) || (b.un + b.twice) - (a.un + a.twice) || (a.cat < b.cat ? -1 : 1));
+            return { rows, cats, stale, ok: group('ok'), un: group('un'), twice: group('twice'), none: group('none'), count: rows.length, total: sum(rows) };
+        }
+
+        // The report for the Work Order check. Read-only.
+        function WorkOrderCheck({ wo, lines, jobCode, onClose }) {
+            const [open, setOpen] = useState({});
+            const c = checkWorkOrder(wo, lines);
+            const names = (r) => r.trades.map(t => t.code).join(', ');
+            return (
+                <div className="pick-back">
+                    <div className="pick">
+                        <div className="pick-head">
+                            <div style={{ fontWeight: 700 }}>Work Order check{jobCode ? ` - ${jobCode}` : ''}</div>
+                            <div className="muted" style={{ marginTop: '4px' }}>Work Order dated {wo.date}{wo.estimate ? ` (${wo.estimate})` : ''}. This is a report only. Nothing is changed or saved.</div>
+                        </div>
+                        <div className="pick-body">
+                            <div className="sub-title">Summary</div>
+                            <table style={{ maxWidth: '560px' }}>
+                                <tbody>
+                                    <tr><td>Assigned to a trade</td><td className="money">{c.ok.count} line{c.ok.count === 1 ? '' : 's'}</td><td className="money">{money(c.ok.total)}</td></tr>
+                                    <tr><td className={c.un.count ? 'short' : ''}>Unassigned</td><td className="money">{c.un.count} line{c.un.count === 1 ? '' : 's'}</td><td className="money">{money(c.un.total)}</td></tr>
+                                    <tr><td className={c.twice.count ? 'bad' : ''}>Picked twice</td><td className="money">{c.twice.count} line{c.twice.count === 1 ? '' : 's'}</td><td className="money">{money(c.twice.total)}</td></tr>
+                                    <tr><td>No dollars on the Work Order</td><td className="money">{c.none.count} line{c.none.count === 1 ? '' : 's'}</td><td className="money">-</td></tr>
+                                    <tr className="sum"><td>Work Order</td><td className="money">{c.count} lines</td><td className="money">{money(c.total)}</td></tr>
+                                </tbody>
+                            </table>
+                            {c.un.count === 0 && c.twice.count === 0 && <div className="over" style={{ marginTop: '8px', fontSize: '14px' }}>Every line with dollars is in exactly one trade.</div>}
+
+                            {c.stale.length > 0 && (<>
+                                <div className="sub-title">Trades out of date against this Work Order</div>
+                                <table style={{ maxWidth: '760px' }}>
+                                    <tbody>
+                                        {c.stale.map(t => (
+                                            <tr key={t.id}>
+                                                <td>{t.code} {t.name}</td>
+                                                <td>{[t.changed ? `${t.changed} line${t.changed === 1 ? '' : 's'} changed` : '', t.gone ? `${t.gone} line${t.gone === 1 ? '' : 's'} no longer on the Work Order` : ''].filter(Boolean).join(', ')}. Upload the Work Order in this trade to refresh it.</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </>)}
+
+                            <div className="sub-title">By category (click a category to see its lines)</div>
+                            <table>
+                                <thead><tr><th>Category</th><th className="money">Lines</th><th className="money">Retail</th><th className="money">Assigned</th><th className="money">Unassigned</th><th className="money">Picked twice</th></tr></thead>
+                                <tbody>
+                                    {c.cats.map(k => (
+                                        <React.Fragment key={k.cat}>
+                                            <tr className="chk-cat" onClick={() => setOpen({ ...open, [k.cat]: !open[k.cat] })}>
+                                                <td>{open[k.cat] ? '▾' : '▸'} {k.cat} {k.name}</td>
+                                                <td className="money">{k.count}</td>
+                                                <td className="money">{money(k.total)}</td>
+                                                <td className="money">{money(k.ok)}</td>
+                                                <td className="money">{k.unCount ? <span className="short">{money(k.un)} ({k.unCount})</span> : '-'}</td>
+                                                <td className="money">{k.twiceCount ? <span className="bad">{money(k.twice)} ({k.twiceCount})</span> : '-'}</td>
+                                            </tr>
+                                            {open[k.cat] && k.rows.map((r, i) => (
+                                                <tr key={i} style={{ background: '#fafafa', fontSize: '12px' }}>
+                                                    <td style={{ paddingLeft: '22px' }}>{r.l.sel} {r.l.act} {r.l.desc}</td>
+                                                    <td className="money">{r.l.qty} {r.l.unit}</td>
+                                                    <td className="money">{r.l.marker || money(r.l.total)}</td>
+                                                    <td colSpan="3">
+                                                        {r.status === 'un' && <span className="short">Not assigned</span>}
+                                                        {r.status === 'twice' && <span className="bad">Picked twice: {names(r)}</span>}
+                                                        {r.status === 'ok' && <span>{names(r)}</span>}
+                                                        {r.status === 'none' && <span style={{ color: '#888' }}>No dollars{r.trades.length ? ` (in ${names(r)})` : ''}</span>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </React.Fragment>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="pick-foot">
+                            <span style={{ flex: 1, fontSize: '14px' }}><strong>{c.un.count} unassigned, {money(c.un.total)}</strong>{c.twice.count > 0 && <strong className="bad"> | {c.twice.count} picked twice</strong>}</span>
+                            <button className="btn-secondary" onClick={onClose}>Close</button>
                         </div>
                     </div>
                 </div>
@@ -1146,6 +1266,8 @@
             const [startDirty, setStartDirty] = useState(false);
             const startRef = React.useRef(null);
             const [showCalc, setShowCalc] = useState(false); // general calculator from the top button
+            const [check, setCheck] = useState(null);         // Work Order read for the check report
+            const [checkBusy, setCheckBusy] = useState(false);
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1296,6 +1418,25 @@
             // Save an Allowance trade's starting split (for lines not marked I or M) as that trade's start on new jobs
             const saveSplitToStart = (line, sf, sl) => saveTradeToStart(line, { method: 'allowance', defSf: sf, defSl: sl });
 
+            // Read a Work Order for the check report. Read-only: no trade changes, nothing is saved.
+            const runCheck = async (e) => {
+                const file = e.target.files[0];
+                e.target.value = '';
+                if (!file) return;
+                setCheckBusy(true);
+                setMessage('');
+                try {
+                    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
+                    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+                    const wo = await parseWorkOrder(pdf);
+                    if (!wo.lines.length) setMessage('Error: no Work Order lines found in that PDF. It needs to be the Xactimate Work Order report.');
+                    else setCheck(wo);
+                } catch (err) {
+                    setMessage('Error reading the PDF: ' + err.message);
+                }
+                setCheckBusy(false);
+            };
+
             const openStart = () => {
                 setStartEdit(startLines.map(l => ({ ...l })));
                 setStartDirty(false);
@@ -1395,7 +1536,14 @@
 
                     {!editingStart && lines && (
                         <div className="section">
-                            <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
+                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
+                                    {checkBusy ? 'Reading...' : 'Check Work Order'}
+                                    <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
+                                </label>
+                            </div>
+                            {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
                             <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
