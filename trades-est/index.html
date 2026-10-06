@@ -17,8 +17,9 @@
         .sub-title { font-weight: 600; color: #444; margin: 18px 0 8px; font-size: 14px; }
         .form-group { margin-bottom: 12px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        input, select { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        input, select, textarea { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        textarea { resize: vertical; min-height: 80px; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; margin-top: 8px; }
         .btn-primary:hover { background: #0052a3; }
@@ -44,6 +45,8 @@
         .ws { background: #f9f9f9; border: 1px solid #e5e5e5; border-radius: 6px; padding: 14px; margin: 4px 0 10px; }
         .ws table { background: white; }
         .ws .sub-title:first-child { margin-top: 0; }
+        .req { background: white; border: 1px solid #ccc; border-radius: 6px; padding: 14px; margin-top: 10px; }
+        .req-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
@@ -714,12 +717,301 @@
         const overShort = (x) => x === 0 ? <span>{money(0)}</span>
             : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
 
+        // ---------- Quote requests: the PO before the customer signs ----------
+        // Each request is its own record (tradesEst/{jobId}/requests), outside the trade list, so saving the
+        // trade list never touches it. Field names match PO Manager's POs so the handoff at signing is a copy.
+        const REQUEST_FIRST_LINE = 'REQUEST FOR PRICING - NOT A PURCHASE ORDER';
+        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price']];
+        const kindFor = (method) => method === 'quote' ? 'ask' : 'confirm'; // Quote has no price yet; the others produce ours
+        const kindText = (k) => (KINDS.find(x => x[0] === k) || ['', ''])[1];
+        const REQ_FIELDS = ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'kind', 'part', 'contractAmount', 'scope'];
+        const amountText = (x) => x > 0 ? x.toFixed(2) : '';
+        const showAmount = (v) => String(v == null ? '' : v).trim() === '' ? '-' : money(n(v));
+
+        // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
+        const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, ch) => nl + sp + ch.toUpperCase());
+        const capInPlace = (el) => {
+            const fixed = capLines(el.value);
+            if (fixed !== el.value) {
+                const start = el.selectionStart, end = el.selectionEnd;
+                el.value = fixed;
+                el.setSelectionRange(start, end);
+            }
+            return fixed;
+        };
+        const insertAtCursor = (el, text) => {
+            const cur = el.value || '';
+            const pos = el.selectionStart == null ? cur.length : el.selectionStart;
+            const before = cur.slice(0, pos), after = cur.slice(pos);
+            const sepBefore = before && !/\s$/.test(before) ? ' ' : '';
+            const sepAfter = after && !/^\s/.test(after) ? ' ' : '';
+            return { value: capLines(before + sepBefore + text + sepAfter + after), pos: (before + sepBefore + text).length };
+        };
+
+        // The quote requests for one trade, at the bottom of its worksheet
+        function Requests({ line, ws, c, po }) {
+            const { jobId, jobCode, me, isAdmin, requests, requestsError, templates, savedIds } = po;
+            const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
+            const [busy, setBusy] = useState(false);
+            const [note, setNote] = useState('');
+            const [showGone, setShowGone] = useState(false);
+            const [histId, setHistId] = useState(null);   // request showing its earlier versions
+            const [listening, setListening] = useState(false);
+            const recRef = React.useRef(null);
+            const scopeRef = React.useRef(null);
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+
+            const isAllow = line.method === 'allowance';
+            const saved = savedIds.has(line.id);          // the trade is in the saved trade list
+            const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+            const live = mine.filter(r => !r.deleted), gone = mine.filter(r => r.deleted);
+            // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
+            const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
+            const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
+            const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+            const reqRef = (id) => { const col = db.collection('tradesEst').doc(jobId).collection('requests'); return id ? col.doc(id) : col.doc(); };
+
+            const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
+            const startNew = () => {
+                // Allowance: the second request starts on material when labor already has one
+                const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
+                setDraft({
+                    id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
+                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n'
+                });
+                setNote('');
+            };
+            const startEdit = (r) => {
+                const d = { id: r.id };
+                REQ_FIELDS.forEach(k => { d[k] = r[k] || ''; });
+                setDraft(d);
+                setNote('');
+            };
+            const closeDraft = () => { stopVoice(); setDraft(null); };
+            const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
+            const loadTemplate = (id) => {
+                const t = (templates || []).find(x => x.id === id);
+                if (!t) return;
+                const body = (t.scope || '').trim();
+                const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
+                const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
+                setDraft(d => ({
+                    ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
+                    scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
+                }));
+            };
+
+            // Voice to text into the scope box (Chrome or Edge)
+            const toggleVoice = () => {
+                if (listening) { stopVoice(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setNote('Error: voice input is not supported in this browser (use Chrome or Edge).'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let text = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) text += e.results[i][0].transcript;
+                    const el = scopeRef.current;
+                    if (!text.trim() || !el) return;
+                    const { value, pos } = insertAtCursor(el, text.trim());
+                    setF('scope', value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => setNote('Error: voice input stopped (' + e.error + ').');
+                rec.onend = () => { setListening(false); recRef.current = null; };
+                recRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+
+            const save = async () => {
+                const f = {};
+                REQ_FIELDS.forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
+                if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required.'); return; }
+                // The first line stays on every request until the handoff
+                if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
+                stopVoice();
+                setBusy(true);
+                setNote('');
+                try {
+                    const now = new Date();
+                    if (!draft.id) {
+                        // New: take the next PO number from the job's counter (the one PO Manager uses) and save, as one step
+                        const jobRef = db.collection('jobs').doc(jobId);
+                        const ref = reqRef();
+                        const poNumber = await db.runTransaction(async tx => {
+                            const snap = await tx.get(jobRef);
+                            if (!snap.exists) throw new Error('Job not found.');
+                            const next = (snap.data().poCounter || 0) + 1;
+                            const num = `${snap.data().code || jobCode}-${String(next).padStart(3, '0')}`;
+                            tx.update(jobRef, { poCounter: next });
+                            tx.set(ref, {
+                                ...f, lineId: line.id, tradeCode: line.code || '', tradeName: line.name || '', poNumber: num,
+                                status: 'Pending', deleted: false, createdBy: me, createdAt: now, updatedBy: me, updatedAt: now
+                            });
+                            return num;
+                        });
+                        setNote(`Request saved as ${poNumber}.`);
+                    } else {
+                        const old = mine.find(r => r.id === draft.id);
+                        if (!old) throw new Error('This request is no longer on the list.');
+                        if (!REQ_FIELDS.some(k => (old[k] || '') !== f[k])) { setDraft(null); setNote('No changes to save.'); setBusy(false); return; }
+                        // Keep what it said before this edit
+                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me };
+                        REQ_FIELDS.forEach(k => { prev[k] = old[k] || ''; });
+                        await reqRef(draft.id).update({ ...f, updatedBy: me, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+                        setNote(`Request ${old.poNumber} saved. The earlier version is kept.`);
+                    }
+                    setDraft(null);
+                } catch (err) {
+                    setNote('Error saving the request: ' + err.message);
+                }
+                setBusy(false);
+            };
+            // Delete hides the request (kept for records); Owner/Admin can restore it
+            const hide = async (r) => {
+                if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
+                try {
+                    await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
+                    setNote(`Request ${r.poNumber} deleted.`);
+                } catch (err) { setNote('Error deleting the request: ' + err.message); }
+            };
+            const restore = async (r) => {
+                try {
+                    await reqRef(r.id).update({ deleted: false, restoredBy: me, restoredAt: new Date() });
+                    setNote(`Request ${r.poNumber} restored.`);
+                } catch (err) { setNote('Error restoring the request: ' + err.message); }
+            };
+
+            const sortedTemplates = [...(templates || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
+            const wsNow = draft ? wsAmount(draft.part) : 0;
+            const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
+
+            return (<>
+                <div className="sub-title">Quote requests</div>
+                {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
+                {live.length > 0 && (
+                    <table>
+                        <thead><tr><th style={{ width: '150px' }}>PO#</th><th>Subcontractor</th><th style={{ width: '170px' }}>Kind</th><th className="money" style={{ width: '110px' }}>Amount</th><th style={{ width: '200px' }}>Last saved</th><th style={{ width: '170px' }}></th></tr></thead>
+                        <tbody>
+                            {live.map(r => (
+                                <React.Fragment key={r.id}>
+                                    <tr>
+                                        <td>{r.poNumber}</td>
+                                        <td>{r.subName}</td>
+                                        <td>{kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</td>
+                                        <td className="money">{showAmount(r.contractAmount)}</td>
+                                        <td style={{ fontSize: '12px', color: '#666' }}>{r.updatedBy ? r.updatedBy.name : ''} {fmtStamp(r.updatedAt)}</td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-secondary btn-sm" onClick={() => startEdit(r)} disabled={busy || !!draft}>Edit</button>{' '}
+                                            {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
+                                            <button className="btn-x" onClick={() => hide(r)} disabled={busy || !!draft}>Delete</button>
+                                        </td>
+                                    </tr>
+                                    {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
+                                        <tr key={i} className="gone" title={v.scope || ''}>
+                                            <td style={{ fontSize: '12px' }}>Earlier version</td>
+                                            <td>{v.subName}</td>
+                                            <td>{kindText(v.kind)}{v.part ? ` (${v.part})` : ''}</td>
+                                            <td className="money">{showAmount(v.contractAmount)}</td>
+                                            <td style={{ fontSize: '12px' }}>{v.savedBy ? v.savedBy.name : ''} {fmtStamp(v.savedAt)}</td>
+                                            <td style={{ fontSize: '12px' }}>Hover to read its scope</td>
+                                        </tr>
+                                    ))}
+                                </React.Fragment>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+                {live.length === 0 && !draft && <div style={{ fontSize: '13px', color: '#666' }}>No quote requests for this trade yet.</div>}
+                {!draft && (
+                    <div className="inline" style={{ marginTop: '8px', fontSize: '13px' }}>
+                        <button className="btn-secondary btn-sm" onClick={startNew} disabled={!saved || requests === null || busy}>+ New request</button>
+                        {!saved && <span style={{ color: '#666' }}>Click Save at the bottom of the page first. A request can only be added to a trade that is in the saved trade list.</span>}
+                        {isAdmin && gone.length > 0 && <button className="btn-secondary btn-sm" onClick={() => setShowGone(!showGone)}>{showGone ? 'Hide deleted' : `Show deleted (${gone.length})`}</button>}
+                    </div>
+                )}
+                {isAdmin && showGone && gone.length > 0 && (
+                    <table style={{ marginTop: '8px' }}>
+                        <tbody>
+                            {gone.map(r => (
+                                <tr key={r.id} className="gone">
+                                    <td style={{ width: '150px' }}>{r.poNumber}</td>
+                                    <td>{r.subName}</td>
+                                    <td>Deleted by {r.deletedBy ? r.deletedBy.name : ''} {fmtDay(r.deletedAt)}</td>
+                                    <td style={{ width: '80px' }}><button className="btn-secondary btn-sm" onClick={() => restore(r)}>Restore</button></td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+
+                {draft && (
+                    <div className="req">
+                        <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
+                        <div className="form-group">
+                            <label>Load vendor from a PO Manager template</label>
+                            <select value="" onChange={e => loadTemplate(e.target.value)}>
+                                <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved in PO Manager'}</option>
+                                {sortedTemplates.map(t => <option key={t.id} value={t.id}>{t.category} | {t.subName}</option>)}
+                            </select>
+                        </div>
+                        <div className="req-grid">
+                            <div><label>Subcontractor</label><input value={draft.subName} onChange={e => setF('subName', e.target.value)} /></div>
+                            <div><label>Contact</label><input value={draft.contact} onChange={e => setF('contact', e.target.value)} /></div>
+                            <div><label>Phone</label><input value={draft.phone} onChange={e => setF('phone', e.target.value)} /></div>
+                            <div><label>Email</label><input value={draft.email} onChange={e => setF('email', e.target.value)} /></div>
+                            <div><label>Sub Code</label><input value={draft.subCode} onChange={e => setF('subCode', e.target.value)} /></div>
+                            <div><label>Category</label><input value={draft.category} onChange={e => setF('category', e.target.value)} /></div>
+                        </div>
+                        <div className="inline" style={{ margin: '12px 0 4px' }}>
+                            <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>Kind of request</span>
+                            {KINDS.map(([v, label]) => (
+                                <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.kind === v} onChange={() => setF('kind', v)} />{label}</label>
+                            ))}
+                        </div>
+                        {isAllow && (
+                            <div className="inline" style={{ margin: '8px 0 4px' }}>
+                                <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>This request is for</span>
+                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'labor'} onChange={() => pickPart('labor')} />Labor ({money(c.labor)})</label>
+                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'material'} onChange={() => pickPart('material')} />Material ({money(c.material)})</label>
+                            </div>
+                        )}
+                        <div className="inline" style={{ margin: '8px 0 4px' }}>
+                            <label>Amount</label>
+                            <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
+                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : 'The sub sees this as the Contract Amount.'}</span>
+                            {wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
+                                <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
+                                <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
+                            </>)}
+                        </div>
+                        <div className="form-group" style={{ marginTop: '10px' }}>
+                            <label>Scope of Work
+                                <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                            </label>
+                            <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>The first line stays on every request and comes off at the handoff to PO Manager.</div>
+                        </div>
+                        <div className="inline">
+                            <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
+                            <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={closeDraft} disabled={busy}>Cancel</button>
+                            {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>Saving takes the next PO number on this job.</span>}
+                        </div>
+                    </div>
+                )}
+                {note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
+            </>);
+        }
+
         // One trade's pricing worksheet.
         //   Quote:  vendor price, retail needed, Xactimate lines with new unit prices, comparison
         //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
         //   Allowance: labor and material vendor prices, Xactimate lines (each goes to labor, material or a split), comparison
         //   Calculator: same as Quote, with a price list (quantity x price each) in place of the typed quote
-        function Worksheet({ line, me, onChange, startItems, onSaveToStart, onSaveSplit }) {
+        function Worksheet({ line, me, onChange, startItems, onSaveToStart, onSaveSplit, po }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad box the calculator is open for: { list, id, field }
@@ -1115,6 +1407,9 @@
                         onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
             </>);
 
+            // Quote requests for this trade (their own records; the worksheet numbers above are only where they start from)
+            const requestsBlock = po && <Requests line={line} ws={ws} c={c} po={po} />;
+
             if (isAllow) {
                 return (
                     <div className="ws">
@@ -1132,6 +1427,7 @@
                                 <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
                             </tbody>
                         </table>
+                        {requestsBlock}
                     </div>
                 );
             }
@@ -1150,6 +1446,7 @@
                                 <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
                             </tbody>
                         </table>
+                        {requestsBlock}
                     </div>
                 );
             }
@@ -1173,6 +1470,7 @@
                             <tr><td>Left over from rounding</td><td className="money">{ready ? overShort(c.leftover) : '-'}</td></tr>
                         </tbody>
                     </table>
+                    {requestsBlock}
                 </div>
             );
         }
@@ -1205,7 +1503,7 @@
 
         // Editable list of trades. Used for a job's list and for the start list.
         // worksheets = true on a job (Open button and pricing worksheet); false on the start list
-        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit }) {
+        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
             // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
@@ -1277,7 +1575,7 @@
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
-                                        <tr><td colSpan="5"><Worksheet line={l} me={me} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                        <tr><td colSpan="5"><Worksheet line={l} me={me} po={po} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
                                     )}
                                     {!worksheets && openId === l.id && l.method === 'calculator' && (
                                         <tr><td colSpan="5"><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
@@ -1348,6 +1646,9 @@
             const [supers, setSupers] = useState(null);       // company-wide Supervisor list (the one PO Manager keeps): null = loading
             const [supersError, setSupersError] = useState('');
             const [superPick, setSuperPick] = useState(null); // this job's supervisor: { id, name, phone, email } or null
+            const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
+            const [requestsError, setRequestsError] = useState('');
+            const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1409,6 +1710,29 @@
                     setSupersError('');
                 }, e => { setSupers([]); setSupersError('Error loading the Supervisor list: ' + e.message); });
             }, [profile]);
+
+            // PO Manager's templates, for filling in a request's vendor
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('formLibrary').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setTemplates(list);
+                }, () => setTemplates([]));
+            }, [profile]);
+
+            // This job's quote requests. They are their own records, so Save on the trade list never touches them.
+            useEffect(() => {
+                setRequests(null);
+                setRequestsError('');
+                if (!profile || !jobId) return;
+                return db.collection('tradesEst').doc(jobId).collection('requests').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setRequests(list);
+                    setRequestsError('');
+                }, e => { setRequests([]); setRequestsError('Error loading quote requests: ' + e.message); });
+            }, [profile, jobId]);
 
             // Load the job's trade list once when a job is picked. No saved list yet = blank copy of the start list.
             const startReady = startLines !== null;
@@ -1569,6 +1893,11 @@
             const canRestore = ADMINS.includes(profile.role);
             const job = jobs.find(j => j.id === jobId);
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
+            // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
+            const po = {
+                jobId, jobCode: job ? job.code || '' : '', me, isAdmin: canRestore, requests, requestsError, templates,
+                savedIds: new Set(((record && record.lines) || []).map(l => l.id))
+            };
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
                 : 'Not saved yet. Showing the start list.';
@@ -1654,7 +1983,7 @@
                                 </label>
                             </div>
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
-                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
+                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
                             <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
                             <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
