@@ -792,13 +792,37 @@
             const loadTemplate = (id) => {
                 const t = (templates || []).find(x => x.id === id);
                 if (!t) return;
-                const body = (t.scope || '').trim();
+                const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
                 const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
                 const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
                 setDraft(d => ({
                     ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
                     scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
                 }));
+            };
+
+            // Save this vendor to PO Manager's template list (company-wide). Does not save the request.
+            // The scope wording goes with it, first line included: templates are where estimating starts.
+            const saveTemplate = async () => {
+                const f = {};
+                ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'scope'].forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
+                if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required to save a template.'); return; }
+                if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
+                const key = (t) => (t || '').trim().toLowerCase();
+                const old = (templates || []).find(t => key(t.subName) === key(f.subName) && key(t.category) === key(f.category));
+                if (old && !window.confirm(`A template for ${old.category} | ${old.subName} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
+                setBusy(true);
+                setNote('');
+                try {
+                    const now = new Date();
+                    // An existing template keeps its amount; a new one starts with none (a request's amount belongs to one job)
+                    if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now });
+                    else await db.collection('formLibrary').add({ ...f, userId: me.uid, contractAmount: '', dateCreated: now, dateUpdated: now });
+                    setNote(`Template ${old ? 'updated' : 'saved'}: ${f.category} | ${f.subName}. The request itself is not saved until you click Save request.`);
+                } catch (err) {
+                    setNote('Error saving the template: ' + err.message);
+                }
+                setBusy(false);
             };
 
             // Voice to text into the scope box (Chrome or Edge)
@@ -998,6 +1022,7 @@
                         <div className="inline">
                             <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
                             <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={closeDraft} disabled={busy}>Cancel</button>
+                            <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={saveTemplate} disabled={busy || templates === null} title="Add this vendor and scope wording to the template list used here and in PO Manager">Save vendor as template</button>
                             {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>Saving takes the next PO number on this job.</span>}
                         </div>
                     </div>
