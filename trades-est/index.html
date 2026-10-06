@@ -1345,6 +1345,9 @@
             const [showCalc, setShowCalc] = useState(false); // general calculator from the top button
             const [check, setCheck] = useState(null);         // Work Order read for the check report
             const [checkBusy, setCheckBusy] = useState(false);
+            const [supers, setSupers] = useState(null);       // company-wide Supervisor list (the one PO Manager keeps): null = loading
+            const [supersError, setSupersError] = useState('');
+            const [superPick, setSuperPick] = useState(null); // this job's supervisor: { id, name, phone, email } or null
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1395,17 +1398,31 @@
                 }, e => setMessage('Error loading start list: ' + e.message));
             }, [profile]);
 
+            // Company-wide Supervisor list, read only here. Supervisors are added and removed in PO Manager.
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('supervisors').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => { const d = doc.data(); list.push({ id: doc.id, name: d.name || '', phone: d.phone || '', email: d.email || '' }); });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setSupers(list);
+                    setSupersError('');
+                }, e => { setSupers([]); setSupersError('Error loading the Supervisor list: ' + e.message); });
+            }, [profile]);
+
             // Load the job's trade list once when a job is picked. No saved list yet = blank copy of the start list.
             const startReady = startLines !== null;
             useEffect(() => {
                 setRecord(null);
                 setLines(null);
                 setDirty(false);
+                setSuperPick(null);
                 if (!profile || !jobId || !startReady) return;
                 db.collection('tradesEst').doc(jobId).get().then(doc => {
                     if (doc.exists) {
                         setRecord(doc.data());
                         setLines(sortLines(doc.data().lines || []));
+                        setSuperPick(doc.data().supervisor || null);
                     } else {
                         setRecord(false);
                         setLines(copyStart(startRef.current || []));
@@ -1434,11 +1451,11 @@
                     const by = { uid: user.uid, name: profile.name || user.email };
                     const now = new Date();
                     const clean = cleanLines(lines);
-                    const data = { jobCode: job.code || '', lines: clean, updatedBy: by, updatedAt: now };
+                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, updatedBy: by, updatedAt: now };
                     const ref = db.collection('tradesEst').doc(jobId);
                     const batch = db.batch();
                     batch.set(ref, data, { merge: true });
-                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, savedBy: by, savedAt: now });
+                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, savedBy: by, savedAt: now });
                     await batch.commit();
                     setRecord({ ...(record || {}), ...data });
                     setLines(clean);
@@ -1591,6 +1608,22 @@
                             <input type="checkbox" style={{ width: 'auto' }} checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
                             Show archived jobs
                         </label>
+                        {jobId && lines && !editingStart && (
+                            <div className="form-group" style={{ marginTop: '14px', marginBottom: 0 }}>
+                                <label>Supervisor for this job</label>
+                                <select value={superPick ? superPick.id : ''} disabled={supers === null} onChange={e => {
+                                    const s = (supers || []).find(x => x.id === e.target.value);
+                                    setSuperPick(s ? { id: s.id, name: s.name, phone: s.phone, email: s.email } : null);
+                                    setDirty(true); setMessage('');
+                                }}>
+                                    <option value="">{supers === null ? 'Loading...' : '-- No supervisor picked --'}</option>
+                                    {superPick && !(supers || []).some(s => s.id === superPick.id) && <option value={superPick.id}>{superPick.name} (no longer on the list)</option>}
+                                    {(supers || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                                {superPick && <div className="muted" style={{ marginTop: '4px' }}>{[superPick.phone, superPick.email].filter(Boolean).join(' | ') || 'No phone or email on the Supervisor list for this name.'}</div>}
+                                {supersError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{supersError}</div>}
+                            </div>
+                        )}
                         {jobId && <div className="muted">{record === null ? 'Loading...' : savedText}{dirty && <span className="unsaved"> | Unsaved changes</span>}</div>}
                     </div>
 
