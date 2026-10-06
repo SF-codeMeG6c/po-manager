@@ -1,1 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Notes - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        a { color: #0066cc; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
 
+        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+        .job-code { font-size: 18px; font-weight: 600; color: #333; }
+        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
+        .notice { background: #f9f9f9; border-radius: 6px; padding: 14px; font-size: 14px; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">&larr; Dashboard</a>
+        <h1>Customer Notes</h1>
+        <p class="subtitle">Customer calls, requests and decisions for each job</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Same Firebase project as the other tools
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Roles that can use Customer Notes
+        const ALLOWED = ['owner', 'admin', 'estimator', 'super', 'office'];
+
+        // Job from the address: /notes/?job=ID ('' = no job, the all-jobs view)
+        const URL_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
+
+        function NotesApp() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
+            const [authError, setAuthError] = useState('');
+            const [job, setJob] = useState(null);         // null = loading, false = not found or no access, object = the job
+
+            // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
+            useEffect(() => {
+                return auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && ALLOWED.includes(d.role)) setProfile({ uid: currentUser.uid, ...d });
+                        else if (d && d.role === 'pending') setProfile('pending');
+                        else setProfile(false);
+                    } catch (err) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            // Load the one job named in the address. The rules block a Super who isn't assigned, which counts as "no access".
+            useEffect(() => {
+                setJob(null);
+                if (!profile || typeof profile !== 'object' || !URL_JOB_ID) return;
+                db.collection('jobs').doc(URL_JOB_ID).get().then(doc => {
+                    if (!doc.exists) { setJob(false); return; }
+                    const d = doc.data();
+                    setJob({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                }).catch(() => setJob(false));
+            }, [profile]);
+
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
+            const handleLogout = () => auth.signOut();
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Sign in</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) return <div className="section">Loading...</div>;
+
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">Waiting for approval</div>
+                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Account not set up</div>
+                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div>
+                    <div className="topbar">
+                        <span>Signed in as {profile.name || user.email}</span>
+                        <div className="topbar-right">
+                            <a href="/notes/">Search all jobs</a>
+                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        </div>
+                    </div>
+
+                    {!URL_JOB_ID && (
+                        <div className="notice">
+                            Search across all jobs is coming soon. To see one job's notes, open Customer Notes from that job on the <a href="/">Dashboard</a>.
+                        </div>
+                    )}
+
+                    {URL_JOB_ID && job === null && <div className="section">Loading job...</div>}
+
+                    {URL_JOB_ID && job === false && (
+                        <div className="notice">
+                            This job wasn't found, or you don't have access to it. Go back to the <a href="/">Dashboard</a> and pick a job.
+                        </div>
+                    )}
+
+                    {URL_JOB_ID && job && (
+                        <div className="section">
+                            <div className="job-head">
+                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
+                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<NotesApp />, document.getElementById('app'));
+    </script>
+</body>
+</html>
