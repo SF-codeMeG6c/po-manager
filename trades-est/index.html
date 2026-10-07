@@ -732,8 +732,15 @@
         // Each request is its own record (tradesEst/{jobId}/requests), outside the trade list, so saving the
         // trade list never touches it. Field names match PO Manager's POs so the handoff at signing is a copy.
         const REQUEST_FIRST_LINE = 'REQUEST FOR PRICING - NOT A PURCHASE ORDER';
-        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price']];
-        const kindFor = (method) => method === 'quote' ? 'ask' : 'confirm'; // Quote has no price yet; the others produce ours
+        // ask = the sub gives the price; confirm = the sub is shown ours; none = our price, nothing is sent to anyone
+        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price'], ['none', 'Our price, not sent']];
+        // Quote has no price yet; Calculator is our own price list (not sent); the others produce a price for the sub to confirm
+        const kindFor = (method) => method === 'quote' ? 'ask' : method === 'calculator' ? 'none' : 'confirm';
+        // The first line belongs on anything that goes out for pricing; a PO that is not sent does not carry it
+        const withFirstLine = (scope, kind) => {
+            const body = String(scope || '').replace(REQUEST_FIRST_LINE, '').replace(/^\s+/, '');
+            return kind === 'none' ? body : REQUEST_FIRST_LINE + '\n\n' + body;
+        };
         const kindText = (k) => (KINDS.find(x => x[0] === k) || ['', ''])[1];
         const REQ_FIELDS = ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'kind', 'part', 'contractAmount', 'scope'];
         const amountText = (x) => x > 0 ? x.toFixed(2) : '';
@@ -784,7 +791,7 @@
             const formValues = (r) => ({
                 ...formHeader(), poNumber: r.poNumber,
                 subName: r.subName, contact: r.contact, phone: r.phone, email: r.email, subCode: r.subCode, category: r.category,
-                amount: r.kind === 'confirm' ? r.contractAmount : '', // asking for a price: the sub sees no amount
+                amount: r.kind === 'ask' ? '' : r.contractAmount, // asking for a price: the sub sees no amount
                 scope: r.scope
             });
 
@@ -792,6 +799,7 @@
             // Replies go to whoever clicks this (the function sets that from the sign-in).
             const send = async (r) => {
                 if (!r.email) return;
+                if (r.kind === 'none') { setNote(`Error: ${r.poNumber} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
                 if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
                 const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
                 if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${r.poNumber} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
@@ -981,12 +989,13 @@
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
                                             <button className="btn-x" onClick={() => act.hide(r)} disabled={lock}>Delete</button>
                                             <div style={{ marginTop: '4px' }}>
-                                                <button className="btn-sm" style={{ background: (!r.email || !!act.sendingId || lock) ? '#ccc' : '#0066cc', color: 'white', cursor: (!r.email || !!act.sendingId || lock) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
-                                                    disabled={!r.email || !!act.sendingId || lock}
-                                                    title={r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                <button className="btn-sm" style={{ background: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? '#ccc' : '#0066cc', color: 'white', cursor: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
+                                                    disabled={r.kind === 'none' || !r.email || !!act.sendingId || lock}
+                                                    title={r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
                                                     {act.sendingId === r.id ? 'Sending...' : 'Send for pricing'}
                                                 </button>
-                                                {!r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
+                                                {r.kind === 'none' ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
+                                                    : !r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
                                             </div>
                                             {r.lastEmail && (() => {
                                                 const e = r.lastEmail;
@@ -1100,7 +1109,7 @@
                 const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
                 setDraft({
                     id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
-                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n',
+                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: withFirstLine('', kindFor(line.method)),
                     attachments: []
                 });
                 setNote('');
@@ -1113,6 +1122,8 @@
                 setNote('');
             };
             const closeDraft = () => { stopVoice(); setDraft(null); };
+            // Changing the kind puts the first line on (going out for pricing) or takes it off (not sent)
+            const pickKind = (kind) => setDraft(d => ({ ...d, kind, scope: withFirstLine(d.scope, kind) }));
             // Tell the page a request is open here, so the tracker holds its Edit, Delete and Send until it is saved or cancelled
             useEffect(() => { po.setDraftOpen(!!draft); return () => po.setDraftOpen(false); }, [!!draft]);
             // "+ PO" on the trade row, or Edit on one of its POs: this trade's worksheet was opened for it,
@@ -1136,7 +1147,7 @@
                 const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
                 setDraft(d => ({
                     ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
-                    scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
+                    scope: swap ? withFirstLine(body, d.kind) : d.scope
                 }));
             };
 
@@ -1222,8 +1233,8 @@
                 const f = {};
                 REQ_FIELDS.forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
                 if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required.'); return; }
-                // The first line stays on every request until the handoff
-                if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
+                // The first line stays on everything going out for pricing until the handoff; a PO that is not sent has none
+                f.scope = withFirstLine(f.scope, f.kind).trim();
                 stopVoice();
                 setBusy(true);
                 setNote('');
@@ -1301,7 +1312,7 @@
                         <div className="inline" style={{ margin: '12px 0 4px' }}>
                             <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>Kind of request</span>
                             {KINDS.map(([v, label]) => (
-                                <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.kind === v} onChange={() => setF('kind', v)} />{label}</label>
+                                <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.kind === v} onChange={() => pickKind(v)} />{label}</label>
                             ))}
                         </div>
                         {isAllow && (
@@ -1314,7 +1325,7 @@
                         <div className="inline" style={{ margin: '8px 0 4px' }}>
                             <label>Amount</label>
                             <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
-                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : 'The sub sees this as the Contract Amount.'}</span>
+                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : 'The sub sees this as the Contract Amount.'}</span>
                             {wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
                                 <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
                                 <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
@@ -1325,7 +1336,7 @@
                                 <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
                             </label>
                             <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
-                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>The first line stays on every request and comes off at the handoff to PO Manager.</div>
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
                         </div>
                         <div className="form-group">
                             <div style={{ fontSize: '13px', color: '#555', fontWeight: 500, marginBottom: '5px' }}>Attachments (added as pages after the form)
