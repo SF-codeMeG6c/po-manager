@@ -47,6 +47,9 @@
         .ws .sub-title:first-child { margin-top: 0; }
         .req { background: white; border: 1px solid #ccc; border-radius: 6px; padding: 14px; margin-top: 10px; }
         .req-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
+        .track td { vertical-align: top; padding: 8px 6px; border-bottom: 1px solid #eee; }
+        .track tr:hover td { background: #fafafa; }
+        .track .po-num { font-weight: 600; }
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
@@ -759,91 +762,14 @@
             return { value: capLines(before + sepBefore + text + sepAfter + after), pos: (before + sepBefore + text).length };
         };
 
-        // The quote requests for one trade, at the bottom of its worksheet
-        function Requests({ line, ws, c, po }) {
-            const { jobId, jobCode, job, superPick, me, isAdmin, requests, requestsError, templates, savedIds } = po;
+        // What can be done with a saved request. Shared by the list inside a trade's worksheet and the job's tracker,
+        // so both places work the same way.
+        function useRequestActions(po) {
+            const { jobId, jobCode, job, superPick, me } = po;
             const [previewId, setPreviewId] = useState(null); // request whose form is being built
             const [sendingId, setSendingId] = useState(null); // request being emailed
-            const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
-            const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
-            const [showGone, setShowGone] = useState(false);
-            const [histId, setHistId] = useState(null);   // request showing its earlier versions
-            const [listening, setListening] = useState(false);
-            const recRef = React.useRef(null);
-            const scopeRef = React.useRef(null);
-            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
-
-            const isAllow = line.method === 'allowance';
-            const saved = savedIds.has(line.id);          // the trade is in the saved trade list
-            const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
-            const live = mine.filter(r => !r.deleted), gone = mine.filter(r => r.deleted);
-            // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
-            const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
-            const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
-            const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
             const reqRef = (id) => { const col = db.collection('tradesEst').doc(jobId).collection('requests'); return id ? col.doc(id) : col.doc(); };
-
-            const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
-            const startNew = () => {
-                // Allowance: the second request starts on material when labor already has one
-                const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
-                setDraft({
-                    id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
-                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n',
-                    attachments: []
-                });
-                setNote('');
-            };
-            const startEdit = (r) => {
-                const d = { id: r.id };
-                REQ_FIELDS.forEach(k => { d[k] = r[k] || ''; });
-                d.attachments = r.attachments || [];
-                setDraft(d);
-                setNote('');
-            };
-            const closeDraft = () => { stopVoice(); setDraft(null); };
-            const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
-            const loadTemplate = (id) => {
-                const t = (templates || []).find(x => x.id === id);
-                if (!t) return;
-                const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
-                const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
-                const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
-                setDraft(d => ({
-                    ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
-                    scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
-                }));
-            };
-
-            // Attachments: new ones are { name, type, file } until Save request stores them; saved ones are { name, type, url }
-            const addFiles = (e) => {
-                const files = Array.from(e.target.files || []);
-                e.target.value = '';
-                const bad = files.filter(f => !ATT_TYPES.includes(f.type));
-                setNote(bad.length ? 'Error: skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', ') : '');
-                const good = files.filter(f => ATT_TYPES.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }));
-                if (good.length) setDraft(d => ({ ...d, attachments: [...d.attachments, ...good] }));
-            };
-            const moveAtt = (i, dir) => setDraft(d => {
-                const list = [...d.attachments], j = i + dir;
-                if (j < 0 || j >= list.length) return d;
-                [list[i], list[j]] = [list[j], list[i]];
-                return { ...d, attachments: list };
-            });
-            const removeAtt = (i) => setDraft(d => ({ ...d, attachments: d.attachments.filter((_, k) => k !== i) }));
-            // Store the new files; files taken off a request stay in storage (kept for records)
-            const storeFiles = async (list) => {
-                const out = [];
-                for (const att of list) {
-                    if (att.file) {
-                        const ref = storage.ref(`jobForms/${jobId}/att_${Date.now()}_${att.name}`);
-                        await ref.put(att.file);
-                        out.push({ name: att.name, type: att.type, url: await ref.getDownloadURL() });
-                    } else out.push({ name: att.name, type: att.type, url: att.url });
-                }
-                return out;
-            };
 
             // What goes in the form's boxes for a request: the job, the job's supervisor pick, and the request itself
             const formHeader = () => {
@@ -914,6 +840,335 @@
                     setNote('Error building the form: ' + err.message);
                 }
                 setPreviewId(null);
+            };
+
+            // Delete hides the request (kept for records); Owner/Admin can restore it
+            const hide = async (r) => {
+                if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
+                try {
+                    await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
+                    setNote(`Request ${r.poNumber} deleted.`);
+                } catch (err) { setNote('Error deleting the request: ' + err.message); }
+            };
+            const restore = async (r) => {
+                try {
+                    await reqRef(r.id).update({ deleted: false, restoredBy: me, restoredAt: new Date() });
+                    setNote(`Request ${r.poNumber} restored.`);
+                } catch (err) { setNote('Error restoring the request: ' + err.message); }
+            };
+
+            // Pending or Complete, set by hand like PO Manager's tracker. Saved on the click; each change is kept.
+            const setStatus = async (r, status) => {
+                if ((r.status || 'Pending') === status) return;
+                try {
+                    const now = new Date();
+                    await reqRef(r.id).update({ status, statusBy: me, statusAt: now, statusHistory: firebase.firestore.FieldValue.arrayUnion({ status, by: me, at: now }) });
+                    setNote('');
+                } catch (err) { setNote('Error saving the status: ' + err.message); }
+            };
+            // Notes for the team (not on the form, not in the email). Same field name as PO Manager so they move with the PO at the handoff.
+            const saveNotes = async (r, text) => {
+                const notes = String(text || '').replace(/\s+$/, '');
+                if (notes === (r.notes || '')) return;
+                const now = new Date();
+                const data = { notes, notesBy: me, notesAt: now };
+                // What the note said before is kept in the record
+                if (r.notes) data.noteHistory = firebase.firestore.FieldValue.arrayUnion({ notes: r.notes, savedBy: r.notesBy || null, savedAt: r.notesAt || null, replacedAt: now, replacedBy: me });
+                await reqRef(r.id).update(data);
+            };
+            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes };
+        }
+
+        // Notes window, like PO Manager's: a big box with Voice
+        function NoteModal({ title, start, onSave, onClose }) {
+            const [text, setText] = useState(start || '');
+            const [listening, setListening] = useState(false);
+            const [saving, setSaving] = useState(false);
+            const [err, setErr] = useState('');
+            const boxRef = React.useRef(null);
+            const recRef = React.useRef(null);
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+            const toggleVoice = () => {
+                if (listening) { if (recRef.current) recRef.current.stop(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setErr('Voice input is not supported in this browser (use Chrome or Edge).'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let said = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript;
+                    const el = boxRef.current;
+                    if (!said.trim() || !el) return;
+                    const { value, pos } = insertAtCursor(el, said.trim());
+                    setText(value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => setErr('Voice input stopped (' + e.error + ').');
+                rec.onend = () => { setListening(false); recRef.current = null; };
+                recRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+            const save = async () => {
+                if (recRef.current) recRef.current.stop();
+                setSaving(true);
+                setErr('');
+                try { await onSave(text); onClose(); } catch (e) { setErr('Error saving the note: ' + e.message); setSaving(false); }
+            };
+            return (
+                <div className="calc-back">
+                    <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: '4px' }}>Notes</div>
+                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '10px', wordBreak: 'break-all' }}>{title}</div>
+                        <textarea ref={boxRef} rows="15" autoFocus value={text} placeholder="Type or use Voice..." onChange={e => setText(capInPlace(e.target))} />
+                        {err && <div className="bad" style={{ fontSize: '13px', marginTop: '6px' }}>{err}</div>}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                            <button type="button" className={listening ? 'btn-x' : 'btn-secondary'} style={{ padding: '10px' }} onClick={toggleVoice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                            <div style={{ flex: 1 }} />
+                            <button type="button" className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+                            <button type="button" className="btn-primary" style={{ width: 'auto', marginTop: 0 }} onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Saved requests as rows, laid out like PO Manager's tracker: File, Notes, Status, Actions.
+        // lock = a request is open for editing somewhere, so Edit, Delete and Send wait.
+        function RequestRows({ rows, act, onEdit, lock }) {
+            const [histId, setHistId] = useState(null);   // request showing its earlier versions
+            const [noteId, setNoteId] = useState(null);   // request whose notes window is open
+            const noteFor = rows.find(r => r.id === noteId);
+            const titleOf = (r) => [r.category, r.subName, String(r.contractAmount == null ? '' : r.contractAmount).trim() === '' ? 'no amount' : money(n(r.contractAmount))].join(' | ');
+            const radio = { display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap', color: '#333', cursor: 'pointer' };
+            return (<>
+                <table className="track">
+                    <thead><tr><th>File</th><th style={{ width: '190px' }}>Notes</th><th style={{ width: '105px' }}>Status</th><th style={{ width: '245px' }}>Actions</th></tr></thead>
+                    <tbody>
+                        {rows.map(r => {
+                            const status = r.status === 'Complete' ? 'Complete' : 'Pending';
+                            const by = [r.createdBy && `Created by ${r.createdBy.name} ${fmtDay(r.createdAt)}`,
+                                (r.versions || []).length > 0 && r.updatedBy && `Edited by ${r.updatedBy.name} ${fmtDay(r.updatedAt)}`,
+                                (r.attachments || []).length > 0 && `${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+                            return (
+                                <React.Fragment key={r.id}>
+                                    <tr>
+                                        <td>
+                                            <div>{titleOf(r)}</div>
+                                            <div style={{ marginTop: '2px' }}><span className="po-num">{r.poNumber}</span> <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
+                                            <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
+                                        </td>
+                                        <td>
+                                            <button type="button" className="btn-secondary btn-sm" onClick={() => setNoteId(r.id)} title={r.notes || ''}
+                                                style={{ textAlign: 'left', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                📝 {r.notes ? r.notes.split('\n')[0] : 'Add note'}
+                                            </button>
+                                        </td>
+                                        <td>
+                                            {['Pending', 'Complete'].map(sName => (
+                                                <label key={sName} style={radio}>
+                                                    <input type="radio" style={{ width: 'auto', margin: 0 }} checked={status === sName} onChange={() => act.setStatus(r, sName)} />{sName}
+                                                </label>
+                                            ))}
+                                        </td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => act.preview(r)} disabled={!!act.previewId}>{act.previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
+                                            <button className="btn-secondary btn-sm" onClick={() => onEdit(r)} disabled={lock} title={lock ? 'Save or cancel the request that is open first.' : ''}>Edit</button>{' '}
+                                            {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
+                                            <button className="btn-x" onClick={() => act.hide(r)} disabled={lock}>Delete</button>
+                                            <div style={{ marginTop: '4px' }}>
+                                                <button className="btn-sm" style={{ background: (!r.email || !!act.sendingId || lock) ? '#ccc' : '#0066cc', color: 'white', cursor: (!r.email || !!act.sendingId || lock) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
+                                                    disabled={!r.email || !!act.sendingId || lock}
+                                                    title={r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                    {act.sendingId === r.id ? 'Sending...' : 'Send for pricing'}
+                                                </button>
+                                                {!r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
+                                            </div>
+                                            {r.lastEmail && (() => {
+                                                const e = r.lastEmail;
+                                                const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
+                                                const label = e.status === 'Delivered' ? `Delivered ${fmtTime(e.statusAt)} ✓`
+                                                    : e.status === 'Bounced' ? `Bounced ${fmtTime(e.statusAt)} ✗`
+                                                    : `Sent ${fmtTime(e.sentAt)}`;
+                                                // Edited since the version that was sent
+                                                const changed = millis(r.updatedAt) > millis(r.sentUpdatedAt);
+                                                const history = (r.emailHistory || []).map(h =>
+                                                    `${h.to} | Sent ${fmtTime(h.sentAt)}${h.sentBy ? ' by ' + h.sentBy.name : ''} | ${h.status}${h.statusAt ? ' ' + fmtTime(h.statusAt) : ''}${h.detail ? ' (' + h.detail + ')' : ''}`).join('\n');
+                                                return (
+                                                    <div title={history} style={{ fontSize: '11px', marginTop: '4px', cursor: 'help', whiteSpace: 'normal' }}>
+                                                        <div style={{ color, fontWeight: 600 }}>{label}</div>
+                                                        {changed && <div style={{ color: '#cc6600', fontWeight: 600 }}>Changed since sent</div>}
+                                                    </div>
+                                                );
+                                            })()}
+                                        </td>
+                                    </tr>
+                                    {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
+                                        <tr key={i} className="gone" title={(v.scope || '') + ((v.attachments || []).length ? '\n\nAttachments: ' + v.attachments.map(a => a.name).join(', ') : '')}>
+                                            <td><span style={{ fontSize: '12px' }}>Earlier version:</span> {titleOf(v)} · {kindText(v.kind)}{v.part ? ` (${v.part})` : ''}</td>
+                                            <td colSpan="2" style={{ fontSize: '12px' }}>{v.savedBy ? v.savedBy.name : ''} {fmtStamp(v.savedAt)}</td>
+                                            <td style={{ fontSize: '12px' }}>Hover to read its scope</td>
+                                        </tr>
+                                    ))}
+                                </React.Fragment>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                {noteFor && <NoteModal title={`${noteFor.poNumber} · ${titleOf(noteFor)}`} start={noteFor.notes || ''} onSave={text => act.saveNotes(noteFor, text)} onClose={() => setNoteId(null)} />}
+            </>);
+        }
+
+        // Deleted requests (hidden, kept for records), with Restore for Owner/Admin
+        function DeletedRows({ rows, act }) {
+            return (
+                <table style={{ marginTop: '8px' }}>
+                    <tbody>
+                        {rows.map(r => (
+                            <tr key={r.id} className="gone">
+                                <td style={{ width: '150px' }}>{r.poNumber}</td>
+                                <td>{r.category} | {r.subName}</td>
+                                <td>Deleted by {r.deletedBy ? r.deletedBy.name : ''} {fmtDay(r.deletedAt)}</td>
+                                <td style={{ width: '80px' }}><button className="btn-secondary btn-sm" onClick={() => act.restore(r)}>Restore</button></td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            );
+        }
+
+        // Every quote request on the job in one list, like PO Manager's tracker
+        function Tracker({ po, lines, jobCode }) {
+            const act = useRequestActions(po);
+            const [showGone, setShowGone] = useState(false);
+            const all = [...(po.requests || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.poNumber || '').localeCompare(b.poNumber || ''));
+            const live = all.filter(r => !r.deleted), gone = all.filter(r => r.deleted);
+            const done = live.filter(r => r.status === 'Complete').length;
+            // Editing happens in the trade's worksheet, where the pricing is: open it with this request ready to edit
+            const edit = (r) => {
+                const line = lines.find(l => l.id === r.lineId && !l.deleted);
+                if (!line) { act.setNote(`Error: the trade for ${r.poNumber} is no longer on the trade list. Restore the trade to edit this request.`); return; }
+                if (!hasWorksheet(line.method)) { act.setNote(`Error: ${line.code} has no Method picked, so its worksheet cannot open. Pick a Method on that trade, then click Edit again.`); return; }
+                act.setNote('');
+                po.editRequest(r);
+            };
+            return (
+                <div className="section" id="tracker">
+                    <div className="section-title">QUOTE REQUEST TRACKER{jobCode ? ` - ${jobCode}` : ''}</div>
+                    {po.requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{po.requestsError}</div>}
+                    {po.requests === null && <div className="muted" style={{ marginTop: 0 }}>Loading...</div>}
+                    {po.requests !== null && live.length === 0 && <div className="muted" style={{ marginTop: 0 }}>No quote requests on this job yet. Open a trade and click + New request at the bottom of its worksheet.</div>}
+                    {live.length > 0 && (<>
+                        <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>{live.length} request{live.length === 1 ? '' : 's'}: {done} complete, {live.length - done} pending</div>
+                        <RequestRows rows={live} act={act} onEdit={edit} lock={po.draftOpen} />
+                    </>)}
+                    {po.isAdmin && gone.length > 0 && (
+                        <div style={{ marginTop: '8px' }}>
+                            <button className="btn-secondary btn-sm" onClick={() => setShowGone(!showGone)}>{showGone ? 'Hide deleted' : `Show deleted (${gone.length})`}</button>
+                            {showGone && <DeletedRows rows={gone} act={act} />}
+                        </div>
+                    )}
+                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
+                </div>
+            );
+        }
+
+        // The quote requests for one trade, at the bottom of its worksheet
+        function Requests({ line, ws, c, po }) {
+            const { jobId, jobCode, me, isAdmin, requests, requestsError, templates, savedIds } = po;
+            const act = useRequestActions(po);            // Preview, Send, Delete, Status, Notes: the same as the tracker's
+            const { note, setNote, reqRef } = act;
+            const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
+            const [busy, setBusy] = useState(false);
+            const [showGone, setShowGone] = useState(false);
+            const [listening, setListening] = useState(false);
+            const recRef = React.useRef(null);
+            const scopeRef = React.useRef(null);
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+
+            const isAllow = line.method === 'allowance';
+            const saved = savedIds.has(line.id);          // the trade is in the saved trade list
+            const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+            const live = mine.filter(r => !r.deleted), gone = mine.filter(r => r.deleted);
+            // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
+            const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
+            const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
+            const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+
+            const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
+            const startNew = () => {
+                // Allowance: the second request starts on material when labor already has one
+                const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
+                setDraft({
+                    id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
+                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n',
+                    attachments: []
+                });
+                setNote('');
+            };
+            const startEdit = (r) => {
+                const d = { id: r.id };
+                REQ_FIELDS.forEach(k => { d[k] = r[k] || ''; });
+                d.attachments = r.attachments || [];
+                setDraft(d);
+                setNote('');
+            };
+            const closeDraft = () => { stopVoice(); setDraft(null); };
+            // Tell the page a request is open here, so the tracker holds its Edit, Delete and Send until it is saved or cancelled
+            useEffect(() => { po.setDraftOpen(!!draft); return () => po.setDraftOpen(false); }, [!!draft]);
+            // Edit clicked in the tracker: this trade's worksheet was opened for it, so start editing that request
+            useEffect(() => {
+                const j = po.jump;
+                if (!j || j.lineId !== line.id || requests === null) return;
+                const r = requests.find(x => x.id === j.requestId && !x.deleted);
+                if (r) {
+                    startEdit(r);
+                    setTimeout(() => { const el = document.getElementById('req-editor'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
+                }
+                po.clearJump();
+            }, [po.jump, requests === null]);
+            const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
+            const loadTemplate = (id) => {
+                const t = (templates || []).find(x => x.id === id);
+                if (!t) return;
+                const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
+                const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
+                const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
+                setDraft(d => ({
+                    ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
+                    scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
+                }));
+            };
+
+            // Attachments: new ones are { name, type, file } until Save request stores them; saved ones are { name, type, url }
+            const addFiles = (e) => {
+                const files = Array.from(e.target.files || []);
+                e.target.value = '';
+                const bad = files.filter(f => !ATT_TYPES.includes(f.type));
+                setNote(bad.length ? 'Error: skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', ') : '');
+                const good = files.filter(f => ATT_TYPES.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }));
+                if (good.length) setDraft(d => ({ ...d, attachments: [...d.attachments, ...good] }));
+            };
+            const moveAtt = (i, dir) => setDraft(d => {
+                const list = [...d.attachments], j = i + dir;
+                if (j < 0 || j >= list.length) return d;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...d, attachments: list };
+            });
+            const removeAtt = (i) => setDraft(d => ({ ...d, attachments: d.attachments.filter((_, k) => k !== i) }));
+            // Store the new files; files taken off a request stay in storage (kept for records)
+            const storeFiles = async (list) => {
+                const out = [];
+                for (const att of list) {
+                    if (att.file) {
+                        const ref = storage.ref(`jobForms/${jobId}/att_${Date.now()}_${att.name}`);
+                        await ref.put(att.file);
+                        out.push({ name: att.name, type: att.type, url: await ref.getDownloadURL() });
+                    } else out.push({ name: att.name, type: att.type, url: att.url });
+                }
+                return out;
             };
 
             // Save this vendor to PO Manager's template list (company-wide). Does not save the request.
@@ -1012,21 +1267,6 @@
                 }
                 setBusy(false);
             };
-            // Delete hides the request (kept for records); Owner/Admin can restore it
-            const hide = async (r) => {
-                if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
-                try {
-                    await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
-                    setNote(`Request ${r.poNumber} deleted.`);
-                } catch (err) { setNote('Error deleting the request: ' + err.message); }
-            };
-            const restore = async (r) => {
-                try {
-                    await reqRef(r.id).update({ deleted: false, restoredBy: me, restoredAt: new Date() });
-                    setNote(`Request ${r.poNumber} restored.`);
-                } catch (err) { setNote('Error restoring the request: ' + err.message); }
-            };
-
             const sortedTemplates = [...(templates || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
             const wsNow = draft ? wsAmount(draft.part) : 0;
             const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
@@ -1034,65 +1274,7 @@
             return (<>
                 <div className="sub-title">Quote requests</div>
                 {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
-                {live.length > 0 && (
-                    <table>
-                        <thead><tr><th style={{ width: '150px' }}>PO#</th><th>Subcontractor</th><th style={{ width: '170px' }}>Kind</th><th className="money" style={{ width: '110px' }}>Amount</th><th style={{ width: '170px' }}>Last saved</th><th style={{ width: '235px' }}></th></tr></thead>
-                        <tbody>
-                            {live.map(r => (
-                                <React.Fragment key={r.id}>
-                                    <tr>
-                                        <td>{r.poNumber}{(r.attachments || []).length > 0 && <div style={{ fontSize: '11px', color: '#666' }}>{r.attachments.length} attachment{r.attachments.length === 1 ? '' : 's'}</div>}</td>
-                                        <td>{r.subName}</td>
-                                        <td>{kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</td>
-                                        <td className="money">{showAmount(r.contractAmount)}</td>
-                                        <td style={{ fontSize: '12px', color: '#666' }}>{r.updatedBy ? r.updatedBy.name : ''} {fmtStamp(r.updatedAt)}</td>
-                                        <td style={{ whiteSpace: 'nowrap' }}>
-                                            <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => preview(r)} disabled={!!previewId}>{previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
-                                            <button className="btn-secondary btn-sm" onClick={() => startEdit(r)} disabled={busy || !!draft}>Edit</button>{' '}
-                                            {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
-                                            <button className="btn-x" onClick={() => hide(r)} disabled={busy || !!draft}>Delete</button>
-                                            <div style={{ marginTop: '4px' }}>
-                                                <button className="btn-sm" style={{ background: '#0066cc', color: 'white' }} onClick={() => send(r)}
-                                                    disabled={!r.email || !!sendingId || busy || !!draft}
-                                                    title={r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
-                                                    {sendingId === r.id ? 'Sending...' : 'Send for pricing'}
-                                                </button>
-                                                {!r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
-                                            </div>
-                                            {r.lastEmail && (() => {
-                                                const e = r.lastEmail;
-                                                const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
-                                                const label = e.status === 'Delivered' ? `Delivered ${fmtTime(e.statusAt)} ✓`
-                                                    : e.status === 'Bounced' ? `Bounced ${fmtTime(e.statusAt)} ✗`
-                                                    : `Sent ${fmtTime(e.sentAt)}`;
-                                                // Edited since the version that was sent
-                                                const changed = millis(r.updatedAt) > millis(r.sentUpdatedAt);
-                                                const history = (r.emailHistory || []).map(h =>
-                                                    `${h.to} | Sent ${fmtTime(h.sentAt)}${h.sentBy ? ' by ' + h.sentBy.name : ''} | ${h.status}${h.statusAt ? ' ' + fmtTime(h.statusAt) : ''}${h.detail ? ' (' + h.detail + ')' : ''}`).join('\n');
-                                                return (
-                                                    <div title={history} style={{ fontSize: '11px', marginTop: '4px', cursor: 'help', whiteSpace: 'normal' }}>
-                                                        <div style={{ color, fontWeight: 600 }}>{label}</div>
-                                                        {changed && <div style={{ color: '#cc6600', fontWeight: 600 }}>Changed since sent</div>}
-                                                    </div>
-                                                );
-                                            })()}
-                                        </td>
-                                    </tr>
-                                    {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
-                                        <tr key={i} className="gone" title={(v.scope || '') + ((v.attachments || []).length ? '\n\nAttachments: ' + v.attachments.map(a => a.name).join(', ') : '')}>
-                                            <td style={{ fontSize: '12px' }}>Earlier version</td>
-                                            <td>{v.subName}</td>
-                                            <td>{kindText(v.kind)}{v.part ? ` (${v.part})` : ''}</td>
-                                            <td className="money">{showAmount(v.contractAmount)}</td>
-                                            <td style={{ fontSize: '12px' }}>{v.savedBy ? v.savedBy.name : ''} {fmtStamp(v.savedAt)}</td>
-                                            <td style={{ fontSize: '12px' }}>Hover to read its scope</td>
-                                        </tr>
-                                    ))}
-                                </React.Fragment>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
+                {live.length > 0 && <RequestRows rows={live} act={act} onEdit={startEdit} lock={busy || !!draft} />}
                 {live.length === 0 && !draft && <div style={{ fontSize: '13px', color: '#666' }}>No quote requests for this trade yet.</div>}
                 {!draft && (
                     <div className="inline" style={{ marginTop: '8px', fontSize: '13px' }}>
@@ -1101,23 +1283,10 @@
                         {isAdmin && gone.length > 0 && <button className="btn-secondary btn-sm" onClick={() => setShowGone(!showGone)}>{showGone ? 'Hide deleted' : `Show deleted (${gone.length})`}</button>}
                     </div>
                 )}
-                {isAdmin && showGone && gone.length > 0 && (
-                    <table style={{ marginTop: '8px' }}>
-                        <tbody>
-                            {gone.map(r => (
-                                <tr key={r.id} className="gone">
-                                    <td style={{ width: '150px' }}>{r.poNumber}</td>
-                                    <td>{r.subName}</td>
-                                    <td>Deleted by {r.deletedBy ? r.deletedBy.name : ''} {fmtDay(r.deletedAt)}</td>
-                                    <td style={{ width: '80px' }}><button className="btn-secondary btn-sm" onClick={() => restore(r)}>Restore</button></td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
+                {isAdmin && showGone && gone.length > 0 && <DeletedRows rows={gone} act={act} />}
 
                 {draft && (
-                    <div className="req">
+                    <div className="req" id="req-editor">
                         <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
                         <div className="form-group">
                             <label>Load vendor from a PO Manager template</label>
@@ -1693,6 +1862,9 @@
         function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
+            // Edit clicked in the request tracker: open that request's trade
+            const jump = po ? po.jump : null;
+            useEffect(() => { if (jump) setOpenId(jump.lineId); }, [jump]);
             // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
             const startItemsFor = (l) => {
                 const hit = findStart(startList, l);
@@ -1839,6 +2011,8 @@
             const [myPhone, setMyPhone] = useState(null);     // the signed-in person's saved phone (userContacts/{uid}): null = loading
             const [phoneInput, setPhoneInput] = useState('');
             const [phoneNote, setPhoneNote] = useState('');
+            const [jump, setJump] = useState(null);           // tracker's Edit: { lineId, requestId } to open in its trade's worksheet
+            const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -2110,8 +2284,11 @@
             // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
             const po = {
                 jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates,
-                savedIds: new Set(((record && record.lines) || []).map(l => l.id))
+                savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
+                jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
+                draftOpen, setDraftOpen
             };
+            const liveRequests = (requests || []).filter(r => !r.deleted);
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
                 : 'Not saved yet. Showing the start list.';
@@ -2201,10 +2378,16 @@
                         <div className="section">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                 <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                <button className="btn-secondary btn-sm" title="Jump down to the list of every quote request on this job"
+                                    onClick={() => { const el = document.getElementById('tracker'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }}>
+                                    Request tracker ↓{liveRequests.length ? ` (${liveRequests.filter(r => r.status === 'Complete').length} of ${liveRequests.length} complete)` : ''}
+                                </button>
                                 <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
                                     {checkBusy ? 'Reading...' : 'Check Work Order'}
                                     <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
                                 </label>
+                                </div>
                             </div>
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
@@ -2214,6 +2397,8 @@
                             {msg}
                         </div>
                     )}
+
+                    {!editingStart && lines && <Tracker key={jobId} po={po} lines={lines} jobCode={job ? job.code : ''} />}
 
                     {!editingStart && !lines && msg}
                 </div>
