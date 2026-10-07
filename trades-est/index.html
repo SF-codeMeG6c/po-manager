@@ -88,6 +88,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-functions-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="/shared/po-form.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -107,6 +108,7 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
         const storage = firebase.storage(); // request attachments, in the same job folder PO Manager uses
+        const functions = firebase.functions(); // sendQuoteRequest: emails a request through Postmark
 
         const ALLOWED = ['owner', 'admin', 'estimator'];
         const ADMINS = ['owner', 'admin']; // can restore removed trades
@@ -733,6 +735,9 @@
         const showAmount = (v) => String(v == null ? '' : v).trim() === '' ? '-' : money(n(v));
         const ATT_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
         const attKey = (list) => JSON.stringify((list || []).map(a => [a.name, a.type, a.url || '']));
+        const MAX_EMAIL_BYTES = 9.5 * 1024 * 1024; // Postmark limit is 10 MB total
+        const millis = (ts) => { const d = toDate(ts); return d ? d.getTime() : 0; };
+        const fmtTime = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; };
 
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
         const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, ch) => nl + sp + ch.toUpperCase());
@@ -758,6 +763,7 @@
         function Requests({ line, ws, c, po }) {
             const { jobId, jobCode, job, superPick, me, isAdmin, requests, requestsError, templates, savedIds } = po;
             const [previewId, setPreviewId] = useState(null); // request whose form is being built
+            const [sendingId, setSendingId] = useState(null); // request being emailed
             const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
@@ -839,6 +845,57 @@
                 return out;
             };
 
+            // What goes in the form's boxes for a request: the job, the job's supervisor pick, and the request itself
+            const formHeader = () => {
+                const sup = superPick || {};
+                return {
+                    jobCode: (job && job.code) || jobCode, jobAddress: (job && job.address) || '', cityStateZip: (job && job.cityStateZip) || '', lockBox: (job && job.lockBox) || '',
+                    superName: sup.name || '', superEmail: sup.email || '', superPhone: sup.phone || ''
+                };
+            };
+            const formValues = (r) => ({
+                ...formHeader(), poNumber: r.poNumber,
+                subName: r.subName, contact: r.contact, phone: r.phone, email: r.email, subCode: r.subCode, category: r.category,
+                amount: r.kind === 'confirm' ? r.contractAmount : '', // asking for a price: the sub sees no amount
+                scope: r.scope
+            });
+
+            // Send for pricing: build the form, keep that exact PDF in the job folder, then email it to the sub.
+            // Replies go to whoever clicks this (the function sets that from the sign-in).
+            const send = async (r) => {
+                if (!r.email) return;
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
+                if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${r.poNumber} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
+                const ask = r.lastEmail
+                    ? `Already sent on ${fmtTime(r.lastEmail.sentAt)} to ${r.lastEmail.to}. Send ${r.poNumber} again to ${r.email}?`
+                    : `Send ${r.poNumber} for pricing to ${r.subName} at ${r.email}?`;
+                if (!window.confirm(ask)) return;
+                setSendingId(r.id);
+                setNote('');
+                try {
+                    const bytes = await window.POForm.build(formValues(r), r.attachments || []);
+                    if (bytes.length > MAX_EMAIL_BYTES) throw new Error('the request is over 10 MB, too large to email. Remove or shrink attachments.');
+                    // File name: PO Manager's pattern with RFP in front; the amount only when the sub is shown it
+                    const d = new Date();
+                    const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
+                    const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+                    const fileName = ['RFP', clean(r.category), clean(r.subName), amountShown, r.poNumber, dateStr].filter(Boolean).join('_') + '.pdf';
+                    const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                    const pdfUrl = await fileRef.getDownloadURL();
+                    // The form as sent: its file, and the job and supervisor it went out with
+                    await reqRef(r.id).update({ pdfUrl, fileName, header: formHeader(), pdfBuiltAt: d, pdfBuiltBy: me });
+                    await functions.httpsCallable('sendQuoteRequest')({ jobId, requestId: r.id });
+                    // What was sent is this saved version: an edit after this shows "Changed since sent"
+                    await reqRef(r.id).update({ sentUpdatedAt: r.updatedAt || null });
+                    setNote(`Request ${r.poNumber} sent to ${r.email}. Replies come to you.`);
+                } catch (err) {
+                    setNote('Error sending the request: ' + err.message);
+                }
+                setSendingId(null);
+            };
+
             // Build the Subcontractor Scope of Work form for a saved request and open it in a new tab. Nothing is saved or sent.
             const preview = async (r) => {
                 if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
@@ -848,14 +905,7 @@
                 setPreviewId(r.id);
                 setNote('');
                 try {
-                    const sup = superPick || {};
-                    const bytes = await window.POForm.build({
-                        jobCode: (job && job.code) || jobCode, jobAddress: (job && job.address) || '', cityStateZip: (job && job.cityStateZip) || '', lockBox: (job && job.lockBox) || '',
-                        poNumber: r.poNumber, superName: sup.name || '', superEmail: sup.email || '', superPhone: sup.phone || '',
-                        subName: r.subName, contact: r.contact, phone: r.phone, email: r.email, subCode: r.subCode, category: r.category,
-                        amount: r.kind === 'confirm' ? r.contractAmount : '', // asking for a price: the sub sees no amount
-                        scope: r.scope
-                    }, r.attachments || []);
+                    const bytes = await window.POForm.build(formValues(r), r.attachments || []);
                     tab.location.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
                     // A browser set to download PDFs leaves the tab on the waiting page: say where the form went
                     setTimeout(() => { try { if (!tab.closed && !/^blob:/.test(tab.location.href)) tab.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 20px">The form was downloaded. Look in your downloads, then close this tab.</p>'; } catch (e) { /* tab moved on */ } }, 1500);
@@ -1001,6 +1051,31 @@
                                             <button className="btn-secondary btn-sm" onClick={() => startEdit(r)} disabled={busy || !!draft}>Edit</button>{' '}
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
                                             <button className="btn-x" onClick={() => hide(r)} disabled={busy || !!draft}>Delete</button>
+                                            <div style={{ marginTop: '4px' }}>
+                                                <button className="btn-sm" style={{ background: '#0066cc', color: 'white' }} onClick={() => send(r)}
+                                                    disabled={!r.email || !!sendingId || busy || !!draft}
+                                                    title={r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                    {sendingId === r.id ? 'Sending...' : 'Send for pricing'}
+                                                </button>
+                                                {!r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
+                                            </div>
+                                            {r.lastEmail && (() => {
+                                                const e = r.lastEmail;
+                                                const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
+                                                const label = e.status === 'Delivered' ? `Delivered ${fmtTime(e.statusAt)} ✓`
+                                                    : e.status === 'Bounced' ? `Bounced ${fmtTime(e.statusAt)} ✗`
+                                                    : `Sent ${fmtTime(e.sentAt)}`;
+                                                // Edited since the version that was sent
+                                                const changed = millis(r.updatedAt) > millis(r.sentUpdatedAt);
+                                                const history = (r.emailHistory || []).map(h =>
+                                                    `${h.to} | Sent ${fmtTime(h.sentAt)}${h.sentBy ? ' by ' + h.sentBy.name : ''} | ${h.status}${h.statusAt ? ' ' + fmtTime(h.statusAt) : ''}${h.detail ? ' (' + h.detail + ')' : ''}`).join('\n');
+                                                return (
+                                                    <div title={history} style={{ fontSize: '11px', marginTop: '4px', cursor: 'help', whiteSpace: 'normal' }}>
+                                                        <div style={{ color, fontWeight: 600 }}>{label}</div>
+                                                        {changed && <div style={{ color: '#cc6600', fontWeight: 600 }}>Changed since sent</div>}
+                                                    </div>
+                                                );
+                                            })()}
                                         </td>
                                     </tr>
                                     {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
