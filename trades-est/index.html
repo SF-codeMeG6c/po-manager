@@ -1761,6 +1761,9 @@
             const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
             const [requestsError, setRequestsError] = useState('');
             const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
+            const [myPhone, setMyPhone] = useState(null);     // the signed-in person's saved phone (userContacts/{uid}): null = loading
+            const [phoneInput, setPhoneInput] = useState('');
+            const [phoneNote, setPhoneNote] = useState('');
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1822,6 +1825,30 @@
                     setSupersError('');
                 }, e => { setSupers([]); setSupersError('Error loading the Supervisor list: ' + e.message); });
             }, [profile]);
+
+            // The signed-in person's own phone, typed once. It will go on the quote request emails they send.
+            useEffect(() => {
+                if (!profile || !user) return;
+                return db.collection('userContacts').doc(user.uid).onSnapshot(doc => {
+                    const p = doc.exists ? (doc.data().phone || '') : '';
+                    setMyPhone(p);
+                    setPhoneInput(p);
+                }, e => { setMyPhone(''); setPhoneNote('Error loading your phone: ' + e.message); });
+            }, [profile]);
+            const savePhone = async () => {
+                const phone = phoneInput.trim();
+                setPhoneNote('');
+                try {
+                    const now = new Date();
+                    const data = { phone, name: profile.name || user.email || '', email: user.email || '', updatedAt: now };
+                    // A number being replaced is kept in the record
+                    if (myPhone) data.history = firebase.firestore.FieldValue.arrayUnion({ phone: myPhone, replacedAt: now });
+                    await db.collection('userContacts').doc(user.uid).set(data, { merge: true });
+                    setPhoneNote(phone ? 'Phone saved' : 'Phone removed');
+                } catch (e) {
+                    setPhoneNote('Error saving your phone: ' + e.message);
+                }
+            };
 
             // PO Manager's templates, for filling in a request's vendor
             useEffect(() => {
@@ -2021,7 +2048,17 @@
             return (
                 <div>
                     <div className="row">
-                        <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
+                        <div>
+                            <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
+                            <div className="inline" style={{ marginTop: '6px', fontSize: '13px' }}>
+                                <label>My phone</label>
+                                <input style={{ width: '160px' }} value={phoneInput} disabled={myPhone === null} placeholder="For quote request emails"
+                                    onChange={e => { setPhoneInput(e.target.value); setPhoneNote(''); }}
+                                    onKeyDown={e => { if (e.key === 'Enter' && myPhone !== null && phoneInput.trim() !== myPhone) savePhone(); }} />
+                                <button className="btn-secondary btn-sm" onClick={savePhone} disabled={myPhone === null || phoneInput.trim() === myPhone}>Save</button>
+                                {phoneNote && <span style={{ fontWeight: 600, color: phoneNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{phoneNote}</span>}
+                            </div>
+                        </div>
                         <div style={{ display: 'flex', gap: '8px' }}>
                             <button className="btn-secondary" onClick={() => setShowCalc(true)}>Calculator</button>
                             <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
