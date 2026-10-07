@@ -1362,6 +1362,31 @@
             </>);
         }
 
+        // Has a trade been worked on? Stamped when its worksheet is changed; a worksheet saved before the stamp existed
+        // counts when it holds something typed or imported (not just the numbers a new job starts with).
+        const tradeEdited = (l) => {
+            if (!l) return false;
+            if (l.editedAt) return true;
+            const w = l.ws || {};
+            const text = (v) => String(v == null ? '' : v).trim() !== '';
+            return text(w.vendor) || text(w.matVendor) || text(w.quote) || !!w.wo
+                || (w.pad || []).length > 0 || (w.apad || []).length > 0 || (w.xact || []).length > 0
+                || (w.citems || []).some(i => text(i.qty) || text(i.note));
+        };
+        // Where a trade stands, for its tag on the trade list:
+        //   todo = not started, unsaved = worked on but not saved yet, priced = edited and saved with no PO yet,
+        //   pending = has POs and some are not complete, done = all of its POs are complete
+        const tradeStatus = (l, savedLine, reqs) => {
+            if (reqs.length) {
+                const done = reqs.filter(r => r.status === 'Complete').length;
+                return done === reqs.length ? { kind: 'done', text: 'Complete' } : { kind: 'pending', text: `Pending (${done} of ${reqs.length} complete)` };
+            }
+            if (tradeEdited(savedLine)) return { kind: 'priced', text: 'Priced' };
+            if (tradeEdited(l)) return { kind: 'unsaved', text: 'Not saved yet' };
+            return { kind: 'todo', text: 'Not started' };
+        };
+        const STATUS_COLOR = { todo: '#cc6600', unsaved: '#cc6600', priced: '#555', pending: '#0066cc', done: '#388e3c' };
+
         // One trade's pricing worksheet.
         //   Quote:  vendor price, retail needed, Xactimate lines with new unit prices, comparison
         //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
@@ -1872,8 +1897,20 @@
             };
             const [addCode, setAddCode] = useState('');
             const [addName, setAddName] = useState('');
+            const [todoOnly, setTodoOnly] = useState(false); // show only the trades not started
             const live = lines.filter(l => !l.deleted);
             const gone = lines.filter(l => l.deleted);
+            // Status tags (job trade list only): from the saved trade list and the job's requests
+            const tags = worksheets && po;
+            const statusOf = {};
+            if (tags) {
+                const liveReqs = (po.requests || []).filter(r => !r.deleted);
+                live.forEach(l => { statusOf[l.id] = tradeStatus(l, po.savedLines.get(l.id), liveReqs.filter(r => r.lineId === l.id)); });
+            }
+            const countOf = (kinds) => live.filter(l => statusOf[l.id] && kinds.includes(statusOf[l.id].kind)).length;
+            // With the filter on: trades not started (or not saved yet), plus the one that is open so it never vanishes mid-edit
+            const shown = tags && todoOnly ? live.filter(l => ['todo', 'unsaved'].includes(statusOf[l.id].kind) || l.id === openId) : live;
+            const cols = tags ? 6 : 5;
 
             const edit = (id, k, v) => onChange(lines.map(l => l.id === id ? { ...l, [k]: v } : l));
             // Put the row back in alphabetical order after its code is changed (when you leave the box)
@@ -1902,14 +1939,25 @@
 
             return (
                 <div>
+                    {tags && (
+                        <div className="inline" style={{ fontSize: '13px', marginBottom: '8px' }}>
+                            <span style={{ color: '#666' }}>
+                                {live.length} trade{live.length === 1 ? '' : 's'}:{' '}
+                                <strong style={{ color: countOf(['todo', 'unsaved']) ? STATUS_COLOR.todo : '#666' }}>{countOf(['todo', 'unsaved'])} not started</strong>,{' '}
+                                {countOf(['priced'])} priced, {countOf(['pending'])} pending, {countOf(['done'])} complete
+                            </span>
+                            <button className="btn-secondary btn-sm" onClick={() => setTodoOnly(!todoOnly)}>{todoOnly ? 'Show all trades' : 'Show only not started'}</button>
+                        </div>
+                    )}
                     <table className="lines">
                         <thead><tr>
                             <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
+                            {tags && <th style={{ width: '170px' }}>Status</th>}
                             <th style={{ width: '70px' }}></th>
                             <th style={{ width: '40px' }}></th>
                         </tr></thead>
                         <tbody>
-                            {live.map(l => (
+                            {shown.map(l => (
                                 <React.Fragment key={l.id}>
                                     <tr className="line">
                                         <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
@@ -1919,6 +1967,7 @@
                                                 {METHODS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                                             </select>
                                         </td>
+                                        {tags && <td className="trade-status" style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', color: STATUS_COLOR[statusOf[l.id].kind] }}>{statusOf[l.id].text}</td>}
                                         <td>
                                             {worksheets && hasWorksheet(l.method) && (
                                                 <button className="btn-secondary btn-sm" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
@@ -1934,14 +1983,16 @@
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
-                                        <tr><td colSpan="5"><Worksheet line={l} me={me} po={po} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                        <tr><td colSpan={cols}><Worksheet line={l} me={me} po={po} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)}
+                                            onChange={ws => onChange(lines.map(x => x.id === l.id ? { ...x, ws, editedBy: me, editedAt: new Date() } : x))} /></td></tr>
                                     )}
                                     {!worksheets && openId === l.id && l.method === 'calculator' && (
-                                        <tr><td colSpan="5"><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
+                                        <tr><td colSpan={cols}><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
                                     )}
                                 </React.Fragment>
                             ))}
-                            {live.length === 0 && <tr><td colSpan="5" style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                            {live.length === 0 && <tr><td colSpan={cols} style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                            {live.length > 0 && shown.length === 0 && <tr><td colSpan={cols} style={{ color: '#388e3c', padding: '10px 4px', fontWeight: 600 }}>Every trade on this job has been started.</td></tr>}
                         </tbody>
                     </table>
 
@@ -2285,6 +2336,7 @@
             const po = {
                 jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates,
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
+                savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
                 draftOpen, setDraftOpen
             };
