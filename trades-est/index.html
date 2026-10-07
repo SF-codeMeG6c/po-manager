@@ -2288,7 +2288,6 @@
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
                 draftOpen, setDraftOpen
             };
-            const liveRequests = (requests || []).filter(r => !r.deleted);
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
                 : 'Not saved yet. Showing the start list.';
@@ -2374,20 +2373,16 @@
                         </div>
                     )}
 
+                    {!editingStart && lines && <Tracker key={jobId} po={po} lines={lines} jobCode={job ? job.code : ''} />}
+
                     {!editingStart && lines && (
                         <div className="section">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                 <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                <button className="btn-secondary btn-sm" title="Jump down to the list of every quote request on this job"
-                                    onClick={() => { const el = document.getElementById('tracker'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }}>
-                                    Request tracker ↓{liveRequests.length ? ` (${liveRequests.filter(r => r.status === 'Complete').length} of ${liveRequests.length} complete)` : ''}
-                                </button>
                                 <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
                                     {checkBusy ? 'Reading...' : 'Check Work Order'}
                                     <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
                                 </label>
-                                </div>
                             </div>
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
@@ -2397,8 +2392,6 @@
                             {msg}
                         </div>
                     )}
-
-                    {!editingStart && lines && <Tracker key={jobId} po={po} lines={lines} jobCode={job ? job.code : ''} />}
 
                     {!editingStart && !lines && msg}
                 </div>
