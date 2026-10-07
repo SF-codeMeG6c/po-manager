@@ -87,6 +87,9 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="/shared/po-form.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
@@ -103,6 +106,7 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+        const storage = firebase.storage(); // request attachments, in the same job folder PO Manager uses
 
         const ALLOWED = ['owner', 'admin', 'estimator'];
         const ADMINS = ['owner', 'admin']; // can restore removed trades
@@ -727,6 +731,8 @@
         const REQ_FIELDS = ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'kind', 'part', 'contractAmount', 'scope'];
         const amountText = (x) => x > 0 ? x.toFixed(2) : '';
         const showAmount = (v) => String(v == null ? '' : v).trim() === '' ? '-' : money(n(v));
+        const ATT_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
+        const attKey = (list) => JSON.stringify((list || []).map(a => [a.name, a.type, a.url || '']));
 
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
         const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, ch) => nl + sp + ch.toUpperCase());
@@ -750,7 +756,8 @@
 
         // The quote requests for one trade, at the bottom of its worksheet
         function Requests({ line, ws, c, po }) {
-            const { jobId, jobCode, me, isAdmin, requests, requestsError, templates, savedIds } = po;
+            const { jobId, jobCode, job, superPick, me, isAdmin, requests, requestsError, templates, savedIds } = po;
+            const [previewId, setPreviewId] = useState(null); // request whose form is being built
             const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
@@ -777,13 +784,15 @@
                 const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
                 setDraft({
                     id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
-                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n'
+                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: REQUEST_FIRST_LINE + '\n\n',
+                    attachments: []
                 });
                 setNote('');
             };
             const startEdit = (r) => {
                 const d = { id: r.id };
                 REQ_FIELDS.forEach(k => { d[k] = r[k] || ''; });
+                d.attachments = r.attachments || [];
                 setDraft(d);
                 setNote('');
             };
@@ -799,6 +808,62 @@
                     ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
                     scope: swap ? REQUEST_FIRST_LINE + '\n\n' + body : d.scope
                 }));
+            };
+
+            // Attachments: new ones are { name, type, file } until Save request stores them; saved ones are { name, type, url }
+            const addFiles = (e) => {
+                const files = Array.from(e.target.files || []);
+                e.target.value = '';
+                const bad = files.filter(f => !ATT_TYPES.includes(f.type));
+                setNote(bad.length ? 'Error: skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', ') : '');
+                const good = files.filter(f => ATT_TYPES.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }));
+                if (good.length) setDraft(d => ({ ...d, attachments: [...d.attachments, ...good] }));
+            };
+            const moveAtt = (i, dir) => setDraft(d => {
+                const list = [...d.attachments], j = i + dir;
+                if (j < 0 || j >= list.length) return d;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...d, attachments: list };
+            });
+            const removeAtt = (i) => setDraft(d => ({ ...d, attachments: d.attachments.filter((_, k) => k !== i) }));
+            // Store the new files; files taken off a request stay in storage (kept for records)
+            const storeFiles = async (list) => {
+                const out = [];
+                for (const att of list) {
+                    if (att.file) {
+                        const ref = storage.ref(`jobForms/${jobId}/att_${Date.now()}_${att.name}`);
+                        await ref.put(att.file);
+                        out.push({ name: att.name, type: att.type, url: await ref.getDownloadURL() });
+                    } else out.push({ name: att.name, type: att.type, url: att.url });
+                }
+                return out;
+            };
+
+            // Build the Subcontractor Scope of Work form for a saved request and open it in a new tab. Nothing is saved or sent.
+            const preview = async (r) => {
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const tab = window.open('', '_blank'); // opened right on the click so the browser allows it; the PDF goes in when it is ready
+                if (!tab) { setNote('Error: the browser blocked the new tab. Allow pop-ups for this site, then click Preview again.'); return; }
+                tab.document.write('<p style="font-family: sans-serif; padding: 20px">Building the form...</p>');
+                setPreviewId(r.id);
+                setNote('');
+                try {
+                    const sup = superPick || {};
+                    const bytes = await window.POForm.build({
+                        jobCode: (job && job.code) || jobCode, jobAddress: (job && job.address) || '', cityStateZip: (job && job.cityStateZip) || '', lockBox: (job && job.lockBox) || '',
+                        poNumber: r.poNumber, superName: sup.name || '', superEmail: sup.email || '', superPhone: sup.phone || '',
+                        subName: r.subName, contact: r.contact, phone: r.phone, email: r.email, subCode: r.subCode, category: r.category,
+                        amount: r.kind === 'confirm' ? r.contractAmount : '', // asking for a price: the sub sees no amount
+                        scope: r.scope
+                    }, r.attachments || []);
+                    tab.location.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+                    // A browser set to download PDFs leaves the tab on the waiting page: say where the form went
+                    setTimeout(() => { try { if (!tab.closed && !/^blob:/.test(tab.location.href)) tab.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 20px">The form was downloaded. Look in your downloads, then close this tab.</p>'; } catch (e) { /* tab moved on */ } }, 1500);
+                } catch (err) {
+                    tab.close();
+                    setNote('Error building the form: ' + err.message);
+                }
+                setPreviewId(null);
             };
 
             // Save this vendor to PO Manager's template list (company-wide). Does not save the request.
@@ -862,6 +927,7 @@
                 try {
                     const now = new Date();
                     if (!draft.id) {
+                        f.attachments = await storeFiles(draft.attachments); // files first: if one fails, no PO number is used
                         // New: take the next PO number from the job's counter (the one PO Manager uses) and save, as one step
                         const jobRef = db.collection('jobs').doc(jobId);
                         const ref = reqRef();
@@ -881,9 +947,11 @@
                     } else {
                         const old = mine.find(r => r.id === draft.id);
                         if (!old) throw new Error('This request is no longer on the list.');
-                        if (!REQ_FIELDS.some(k => (old[k] || '') !== f[k])) { setDraft(null); setNote('No changes to save.'); setBusy(false); return; }
-                        // Keep what it said before this edit
-                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me };
+                        const filesChanged = draft.attachments.some(a => a.file) || attKey(draft.attachments) !== attKey(old.attachments);
+                        if (!filesChanged && !REQ_FIELDS.some(k => (old[k] || '') !== f[k])) { setDraft(null); setNote('No changes to save.'); setBusy(false); return; }
+                        f.attachments = await storeFiles(draft.attachments);
+                        // Keep what it said, and what was attached, before this edit
+                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me, attachments: old.attachments || [] };
                         REQ_FIELDS.forEach(k => { prev[k] = old[k] || ''; });
                         await reqRef(draft.id).update({ ...f, updatedBy: me, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
                         setNote(`Request ${old.poNumber} saved. The earlier version is kept.`);
@@ -918,24 +986,25 @@
                 {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
                 {live.length > 0 && (
                     <table>
-                        <thead><tr><th style={{ width: '150px' }}>PO#</th><th>Subcontractor</th><th style={{ width: '170px' }}>Kind</th><th className="money" style={{ width: '110px' }}>Amount</th><th style={{ width: '200px' }}>Last saved</th><th style={{ width: '170px' }}></th></tr></thead>
+                        <thead><tr><th style={{ width: '150px' }}>PO#</th><th>Subcontractor</th><th style={{ width: '170px' }}>Kind</th><th className="money" style={{ width: '110px' }}>Amount</th><th style={{ width: '170px' }}>Last saved</th><th style={{ width: '235px' }}></th></tr></thead>
                         <tbody>
                             {live.map(r => (
                                 <React.Fragment key={r.id}>
                                     <tr>
-                                        <td>{r.poNumber}</td>
+                                        <td>{r.poNumber}{(r.attachments || []).length > 0 && <div style={{ fontSize: '11px', color: '#666' }}>{r.attachments.length} attachment{r.attachments.length === 1 ? '' : 's'}</div>}</td>
                                         <td>{r.subName}</td>
                                         <td>{kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</td>
                                         <td className="money">{showAmount(r.contractAmount)}</td>
                                         <td style={{ fontSize: '12px', color: '#666' }}>{r.updatedBy ? r.updatedBy.name : ''} {fmtStamp(r.updatedAt)}</td>
                                         <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => preview(r)} disabled={!!previewId}>{previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
                                             <button className="btn-secondary btn-sm" onClick={() => startEdit(r)} disabled={busy || !!draft}>Edit</button>{' '}
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
                                             <button className="btn-x" onClick={() => hide(r)} disabled={busy || !!draft}>Delete</button>
                                         </td>
                                     </tr>
                                     {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
-                                        <tr key={i} className="gone" title={v.scope || ''}>
+                                        <tr key={i} className="gone" title={(v.scope || '') + ((v.attachments || []).length ? '\n\nAttachments: ' + v.attachments.map(a => a.name).join(', ') : '')}>
                                             <td style={{ fontSize: '12px' }}>Earlier version</td>
                                             <td>{v.subName}</td>
                                             <td>{kindText(v.kind)}{v.part ? ` (${v.part})` : ''}</td>
@@ -1018,6 +1087,24 @@
                             </label>
                             <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
                             <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>The first line stays on every request and comes off at the handoff to PO Manager.</div>
+                        </div>
+                        <div className="form-group">
+                            <div style={{ fontSize: '13px', color: '#555', fontWeight: 500, marginBottom: '5px' }}>Attachments (added as pages after the form)
+                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', marginBottom: 0, cursor: 'pointer', borderRadius: '4px', color: '#333' }}>
+                                    + Add Files
+                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={addFiles} style={{ display: 'none' }} />
+                                </label>
+                            </div>
+                            {draft.attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
+                            {draft.attachments.map((att, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
+                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
+                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}{att.file && <span style={{ color: '#cc6600' }}> (not saved yet)</span>}</span>
+                                    <button type="button" className="btn-secondary btn-sm" onClick={() => moveAtt(i, -1)} disabled={i === 0}>↑</button>
+                                    <button type="button" className="btn-secondary btn-sm" onClick={() => moveAtt(i, 1)} disabled={i === draft.attachments.length - 1}>↓</button>
+                                    <button type="button" className="btn-x" onClick={() => removeAtt(i)}>✕</button>
+                                </div>
+                            ))}
                         </div>
                         <div className="inline">
                             <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
@@ -1920,7 +2007,7 @@
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
             // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
             const po = {
-                jobId, jobCode: job ? job.code || '' : '', me, isAdmin: canRestore, requests, requestsError, templates,
+                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates,
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id))
             };
             const savedText = record && record.updatedAt
