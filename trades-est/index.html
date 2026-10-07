@@ -50,6 +50,8 @@
         .track td { vertical-align: top; padding: 8px 6px; border-bottom: 1px solid #eee; }
         .track tr:hover td { background: #fafafa; }
         .track .po-num { font-weight: 600; }
+        .po-under { margin: 0 0 10px 22px; padding-left: 10px; border-left: 3px solid #cfd8e6; }
+        .po-under .track th { font-size: 12px; padding: 3px 6px; border-bottom: 1px solid #ddd; }
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
@@ -765,7 +767,7 @@
         // What can be done with a saved request. Shared by the list inside a trade's worksheet and the job's tracker,
         // so both places work the same way.
         function useRequestActions(po) {
-            const { jobId, jobCode, job, superPick, me } = po;
+            const { jobId, jobCode, job, superPick, me } = po || {}; // the start list has no job and no requests
             const [previewId, setPreviewId] = useState(null); // request whose form is being built
             const [sendingId, setSendingId] = useState(null); // request being emailed
             const [note, setNote] = useState('');
@@ -1039,50 +1041,45 @@
             );
         }
 
-        // Every quote request on the job in one list, like PO Manager's tracker
-        function Tracker({ po, lines, jobCode }) {
+        // A trade's POs, shown right under its row on the trade list (no need to open the trade).
+        // line = the trade they hang on; null for POs whose trade was taken off the list.
+        function TradePOs({ rows, po, line }) {
             const act = useRequestActions(po);
-            const [showGone, setShowGone] = useState(false);
-            const all = [...(po.requests || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.poNumber || '').localeCompare(b.poNumber || ''));
-            const live = all.filter(r => !r.deleted), gone = all.filter(r => r.deleted);
-            const done = live.filter(r => r.status === 'Complete').length;
             // Editing happens in the trade's worksheet, where the pricing is: open it with this request ready to edit
             const edit = (r) => {
-                const line = lines.find(l => l.id === r.lineId && !l.deleted);
                 if (!line) { act.setNote(`Error: the trade for ${r.poNumber} is no longer on the trade list. Restore the trade to edit this request.`); return; }
                 if (!hasWorksheet(line.method)) { act.setNote(`Error: ${line.code} has no Method picked, so its worksheet cannot open. Pick a Method on that trade, then click Edit again.`); return; }
                 act.setNote('');
                 po.editRequest(r);
             };
             return (
-                <div className="section" id="tracker">
-                    <div className="section-title">QUOTE REQUEST TRACKER{jobCode ? ` - ${jobCode}` : ''}</div>
-                    {po.requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{po.requestsError}</div>}
-                    {po.requests === null && <div className="muted" style={{ marginTop: 0 }}>Loading...</div>}
-                    {po.requests !== null && live.length === 0 && <div className="muted" style={{ marginTop: 0 }}>No quote requests on this job yet. Open a trade and click + New request at the bottom of its worksheet.</div>}
-                    {live.length > 0 && (<>
-                        <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>{live.length} request{live.length === 1 ? '' : 's'}: {done} complete, {live.length - done} pending</div>
-                        <RequestRows rows={live} act={act} onEdit={edit} lock={po.draftOpen} />
-                    </>)}
-                    {po.isAdmin && gone.length > 0 && (
-                        <div style={{ marginTop: '8px' }}>
-                            <button className="btn-secondary btn-sm" onClick={() => setShowGone(!showGone)}>{showGone ? 'Hide deleted' : `Show deleted (${gone.length})`}</button>
-                            {showGone && <DeletedRows rows={gone} act={act} />}
-                        </div>
-                    )}
-                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
+                <div className="po-under">
+                    <RequestRows rows={rows} act={act} onEdit={edit} lock={po.draftOpen} />
+                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
+                </div>
+            );
+        }
+
+        // Deleted POs on the job (hidden, kept for records). Owner/Admin can restore them.
+        function DeletedPOs({ rows, po }) {
+            const act = useRequestActions(po);
+            const [show, setShow] = useState(false);
+            return (
+                <div style={{ marginTop: '10px' }} className="po-deleted">
+                    <button className="btn-secondary btn-sm" onClick={() => setShow(!show)}>{show ? 'Hide deleted POs' : `Show deleted POs (${rows.length})`}</button>
+                    {show && <DeletedRows rows={rows} act={act} />}
+                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
                 </div>
             );
         }
 
         // The quote requests for one trade, at the bottom of its worksheet
         function Requests({ line, ws, c, po }) {
-            const { jobId, jobCode, me, isAdmin, requests, requestsError, templates, savedIds } = po;
-            const act = useRequestActions(po);            // Preview, Send, Delete, Status, Notes: the same as the tracker's
+            const { jobId, jobCode, me, requests, requestsError, templates, savedIds } = po;
+            const act = useRequestActions(po);            // this section only needs its message line and the request records
             const { note, setNote, reqRef } = act;
             const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
             const [busy, setBusy] = useState(false);
-            const [showGone, setShowGone] = useState(false);
             const [listening, setListening] = useState(false);
             const recRef = React.useRef(null);
             const scopeRef = React.useRef(null);
@@ -1091,7 +1088,7 @@
             const isAllow = line.method === 'allowance';
             const saved = savedIds.has(line.id);          // the trade is in the saved trade list
             const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
-            const live = mine.filter(r => !r.deleted), gone = mine.filter(r => r.deleted);
+            const live = mine.filter(r => !r.deleted);
             // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
             const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
             const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
@@ -1118,13 +1115,14 @@
             const closeDraft = () => { stopVoice(); setDraft(null); };
             // Tell the page a request is open here, so the tracker holds its Edit, Delete and Send until it is saved or cancelled
             useEffect(() => { po.setDraftOpen(!!draft); return () => po.setDraftOpen(false); }, [!!draft]);
-            // Edit clicked in the tracker: this trade's worksheet was opened for it, so start editing that request
+            // "+ PO" on the trade row, or Edit on one of its POs: this trade's worksheet was opened for it,
+            // so start the new request, or start editing that one, and bring the edit box into view
             useEffect(() => {
                 const j = po.jump;
                 if (!j || j.lineId !== line.id || requests === null) return;
-                const r = requests.find(x => x.id === j.requestId && !x.deleted);
-                if (r) {
-                    startEdit(r);
+                const r = j.isNew ? null : requests.find(x => x.id === j.requestId && !x.deleted);
+                if (j.isNew ? saved : !!r) {
+                    if (j.isNew) startNew(); else startEdit(r);
                     setTimeout(() => { const el = document.getElementById('req-editor'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
                 }
                 po.clearJump();
@@ -1274,16 +1272,13 @@
             return (<>
                 <div className="sub-title">Quote requests</div>
                 {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
-                {live.length > 0 && <RequestRows rows={live} act={act} onEdit={startEdit} lock={busy || !!draft} />}
-                {live.length === 0 && !draft && <div style={{ fontSize: '13px', color: '#666' }}>No quote requests for this trade yet.</div>}
                 {!draft && (
-                    <div className="inline" style={{ marginTop: '8px', fontSize: '13px' }}>
+                    <div className="inline" style={{ fontSize: '13px' }}>
                         <button className="btn-secondary btn-sm" onClick={startNew} disabled={!saved || requests === null || busy}>+ New request</button>
                         {!saved && <span style={{ color: '#666' }}>Click Save at the bottom of the page first. A request can only be added to a trade that is in the saved trade list.</span>}
-                        {isAdmin && gone.length > 0 && <button className="btn-secondary btn-sm" onClick={() => setShowGone(!showGone)}>{showGone ? 'Hide deleted' : `Show deleted (${gone.length})`}</button>}
+                        {saved && <span style={{ color: '#666' }}>{live.length ? `This trade's ${live.length === 1 ? 'PO is' : live.length + ' POs are'} listed under its row, above this worksheet.` : 'No POs on this trade yet.'}</span>}
                     </div>
                 )}
-                {isAdmin && showGone && gone.length > 0 && <DeletedRows rows={gone} act={act} />}
 
                 {draft && (
                     <div className="req" id="req-editor">
@@ -1887,7 +1882,7 @@
         function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
-            // Edit clicked in the request tracker: open that request's trade
+            // Edit clicked on a PO, or "+ PO" on a trade: open that trade's worksheet
             const jump = po ? po.jump : null;
             useEffect(() => { if (jump) setOpenId(jump.lineId); }, [jump]);
             // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
@@ -1902,12 +1897,20 @@
             const gone = lines.filter(l => l.deleted);
             // Status tags (job trade list only): from the saved trade list and the job's requests
             const tags = worksheets && po;
+            // The job's POs: each trade's go under its row; ones whose trade was taken off the list get their own group
+            const allReqs = tags ? [...(po.requests || [])].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || '')) : [];
+            const liveReqs = allReqs.filter(r => !r.deleted), goneReqs = allReqs.filter(r => r.deleted);
+            const reqsOf = (l) => liveReqs.filter(r => r.lineId === l.id);
             const statusOf = {};
-            if (tags) {
-                const liveReqs = (po.requests || []).filter(r => !r.deleted);
-                live.forEach(l => { statusOf[l.id] = tradeStatus(l, po.savedLines.get(l.id), liveReqs.filter(r => r.lineId === l.id)); });
-            }
+            if (tags) live.forEach(l => { statusOf[l.id] = tradeStatus(l, po.savedLines.get(l.id), reqsOf(l)); });
             const countOf = (kinds) => live.filter(l => statusOf[l.id] && kinds.includes(statusOf[l.id].kind)).length;
+            const orphans = liveReqs.filter(r => !live.some(l => l.id === r.lineId));
+            const doneReqs = liveReqs.filter(r => r.status === 'Complete').length;
+            // "+ PO": open the trade's worksheet with a new request started
+            const whyNoPO = (l) => !hasWorksheet(l.method) ? 'Pick a Method on this trade first.'
+                : !po.savedIds.has(l.id) ? 'Click Save at the bottom of the page first.'
+                : po.requests === null ? 'Loading...'
+                : po.draftOpen ? 'Save or cancel the request that is open first.' : '';
             // With the filter on: trades not started (or not saved yet), plus the one that is open so it never vanishes mid-edit
             const shown = tags && todoOnly ? live.filter(l => ['todo', 'unsaved'].includes(statusOf[l.id].kind) || l.id === openId) : live;
             const cols = tags ? 6 : 5;
@@ -1939,12 +1942,14 @@
 
             return (
                 <div>
+                    {tags && po.requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{po.requestsError}</div>}
                     {tags && (
                         <div className="inline" style={{ fontSize: '13px', marginBottom: '8px' }}>
                             <span style={{ color: '#666' }}>
                                 {live.length} trade{live.length === 1 ? '' : 's'}:{' '}
                                 <strong style={{ color: countOf(['todo', 'unsaved']) ? STATUS_COLOR.todo : '#666' }}>{countOf(['todo', 'unsaved'])} not started</strong>,{' '}
                                 {countOf(['priced'])} priced, {countOf(['pending'])} pending, {countOf(['done'])} complete
+                                {liveReqs.length > 0 && <span className="po-count"> · {liveReqs.length} PO{liveReqs.length === 1 ? '' : 's'}: {doneReqs} complete, {liveReqs.length - doneReqs} pending</span>}
                             </span>
                             <button className="btn-secondary btn-sm" onClick={() => setTodoOnly(!todoOnly)}>{todoOnly ? 'Show all trades' : 'Show only not started'}</button>
                         </div>
@@ -1953,7 +1958,7 @@
                         <thead><tr>
                             <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
                             {tags && <th style={{ width: '170px' }}>Status</th>}
-                            <th style={{ width: '70px' }}></th>
+                            <th style={{ width: tags ? '118px' : '70px' }}></th>
                             <th style={{ width: '40px' }}></th>
                         </tr></thead>
                         <tbody>
@@ -1968,12 +1973,13 @@
                                             </select>
                                         </td>
                                         {tags && <td className="trade-status" style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', color: STATUS_COLOR[statusOf[l.id].kind] }}>{statusOf[l.id].text}</td>}
-                                        <td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
                                             {worksheets && hasWorksheet(l.method) && (
                                                 <button className="btn-secondary btn-sm" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Open'}
                                                 </button>
                                             )}
+                                            {tags && <>{' '}<button className="btn-secondary btn-sm" title={whyNoPO(l) || 'Start a new PO on this trade'} disabled={!!whyNoPO(l)} onClick={() => po.newRequest(l)}>+ PO</button></>}
                                             {!worksheets && l.method === 'calculator' && (
                                                 <button className="btn-secondary btn-sm" title="Items and prices for this trade" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Items'}
@@ -1982,6 +1988,9 @@
                                         </td>
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
+                                    {tags && reqsOf(l).length > 0 && (
+                                        <tr><td colSpan={cols} style={{ padding: 0, borderBottom: 'none' }}><TradePOs rows={reqsOf(l)} po={po} line={l} /></td></tr>
+                                    )}
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
                                         <tr><td colSpan={cols}><Worksheet line={l} me={me} po={po} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)}
                                             onChange={ws => onChange(lines.map(x => x.id === l.id ? { ...x, ws, editedBy: me, editedAt: new Date() } : x))} /></td></tr>
@@ -1993,8 +2002,14 @@
                             ))}
                             {live.length === 0 && <tr><td colSpan={cols} style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
                             {live.length > 0 && shown.length === 0 && <tr><td colSpan={cols} style={{ color: '#388e3c', padding: '10px 4px', fontWeight: 600 }}>Every trade on this job has been started.</td></tr>}
+                            {tags && !todoOnly && orphans.length > 0 && (<>
+                                <tr><td colSpan={cols} style={{ padding: '12px 4px 4px', fontWeight: 600, color: '#cc6600' }}>POs on trades that were taken off this list</td></tr>
+                                <tr><td colSpan={cols} style={{ padding: 0, borderBottom: 'none' }}><TradePOs rows={orphans} po={po} line={null} /></td></tr>
+                            </>)}
                         </tbody>
                     </table>
+
+                    {tags && po.isAdmin && goneReqs.length > 0 && <DeletedPOs rows={goneReqs} po={po} />}
 
                     <div className="sub-title">Add a trade</div>
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -2062,7 +2077,7 @@
             const [myPhone, setMyPhone] = useState(null);     // the signed-in person's saved phone (userContacts/{uid}): null = loading
             const [phoneInput, setPhoneInput] = useState('');
             const [phoneNote, setPhoneNote] = useState('');
-            const [jump, setJump] = useState(null);           // tracker's Edit: { lineId, requestId } to open in its trade's worksheet
+            const [jump, setJump] = useState(null);           // Edit on a PO, or "+ PO" on a trade: { lineId, requestId | isNew } to open in that trade's worksheet
             const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
 
             // Sign-in and role check (this page never creates user records)
@@ -2338,6 +2353,7 @@
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
+                newRequest: (l) => setJump({ lineId: l.id, isNew: true }),
                 draftOpen, setDraftOpen
             };
             const savedText = record && record.updatedAt
@@ -2424,8 +2440,6 @@
                             {msg}
                         </div>
                     )}
-
-                    {!editingStart && lines && <Tracker key={jobId} po={po} lines={lines} jobCode={job ? job.code : ''} />}
 
                     {!editingStart && lines && (
                         <div className="section">
