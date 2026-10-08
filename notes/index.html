@@ -51,6 +51,14 @@
         .note-actions { display: flex; gap: 6px; }
         .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; font-weight: normal; margin-bottom: 0; }
         .check input { width: auto; }
+        input[type=date] { padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .followups { background: #fffaf0; border: 1px solid #f3e2c0; border-radius: 6px; padding: 12px 14px; margin-bottom: 30px; }
+        .fu-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid #f3e2c0; }
+        .fu-item:first-of-type { border-top: none; }
+        .fu-date { font-size: 13px; font-weight: 600; color: #333; white-space: nowrap; }
+        .fu-date.late { color: #d32f2f; }
+        .fu-text { font-size: 13px; color: #555; margin-top: 2px; white-space: pre-wrap; }
+        .fu-line { font-size: 12px; color: #8a6d1f; margin-top: 6px; }
         input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
     </style>
 </head>
@@ -95,6 +103,10 @@
         const fmtTime = (ts) => ts && ts.toDate
             ? ts.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' })
             : 'Saving...';
+
+        // Follow-up dates are stored as 'YYYY-MM-DD'. Show them as 10/15/26, with no time-zone shifts.
+        const fmtDay = (d) => { const p = (d || '').split('-'); return p.length === 3 ? `${+p[1]}/${+p[2]}/${p[0].slice(2)}` : ''; };
+        const todayStr = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
 
         // Capitalize the start of each line (same as PO Manager)
         const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
@@ -177,6 +189,7 @@
             const [notes, setNotes] = useState(null);       // null = loading; includes hidden notes
             const [pickTags, setPickTags] = useState([]);
             const [text, setText] = useState('');
+            const [followUp, setFollowUp] = useState('');
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
             const [listening, setListening] = useState(false);
@@ -253,12 +266,13 @@
                         jobCode: job.code,
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                         createdBy: me,
-                        followUpDate: '',
+                        followUpDate: followUp,
                         followUpDone: false,
                         deleted: false
                     });
                     setText('');
                     setPickTags([]);
+                    setFollowUp('');
                 } catch (error) {
                     setMessage('Error saving note: ' + error.message);
                 }
@@ -275,13 +289,14 @@
                 const newText = capLines(editing.text.trim());
                 if (!newText) { setListMessage('A note can\'t be empty.'); return; }
                 if (editing.tags.length === 0) { setListMessage('Pick at least one tag.'); return; }
-                if (newText === n.text && editing.tags.join('|') === (n.tags || []).join('|')) { setEditing(null); return; }
+                if (newText === n.text && editing.tags.join('|') === (n.tags || []).join('|')
+                    && editing.followUpDate === (n.followUpDate || '')) { setEditing(null); return; }
                 try {
                     const batch = db.batch();
                     batch.set(notesRef.doc(n.id).collection('versions').doc(),
                         { ...noteCopy(n), action: 'edit', savedAt: firebase.firestore.FieldValue.serverTimestamp(), savedBy: me });
                     batch.update(notesRef.doc(n.id),
-                        { text: newText, tags: editing.tags, editedAt: firebase.firestore.FieldValue.serverTimestamp(), editedBy: me });
+                        { text: newText, tags: editing.tags, followUpDate: editing.followUpDate, editedAt: firebase.firestore.FieldValue.serverTimestamp(), editedBy: me });
                     await batch.commit();
                     setEditing(null);
                 } catch (error) {
@@ -307,11 +322,45 @@
                 }
             };
 
+            // Anyone who can see the job can mark a follow-up done; it records who and when
+            const markDone = async (n) => {
+                setListMessage('');
+                try {
+                    await notesRef.doc(n.id).update({ followUpDone: true, followUpDoneBy: me, followUpDoneAt: firebase.firestore.FieldValue.serverTimestamp() });
+                } catch (error) {
+                    setListMessage('Error marking follow-up done: ' + error.message);
+                }
+            };
+
+            const today = todayStr();
+            const openFollowUps = (notes || []).filter(n => n.deleted !== true && n.followUpDate && n.followUpDone !== true)
+                .sort((a, b) => a.followUpDate.localeCompare(b.followUpDate));
             const hiddenCount = (notes || []).filter(n => n.deleted === true).length;
             const shown = (notes || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
 
             return (
                 <div>
+                    {openFollowUps.length > 0 && (
+                        <div className="followups">
+                            <div className="section-title" style={{ marginBottom: '6px' }}>Open follow-ups ({openFollowUps.length})</div>
+                            {openFollowUps.map(n => {
+                                const late = n.followUpDate < today;
+                                return (
+                                    <div key={n.id} className="fu-item">
+                                        <div>
+                                            <div className={late ? 'fu-date late' : 'fu-date'}>
+                                                {fmtDay(n.followUpDate)}{n.followUpDate === today ? ' (today)' : late ? ' (overdue)' : ''}
+                                                <span className="note-meta" style={{ fontWeight: 400 }}> · {(n.tags || []).join(', ')} · {(n.createdBy && n.createdBy.name) || 'Unknown'}</span>
+                                            </div>
+                                            <div className="fu-text">{n.text}</div>
+                                        </div>
+                                        <button className="btn-secondary btn-sm" onClick={() => markDone(n)}>Done</button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
                     <div className="section">
                         <div className="section-title">Add a note</div>
                         <div className="form-group">
@@ -327,6 +376,11 @@
                             </div>
                             <textarea id="note-text" ref={textRef} value={text} placeholder="Type or use Voice..."
                                 onChange={e => setText(capLines(e.target.value))} />
+                        </div>
+                        <div className="form-group">
+                            <label htmlFor="follow-up">Follow-up date (optional)</label>
+                            <input id="follow-up" type="date" value={followUp} onChange={e => setFollowUp(e.target.value)} />
+                            {followUp && <button type="button" className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setFollowUp('')}>Clear</button>}
                         </div>
                         <button className="btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save note'}</button>
                         {message && <div className="error">{message}</div>}
@@ -357,7 +411,7 @@
                                         </div>
                                         {!isEditing && (
                                             <div className="note-actions">
-                                                {canEdit(n) && <button className="btn-secondary btn-sm" onClick={() => { setListMessage(''); setEditing({ id: n.id, text: n.text || '', tags: n.tags || [] }); }}>Edit</button>}
+                                                {canEdit(n) && <button className="btn-secondary btn-sm" onClick={() => { setListMessage(''); setEditing({ id: n.id, text: n.text || '', tags: n.tags || [], followUpDate: n.followUpDate || '' }); }}>Edit</button>}
                                                 {isAdmin && !hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, true)}>Hide</button>}
                                                 {isAdmin && hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, false)}>Restore</button>}
                                             </div>
@@ -373,6 +427,11 @@
                                             <div className="form-group">
                                                 <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: capLines(e.target.value) })} />
                                             </div>
+                                            <div className="form-group">
+                                                <label htmlFor={'edit-fu-' + n.id}>Follow-up date (optional)</label>
+                                                <input id={'edit-fu-' + n.id} type="date" value={editing.followUpDate} onChange={e => setEditing({ ...editing, followUpDate: e.target.value })} />
+                                                {editing.followUpDate && <button type="button" className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setEditing({ ...editing, followUpDate: '' })}>Clear</button>}
+                                            </div>
                                             <div className="note-actions">
                                                 <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => saveEdit(n)}>Save edit</button>
                                                 <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setListMessage(''); }}>Cancel</button>
@@ -384,6 +443,14 @@
                                                 {(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}
                                             </div>
                                             <div className="note-text">{n.text}</div>
+                                            {n.followUpDate && (
+                                                <div className="fu-line">
+                                                    Follow up {fmtDay(n.followUpDate)}
+                                                    {n.followUpDone === true
+                                                        ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'} ${fmtTime(n.followUpDoneAt)}`
+                                                        : ' · open'}
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
