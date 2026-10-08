@@ -59,6 +59,15 @@
         .fu-date.late { color: #d32f2f; }
         .fu-text { font-size: 13px; color: #555; margin-top: 2px; white-space: pre-wrap; }
         .fu-line { font-size: 12px; color: #8a6d1f; margin-top: 6px; }
+        input[type=tel], input[type=email] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .card-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 10px; }
+        .card-group { margin-bottom: 14px; }
+        .card-view .card-group { margin-bottom: 0; background: #f9f9f9; border-radius: 6px; padding: 10px 12px; }
+        .card-group-title { font-size: 13px; font-weight: 600; color: #333; margin-bottom: 6px; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px 12px; }
+        .card-field label { font-size: 12px; margin-bottom: 3px; }
+        .card-line { font-size: 13px; color: #333; margin-bottom: 3px; overflow-wrap: anywhere; }
+        .card-label { color: #888; margin-right: 6px; }
         input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
     </style>
 </head>
@@ -179,6 +188,177 @@
                             ))}
                         </div>
                     )}
+                </div>
+            );
+        }
+
+        // Contact card fields (all optional). Lock box is the job's own lockBox field, shared with PO Manager.
+        const EMPTY_CARD = {
+            homeowners: [{ name: '', phone: '', email: '' }, { name: '', phone: '', email: '' }],
+            insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
+            publicAdjusting: { company: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
+            mortgage: { company: '', phone: '' }
+        };
+        const CARD_SECTIONS = [
+            { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
+            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
+            { key: 'mortgage', title: 'Mortgage company', fields: [['company', 'Company'], ['phone', 'Contact phone', 'tel']] }
+        ];
+        const HOMEOWNER_FIELDS = [['name', 'Name'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
+
+        // Fill in any missing fields so the form always has every box
+        const fullCard = (d) => {
+            const c = JSON.parse(JSON.stringify(EMPTY_CARD));
+            if (!d) return c;
+            (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h }; });
+            ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}) }; });
+            return c;
+        };
+        // Trim every field; drop homeowners with nothing filled in
+        const cleanCard = (c) => {
+            const t = (o) => { const r = {}; Object.keys(o).forEach(k => { r[k] = (o[k] || '').trim(); }); return r; };
+            return {
+                homeowners: c.homeowners.map(t).filter(h => h.name || h.phone || h.email),
+                insurance: t(c.insurance),
+                publicAdjusting: t(c.publicAdjusting),
+                mortgage: t(c.mortgage)
+            };
+        };
+        const telHref = (p) => 'tel:' + (p || '').replace(/[^\d+]/g, '');
+
+        // A phone or email as a tap-to-call or tap-to-email link
+        function CardValue({ value, kind }) {
+            if (kind === 'tel') return <a href={telHref(value)}>{value}</a>;
+            if (kind === 'email') return <a href={'mailto:' + value}>{value}</a>;
+            return <span>{value}</span>;
+        }
+
+        // Customer contact card: view, then one Edit button for the whole card
+        function ContactCard({ job, profile }) {
+            const [card, setCard] = useState(undefined);       // undefined = loading, null = none yet
+            const [lockBox, setLockBox] = useState('');
+            const [editing, setEditing] = useState(null);      // the form while editing
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+            const jobRef = db.collection('jobs').doc(job.id);
+            const cardRef = jobRef.collection('notesInfo').doc('contactCard');
+
+            useEffect(() => cardRef.onSnapshot(
+                doc => setCard(doc.exists ? doc.data() : null),
+                error => { setCard(null); setMessage('Error loading contact card: ' + error.message); }
+            ), [job.id]);
+            // Lock box comes live from the job, so a change in PO Manager shows here too
+            useEffect(() => jobRef.onSnapshot(
+                doc => setLockBox(doc.exists ? (doc.data().lockBox || '') : ''),
+                () => {}
+            ), [job.id]);
+
+            const startEdit = () => { setMessage(''); setEditing({ ...fullCard(card), lockBox }); };
+            const setField = (section, field, value) => setEditing(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
+            const setHomeowner = (i, field, value) => setEditing(prev => {
+                const homeowners = prev.homeowners.map((h, j) => (j === i ? { ...h, [field]: value } : h));
+                return { ...prev, homeowners };
+            });
+
+            // Save: copy the card as it was (with the lock box) to history first, all in one save
+            const save = async () => {
+                setMessage('');
+                const clean = cleanCard(editing);
+                const newLock = (editing.lockBox || '').trim();
+                const lockChanged = newLock !== (lockBox || '');
+                const now = firebase.firestore.FieldValue.serverTimestamp();
+                setSaving(true);
+                try {
+                    const batch = db.batch();
+                    if (card || lockBox) {
+                        const old = card ? { ...card } : {};
+                        batch.set(cardRef.collection('history').doc(), { ...old, lockBox: lockBox || '', savedAt: now, savedBy: me });
+                    }
+                    batch.set(cardRef, { ...clean, updatedAt: now, updatedBy: me });
+                    if (lockChanged) batch.update(jobRef, { lockBox: newLock, lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
+                    await batch.commit();
+                    setEditing(null);
+                } catch (error) {
+                    setMessage('Error saving contact card: ' + error.message);
+                }
+                setSaving(false);
+            };
+
+            if (card === undefined) return <div className="section"><div className="section-title">Contact card</div><p className="muted">Loading...</p></div>;
+
+            if (editing) {
+                const input = (value, onChange, label, kind) => (
+                    <div className="card-field" key={label}>
+                        <label>{label}</label>
+                        <input type={kind === 'tel' ? 'tel' : kind === 'email' ? 'email' : 'text'} value={value} onChange={e => onChange(e.target.value)} />
+                    </div>
+                );
+                return (
+                    <div className="section">
+                        <div className="section-title">Contact card</div>
+                        {editing.homeowners.map((h, i) => (
+                            <div key={i} className="card-group">
+                                <div className="card-group-title">Homeowner {i + 1}</div>
+                                <div className="card-grid">{HOMEOWNER_FIELDS.map(([f, label, kind]) => input(h[f], v => setHomeowner(i, f, v), label, kind))}</div>
+                            </div>
+                        ))}
+                        {CARD_SECTIONS.map(s => (
+                            <div key={s.key} className="card-group">
+                                <div className="card-group-title">{s.title}</div>
+                                <div className="card-grid">{s.fields.map(([f, label, kind]) => input(editing[s.key][f], v => setField(s.key, f, v), label, kind))}</div>
+                            </div>
+                        ))}
+                        <div className="card-group">
+                            <div className="card-group-title">Lock box</div>
+                            <div className="card-grid">{input(editing.lockBox, v => setEditing(prev => ({ ...prev, lockBox: v })), 'Lock box code (also shows in PO Manager)')}</div>
+                        </div>
+                        <div className="note-actions">
+                            <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save contact card'}</button>
+                            <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setMessage(''); }} disabled={saving}>Cancel</button>
+                        </div>
+                        {message && <div className="error">{message}</div>}
+                    </div>
+                );
+            }
+
+            const c = fullCard(card);
+            const owners = c.homeowners.filter(h => h.name || h.phone || h.email);
+            const filled = (s) => s.fields.some(([f]) => c[s.key][f]);
+            const nothing = owners.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
+            return (
+                <div className="section">
+                    <div className="row">
+                        <div className="section-title" style={{ marginBottom: 0 }}>Contact card</div>
+                        <button className="btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+                    </div>
+                    {nothing && <p className="muted" style={{ marginTop: '8px' }}>No contact info yet. Click Edit to add it.</p>}
+                    <div className="card-view">
+                        {owners.map((h, i) => (
+                            <div key={i} className="card-group">
+                                <div className="card-group-title">Homeowner{owners.length > 1 ? ' ' + (i + 1) : ''}</div>
+                                {HOMEOWNER_FIELDS.filter(([f]) => h[f]).map(([f, label, kind]) => (
+                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={h[f]} kind={kind} /></div>
+                                ))}
+                            </div>
+                        ))}
+                        {CARD_SECTIONS.filter(filled).map(s => (
+                            <div key={s.key} className="card-group">
+                                <div className="card-group-title">{s.title}</div>
+                                {s.fields.filter(([f]) => c[s.key][f]).map(([f, label, kind]) => (
+                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={c[s.key][f]} kind={kind} /></div>
+                                ))}
+                            </div>
+                        ))}
+                        {lockBox && (
+                            <div className="card-group">
+                                <div className="card-group-title">Lock box</div>
+                                <div className="card-line"><span className="card-label">Code</span><span>{lockBox}</span></div>
+                            </div>
+                        )}
+                    </div>
+                    {card && card.updatedBy && <div className="note-meta" style={{ marginTop: '6px' }}>Last updated by {card.updatedBy.name} · {fmtTime(card.updatedAt)}</div>}
+                    {message && <div className="error">{message}</div>}
                 </div>
             );
         }
@@ -571,6 +751,7 @@
                                 <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
                                 <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
                             </div>
+                            <ContactCard job={job} profile={profile} />
                             <JobNotes job={job} profile={profile} />
                         </div>
                     )}
