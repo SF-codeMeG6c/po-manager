@@ -30,6 +30,23 @@
         .job-code { font-size: 18px; font-weight: 600; color: #333; }
         .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
         .notice { background: #f9f9f9; border-radius: 6px; padding: 14px; font-size: 14px; color: #555; }
+
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        select, textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        select:focus, textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        textarea { min-height: 90px; resize: vertical; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-danger { background: #d32f2f; color: white; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .form-group { margin-bottom: 12px; }
+        .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 5px; }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .chip { display: inline-flex; align-items: center; gap: 4px; background: #e8f1fb; color: #0052a3; border-radius: 12px; padding: 3px 10px; font-size: 12px; font-weight: 500; }
+        .chip button { background: none; padding: 0 2px; color: #0052a3; font-size: 14px; line-height: 1; }
+        .note { border: 1px solid #eee; border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; }
+        .note-meta { font-size: 12px; color: #888; margin-bottom: 6px; }
+        .note-text { font-size: 14px; color: #333; white-space: pre-wrap; margin-top: 8px; }
+        .muted { font-size: 13px; color: #888; }
     </style>
 </head>
 <body>
@@ -48,7 +65,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // Same Firebase project as the other tools
         const firebaseConfig = {
@@ -68,6 +85,164 @@
 
         // Job from the address: /notes/?job=ID ('' = no job, the all-jobs view)
         const URL_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
+
+        // Date and time for a note ('Saving...' until the server time arrives)
+        const fmtTime = (ts) => ts && ts.toDate
+            ? ts.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' })
+            : 'Saving...';
+
+        // Capitalize the start of each line (same as PO Manager)
+        const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
+
+        // Put spoken text where the cursor is in a textbox; returns new text + cursor spot (same as PO Manager)
+        const insertAtCursor = (el, text) => {
+            const cur = el.value || '';
+            const pos = el.selectionStart ?? cur.length;
+            const before = cur.slice(0, pos), after = cur.slice(pos);
+            const sepBefore = before && !/[\s]$/.test(before) ? ' ' : '';
+            const sepAfter = after && !/^[\s]/.test(after) ? ' ' : '';
+            const value = capLines(before + sepBefore + text + sepAfter + after);
+            return { value, pos: (before + sepBefore + text).length };
+        };
+
+        // One job's notes: the Add a note box and the notes list
+        function JobNotes({ job, profile }) {
+            const [tagList, setTagList] = useState(null);   // null = loading
+            const [notes, setNotes] = useState(null);       // null = loading
+            const [pickTags, setPickTags] = useState([]);
+            const [text, setText] = useState('');
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const [listening, setListening] = useState(false);
+            const recognitionRef = useRef(null);
+            const textRef = useRef(null);
+            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+
+            // Company-wide tag list
+            useEffect(() => {
+                return db.collection('notesSettings').doc('tags').onSnapshot(doc => {
+                    setTagList(doc.exists && Array.isArray(doc.data().list) ? doc.data().list : []);
+                }, error => { setTagList([]); setMessage('Error loading tags: ' + error.message); });
+            }, []);
+
+            // This job's notes, newest first. Hidden notes are left out.
+            useEffect(() => {
+                return db.collection('jobs').doc(job.id).collection('notes').orderBy('createdAt', 'desc')
+                    .onSnapshot(snapshot => {
+                        const list = [];
+                        snapshot.forEach(doc => { const d = doc.data({ serverTimestamps: 'estimate' }); if (d.deleted !== true) list.push({ id: doc.id, ...d }); });
+                        setNotes(list);
+                    }, error => { setNotes([]); setMessage('Error loading notes: ' + error.message); });
+            }, [job.id]);
+
+            // Stop voice if the page closes while listening
+            useEffect(() => () => { recognitionRef.current && recognitionRef.current.stop(); }, []);
+
+            // Voice to text (Chrome/Edge), same approach as PO Manager
+            const toggleVoice = () => {
+                if (listening) { recognitionRef.current && recognitionRef.current.stop(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setMessage('Voice input not supported in this browser (use Chrome or Edge)'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let spoken = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) {
+                        if (e.results[i].isFinal) spoken += e.results[i][0].transcript;
+                    }
+                    const el = textRef.current;
+                    if (!spoken || !el) return;
+                    const { value, pos } = insertAtCursor(el, spoken.trim());
+                    setText(value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => { setMessage('Voice input error: ' + e.error); };
+                rec.onend = () => setListening(false);
+                recognitionRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+
+            const addTag = (t) => { if (t && !pickTags.includes(t)) setPickTags([...pickTags, t]); };
+            const removeTag = (t) => setPickTags(pickTags.filter(x => x !== t));
+
+            const handleSave = async () => {
+                setMessage('');
+                if (!text.trim()) { setMessage('Type a note first.'); return; }
+                if (pickTags.length === 0) { setMessage('Pick at least one tag.'); return; }
+                if (listening && recognitionRef.current) recognitionRef.current.stop();
+                setSaving(true);
+                try {
+                    await db.collection('jobs').doc(job.id).collection('notes').add({
+                        text: capLines(text.trim()),
+                        tags: pickTags,
+                        jobId: job.id,
+                        jobCode: job.code,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdBy: me,
+                        followUpDate: '',
+                        followUpDone: false,
+                        deleted: false
+                    });
+                    setText('');
+                    setPickTags([]);
+                } catch (error) {
+                    setMessage('Error saving note: ' + error.message);
+                }
+                setSaving(false);
+            };
+
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">Add a note</div>
+                        <div className="form-group">
+                            <label htmlFor="tag-pick">Tags</label>
+                            <select id="tag-pick" value="" onChange={e => addTag(e.target.value)} disabled={!tagList}>
+                                <option value="">{tagList === null ? 'Loading tags...' : '-- Add a tag --'}</option>
+                                {(tagList || []).filter(t => !pickTags.includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                            {pickTags.length > 0 && (
+                                <div className="chips">
+                                    {pickTags.map(t => (
+                                        <span key={t} className="chip">{t}<button type="button" onClick={() => removeTag(t)} aria-label={'Remove ' + t}>&times;</button></span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <div className="form-group">
+                            <div className="row">
+                                <label htmlFor="note-text" style={{ marginBottom: 0 }}>Note</label>
+                                <button type="button" className={listening ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleVoice}>
+                                    {listening ? '■ Stop' : '🎤 Voice'}
+                                </button>
+                            </div>
+                            <textarea id="note-text" ref={textRef} value={text} placeholder="Type or use Voice..."
+                                onChange={e => setText(capLines(e.target.value))} />
+                        </div>
+                        <button className="btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save note'}</button>
+                        {message && <div className="error">{message}</div>}
+                    </div>
+
+                    <div className="section">
+                        <div className="section-title">Notes</div>
+                        {notes === null && <p className="muted">Loading notes...</p>}
+                        {notes && notes.length === 0 && <p className="muted">No notes yet for this job.</p>}
+                        {(notes || []).map(n => (
+                            <div key={n.id} className="note">
+                                <div className="note-meta">{fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}</div>
+                                <div className="chips" style={{ marginTop: 0 }}>
+                                    {(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}
+                                </div>
+                                <div className="note-text">{n.text}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
 
         function NotesApp() {
             const [user, setUser] = useState(null);
@@ -174,11 +349,12 @@
                     )}
 
                     {URL_JOB_ID && job && (
-                        <div className="section">
+                        <div>
                             <div className="job-head">
                                 <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
                                 <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
                             </div>
+                            <JobNotes job={job} profile={profile} />
                         </div>
                     )}
                 </div>
