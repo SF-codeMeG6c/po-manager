@@ -100,7 +100,7 @@
             { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: id => `/gpm/?job=${id}` },
             { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: id => `/frm-est/?job=${id}` },
             { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: id => `/trades-est/?job=${id}` },
-            { key: 'notes',   name: 'Customer Notes', url: null },
+            { key: 'notes',   name: 'Customer Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: id => `/notes/?job=${id}` },
             { key: 'cost',    name: 'Job Costing',    url: null },
             { key: 'extras',  name: 'Extras',         url: null },
             { key: 'credits', name: 'Credits',        url: null },
