@@ -1294,6 +1294,14 @@
                 {draft && (
                     <div className="req" id="req-editor">
                         <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
+                        {/* Scope first: the box sits right under the Xactimate lines, so they are on screen while the scope is written */}
+                        <div className="form-group">
+                            <label>Scope of Work
+                                <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                            </label>
+                            <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
+                        </div>
                         <div className="form-group">
                             <label>Load vendor from a PO Manager template</label>
                             <select value="" onChange={e => loadTemplate(e.target.value)}>
@@ -1330,13 +1338,6 @@
                                 <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
                                 <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
                             </>)}
-                        </div>
-                        <div className="form-group" style={{ marginTop: '10px' }}>
-                            <label>Scope of Work
-                                <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
-                            </label>
-                            <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
-                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
                         </div>
                         <div className="form-group">
                             <div style={{ fontSize: '13px', color: '#555', fontWeight: 500, marginBottom: '5px' }}>Attachments (added as pages after the form)
@@ -1803,6 +1804,7 @@
                         {allowBlock}
                         {calcBlock}
                         {xactBlock}
+                        {requestsBlock}
                         <div className="sub-title">Comparison</div>
                         <table style={{ maxWidth: '520px' }}>
                             <tbody>
@@ -1814,7 +1816,6 @@
                                 <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
                             </tbody>
                         </table>
-                        {requestsBlock}
                     </div>
                 );
             }
@@ -1825,6 +1826,7 @@
                         {vendorBlock}
                         {calcBlock}
                         {xactBlock}
+                        {requestsBlock}
                         <div className="sub-title">Comparison</div>
                         <table style={{ maxWidth: '520px' }}>
                             <tbody>
@@ -1833,7 +1835,6 @@
                                 <tr><td>Margin</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
                             </tbody>
                         </table>
-                        {requestsBlock}
                     </div>
                 );
             }
@@ -1845,6 +1846,7 @@
                     {calcBlock}
                     {retailBlock}
                     {xactBlock}
+                    {requestsBlock}
                     <div className="sub-title">Comparison</div>
                     <table style={{ maxWidth: '520px' }}>
                         <tbody>
@@ -1857,7 +1859,6 @@
                             <tr><td>Left over from rounding</td><td className="money">{ready ? overShort(c.leftover) : '-'}</td></tr>
                         </tbody>
                     </table>
-                    {requestsBlock}
                 </div>
             );
         }
