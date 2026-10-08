@@ -68,12 +68,25 @@
         .card-field label { font-size: 12px; margin-bottom: 3px; }
         .card-line { font-size: 13px; color: #333; margin-bottom: 3px; overflow-wrap: anywhere; }
         .card-label { color: #888; margin-right: 6px; }
+        .filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px 12px; background: #f9f9f9; border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
+        .filters label { font-size: 12px; margin-bottom: 3px; }
+        .filters select, .filters input[type=date] { width: 100%; padding: 6px 8px; font-size: 13px; }
+        .filter-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; color: #666; }
+        .print-only { display: none; }
+        @media print {
+            body { background: white; padding: 0; }
+            .container { box-shadow: none; padding: 0; max-width: none; }
+            .no-print, button, .back-link, .topbar, .filters { display: none !important; }
+            .print-only { display: block; }
+            .note { break-inside: avoid; }
+            a { color: #333; text-decoration: none; }
+        }
         input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
     </style>
 </head>
 <body>
     <div class="container">
-        <a href="/" class="back-link">&larr; Dashboard</a>
+        <a href="/" class="back-link no-print">&larr; Dashboard</a>
         <h1>Customer Notes</h1>
         <p class="subtitle">Customer calls, requests and decisions for each job</p>
         <div id="app"></div>
@@ -116,6 +129,84 @@
         // Follow-up dates are stored as 'YYYY-MM-DD'. Show them as 10/15/26, with no time-zone shifts.
         const fmtDay = (d) => { const p = (d || '').split('-'); return p.length === 3 ? `${+p[1]}/${+p[2]}/${p[0].slice(2)}` : ''; };
         const todayStr = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+
+        // Local date of a timestamp as 'YYYY-MM-DD' (for date-range filters)
+        const dayOf = (ts) => {
+            if (!ts || !ts.toDate) return '';
+            const t = ts.toDate();
+            return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+        };
+
+        // Filters: tag, date range (by the date a note was written) and person
+        const NO_FILTERS = { tag: '', from: '', to: '', person: '' };
+        const applyFilters = (list, f) => list.filter(n =>
+            (!f.tag || (n.tags || []).includes(f.tag))
+            && (!f.from || dayOf(n.createdAt) >= f.from)
+            && (!f.to || dayOf(n.createdAt) <= f.to)
+            && (!f.person || (n.createdBy && n.createdBy.uid) === f.person));
+        const peopleIn = (list) => {
+            const seen = {};
+            list.forEach(n => { if (n.createdBy && n.createdBy.uid) seen[n.createdBy.uid] = n.createdBy.name || 'Unknown'; });
+            return Object.keys(seen).map(uid => ({ uid, name: seen[uid] })).sort((a, b) => a.name.localeCompare(b.name));
+        };
+
+        function NoteFilters({ tagList, people, value, onChange }) {
+            const set = (k, v) => onChange({ ...value, [k]: v });
+            return (
+                <div className="filters">
+                    <div>
+                        <label htmlFor="f-tag">Tag</label>
+                        <select id="f-tag" value={value.tag} onChange={e => set('tag', e.target.value)}>
+                            <option value="">All tags</option>
+                            {(tagList || []).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="f-from">From</label>
+                        <input id="f-from" type="date" value={value.from} onChange={e => set('from', e.target.value)} />
+                    </div>
+                    <div>
+                        <label htmlFor="f-to">To</label>
+                        <input id="f-to" type="date" value={value.to} onChange={e => set('to', e.target.value)} />
+                    </div>
+                    <div>
+                        <label htmlFor="f-person">Person</label>
+                        <select id="f-person" value={value.person} onChange={e => set('person', e.target.value)}>
+                            <option value="">Everyone</option>
+                            {people.map(p => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+                        </select>
+                    </div>
+                </div>
+            );
+        }
+
+        // CSV export that opens cleanly in Excel
+        const csvCell = (v) => {
+            let t = v === undefined || v === null ? '' : String(v);
+            if (/^[=+\-@]/.test(t)) t = "'" + t;            // stop Excel treating text as a formula
+            return '"' + t.replace(/"/g, '""') + '"';
+        };
+        const timeOf = (ts) => ts && ts.toDate ? ts.toDate().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+        const fullDay = (d) => { const p = (d || '').split('-'); return p.length === 3 ? `${+p[1]}/${+p[2]}/${p[0]}` : ''; };
+        const exportNotesCsv = (list, fileName, withHidden) => {
+            const head = ['Job', 'Date', 'Time', 'Written by', 'Tags', 'Note', 'Follow-up date', 'Follow-up done', 'Done by', 'Edited', 'Edited by'];
+            if (withHidden) head.push('Hidden', 'Hidden by', 'Hidden on');
+            const rows = list.map(n => {
+                const r = [n.jobCode || '', fullDay(dayOf(n.createdAt)), timeOf(n.createdAt), n.createdBy ? n.createdBy.name : '',
+                    (n.tags || []).join(', '), n.text || '', fullDay(n.followUpDate),
+                    n.followUpDate ? (n.followUpDone ? 'Yes' : 'No') : '', n.followUpDoneBy ? n.followUpDoneBy.name : '',
+                    n.editedAt ? fmtTime(n.editedAt) : '', n.editedBy ? n.editedBy.name : ''];
+                if (withHidden) r.push(n.deleted ? 'Yes' : '', n.deletedBy ? n.deletedBy.name : '', n.deletedAt ? fmtTime(n.deletedAt) : '');
+                return r;
+            });
+            const csv = '\ufeff' + [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
+            const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+        const safeName = (t) => (t || 'job').replace(/[^\w.-]+/g, '_');
 
         // Capitalize the start of each line (same as PO Manager)
         const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
@@ -374,6 +465,7 @@
             const [message, setMessage] = useState('');
             const [listening, setListening] = useState(false);
             const [showHidden, setShowHidden] = useState(false);
+            const [filters, setFilters] = useState(NO_FILTERS);
             const [editing, setEditing] = useState(null);   // { id, text, tags } while editing a note
             const [listMessage, setListMessage] = useState('');
             const recognitionRef = useRef(null);
@@ -516,7 +608,11 @@
             const openFollowUps = (notes || []).filter(n => n.deleted !== true && n.followUpDate && n.followUpDone !== true)
                 .sort((a, b) => a.followUpDate.localeCompare(b.followUpDate));
             const hiddenCount = (notes || []).filter(n => n.deleted === true).length;
-            const shown = (notes || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+            const visible = (notes || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+            const shown = applyFilters(visible, filters);
+            const filtering = JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
+            const handleExport = () => exportNotesCsv(shown.map(n => ({ ...n, jobCode: n.jobCode || job.code })),
+                `Notes_${safeName(job.code)}_${todayStr()}.csv`, isAdmin && showHidden);
 
             return (
                 <div>
@@ -541,7 +637,7 @@
                         </div>
                     )}
 
-                    <div className="section">
+                    <div className="section no-print">
                         <div className="section-title">Add a note</div>
                         <div className="form-group">
                             <label htmlFor="tag-pick">Tags</label>
@@ -576,9 +672,22 @@
                                 </label>
                             )}
                         </div>
+                        <NoteFilters tagList={tagList} people={peopleIn(notes || [])} value={filters} onChange={setFilters} />
+                        <div className="filter-bar">
+                            <span>
+                                {filtering ? `Showing ${shown.length} of ${visible.length} notes` : `${shown.length} note${shown.length === 1 ? '' : 's'}`}
+                                {filtering && <button className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setFilters(NO_FILTERS)}>Clear filters</button>}
+                            </span>
+                            <span className="note-actions">
+                                <button className="btn-secondary btn-sm" onClick={handleExport} disabled={shown.length === 0}>Export to Excel (CSV)</button>
+                                <button className="btn-secondary btn-sm" onClick={() => window.print()} disabled={shown.length === 0}>Print / PDF</button>
+                            </span>
+                        </div>
+                        <div className="print-only note-meta">Printed {fmtTime({ toDate: () => new Date() })}{filtering ? ' · filtered' : ''}</div>
                         {listMessage && <div className="error" style={{ marginBottom: '10px' }}>{listMessage}</div>}
                         {notes === null && <p className="muted">Loading notes...</p>}
-                        {notes && shown.length === 0 && <p className="muted">No notes yet for this job.</p>}
+                        {notes && visible.length === 0 && <p className="muted">No notes yet for this job.</p>}
+                        {notes && visible.length > 0 && shown.length === 0 && <p className="muted">No notes match these filters.</p>}
                         {shown.map(n => {
                             const hidden = n.deleted === true;
                             const isEditing = editing && editing.id === n.id;
@@ -627,7 +736,7 @@
                                                 <div className="fu-line">
                                                     Follow up {fmtDay(n.followUpDate)}
                                                     {n.followUpDone === true
-                                                        ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'} ${fmtTime(n.followUpDoneAt)}`
+                                                        ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'}${n.followUpDoneAt ? ' ' + fmtTime(n.followUpDoneAt) : ''}`
                                                         : ' · open'}
                                                 </div>
                                             )}
