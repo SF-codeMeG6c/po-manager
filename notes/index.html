@@ -47,6 +47,11 @@
         .note-meta { font-size: 12px; color: #888; margin-bottom: 6px; }
         .note-text { font-size: 14px; color: #333; white-space: pre-wrap; margin-top: 8px; }
         .muted { font-size: 13px; color: #888; }
+        .note-hidden { background: #fafafa; border-style: dashed; opacity: 0.75; }
+        .note-actions { display: flex; gap: 6px; }
+        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; font-weight: normal; margin-bottom: 0; }
+        .check input { width: auto; }
+        input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
     </style>
 </head>
 <body>
@@ -105,18 +110,84 @@
             return { value, pos: (before + sepBefore + text).length };
         };
 
+        const ADMINS = ['owner', 'admin'];   // can hide and restore notes
+        const EDIT_HOURS = 24;               // the author can edit a note this long after saving it
+
+        // A copy of a note as it is now, for its history (versions). Leaves out empty fields.
+        const noteCopy = (n) => {
+            const copy = {};
+            ['text', 'tags', 'followUpDate', 'createdAt', 'createdBy', 'editedAt', 'editedBy', 'deleted', 'deletedBy', 'deletedAt']
+                .forEach(k => { if (n[k] !== undefined && n[k] !== null) copy[k] = n[k]; });
+            return copy;
+        };
+
+        // Tags: pick from the company list, remove with ×, or add a new tag to the list
+        function TagPicker({ id, tagList, value, onChange, onNewTag }) {
+            const [adding, setAdding] = useState(false);
+            const [newTag, setNewTag] = useState('');
+            const [err, setErr] = useState('');
+            const pick = (t) => { if (t && !value.includes(t)) onChange([...value, t]); };
+            const saveNew = async () => {
+                const name = newTag.trim().replace(/\s+/g, ' ');
+                if (!name) return;
+                if (name.length > 30) { setErr('Keep tags to 30 characters or less.'); return; }
+                const existing = (tagList || []).find(t => t.toLowerCase() === name.toLowerCase());
+                setErr('');
+                try {
+                    if (!existing) await onNewTag(name);
+                    pick(existing || name);
+                    setNewTag('');
+                    setAdding(false);
+                } catch (error) {
+                    setErr('Error adding tag: ' + error.message);
+                }
+            };
+            return (
+                <div>
+                    <div className="row" style={{ marginBottom: 0 }}>
+                        <select id={id} value="" onChange={e => pick(e.target.value)} disabled={!tagList}>
+                            <option value="">{tagList === null ? 'Loading tags...' : '-- Add a tag --'}</option>
+                            {(tagList || []).filter(t => !value.includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        {!adding && <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setAdding(true)}>+ New tag</button>}
+                    </div>
+                    {adding && (
+                        <div className="row" style={{ marginTop: '8px', marginBottom: 0 }}>
+                            <input type="text" value={newTag} placeholder="New tag name" maxLength={30} autoFocus
+                                onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveNew(); }} />
+                            <button type="button" className="btn-secondary btn-sm" onClick={saveNew}>Add</button>
+                            <button type="button" className="btn-secondary btn-sm" onClick={() => { setAdding(false); setNewTag(''); setErr(''); }}>Cancel</button>
+                        </div>
+                    )}
+                    {err && <div className="error">{err}</div>}
+                    {value.length > 0 && (
+                        <div className="chips">
+                            {value.map(t => (
+                                <span key={t} className="chip">{t}<button type="button" onClick={() => onChange(value.filter(x => x !== t))} aria-label={'Remove ' + t}>&times;</button></span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         // One job's notes: the Add a note box and the notes list
         function JobNotes({ job, profile }) {
             const [tagList, setTagList] = useState(null);   // null = loading
-            const [notes, setNotes] = useState(null);       // null = loading
+            const [notes, setNotes] = useState(null);       // null = loading; includes hidden notes
             const [pickTags, setPickTags] = useState([]);
             const [text, setText] = useState('');
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
             const [listening, setListening] = useState(false);
+            const [showHidden, setShowHidden] = useState(false);
+            const [editing, setEditing] = useState(null);   // { id, text, tags } while editing a note
+            const [listMessage, setListMessage] = useState('');
             const recognitionRef = useRef(null);
             const textRef = useRef(null);
             const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+            const isAdmin = ADMINS.includes(profile.role);
+            const notesRef = db.collection('jobs').doc(job.id).collection('notes');
 
             // Company-wide tag list
             useEffect(() => {
@@ -125,18 +196,21 @@
                 }, error => { setTagList([]); setMessage('Error loading tags: ' + error.message); });
             }, []);
 
-            // This job's notes, newest first. Hidden notes are left out.
+            // This job's notes, newest first
             useEffect(() => {
-                return db.collection('jobs').doc(job.id).collection('notes').orderBy('createdAt', 'desc')
-                    .onSnapshot(snapshot => {
-                        const list = [];
-                        snapshot.forEach(doc => { const d = doc.data({ serverTimestamps: 'estimate' }); if (d.deleted !== true) list.push({ id: doc.id, ...d }); });
-                        setNotes(list);
-                    }, error => { setNotes([]); setMessage('Error loading notes: ' + error.message); });
+                return notesRef.orderBy('createdAt', 'desc').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data({ serverTimestamps: 'estimate' }) }));
+                    setNotes(list);
+                }, error => { setNotes([]); setListMessage('Error loading notes: ' + error.message); });
             }, [job.id]);
 
             // Stop voice if the page closes while listening
             useEffect(() => () => { recognitionRef.current && recognitionRef.current.stop(); }, []);
+
+            // Add a new tag to the company list. Tags can be added here but never removed.
+            const addNewTag = (name) => db.collection('notesSettings').doc('tags')
+                .update({ list: firebase.firestore.FieldValue.arrayUnion(name) });
 
             // Voice to text (Chrome/Edge), same approach as PO Manager
             const toggleVoice = () => {
@@ -165,9 +239,6 @@
                 setListening(true);
             };
 
-            const addTag = (t) => { if (t && !pickTags.includes(t)) setPickTags([...pickTags, t]); };
-            const removeTag = (t) => setPickTags(pickTags.filter(x => x !== t));
-
             const handleSave = async () => {
                 setMessage('');
                 if (!text.trim()) { setMessage('Type a note first.'); return; }
@@ -175,7 +246,7 @@
                 if (listening && recognitionRef.current) recognitionRef.current.stop();
                 setSaving(true);
                 try {
-                    await db.collection('jobs').doc(job.id).collection('notes').add({
+                    await notesRef.add({
                         text: capLines(text.trim()),
                         tags: pickTags,
                         jobId: job.id,
@@ -194,23 +265,58 @@
                 setSaving(false);
             };
 
+            // The author can edit for 24 hours after saving
+            const canEdit = (n) => n.createdBy && n.createdBy.uid === me.uid && n.deleted !== true && n.createdAt && n.createdAt.toDate
+                && Date.now() < n.createdAt.toDate().getTime() + EDIT_HOURS * 3600 * 1000;
+
+            // Save an edit. The note as it was is copied to its history first, in the same save.
+            const saveEdit = async (n) => {
+                setListMessage('');
+                const newText = capLines(editing.text.trim());
+                if (!newText) { setListMessage('A note can\'t be empty.'); return; }
+                if (editing.tags.length === 0) { setListMessage('Pick at least one tag.'); return; }
+                if (newText === n.text && editing.tags.join('|') === (n.tags || []).join('|')) { setEditing(null); return; }
+                try {
+                    const batch = db.batch();
+                    batch.set(notesRef.doc(n.id).collection('versions').doc(),
+                        { ...noteCopy(n), action: 'edit', savedAt: firebase.firestore.FieldValue.serverTimestamp(), savedBy: me });
+                    batch.update(notesRef.doc(n.id),
+                        { text: newText, tags: editing.tags, editedAt: firebase.firestore.FieldValue.serverTimestamp(), editedBy: me });
+                    await batch.commit();
+                    setEditing(null);
+                } catch (error) {
+                    setListMessage('Error saving edit: ' + error.message + ' (notes can only be edited for 24 hours)');
+                }
+            };
+
+            // Owner and Admin: hide or restore a note. Nothing is ever deleted; each change keeps a copy in history.
+            const setHidden = async (n, hide) => {
+                setListMessage('');
+                if (hide && !window.confirm('Hide this note? Owner and Admin can restore it later.')) return;
+                const now = firebase.firestore.FieldValue.serverTimestamp();
+                try {
+                    const batch = db.batch();
+                    batch.set(notesRef.doc(n.id).collection('versions').doc(),
+                        { ...noteCopy(n), action: hide ? 'hide' : 'restore', savedAt: now, savedBy: me });
+                    batch.update(notesRef.doc(n.id), hide
+                        ? { deleted: true, deletedBy: me, deletedAt: now }
+                        : { deleted: false, deletedBy: firebase.firestore.FieldValue.delete(), deletedAt: firebase.firestore.FieldValue.delete() });
+                    await batch.commit();
+                } catch (error) {
+                    setListMessage('Error ' + (hide ? 'hiding' : 'restoring') + ' note: ' + error.message);
+                }
+            };
+
+            const hiddenCount = (notes || []).filter(n => n.deleted === true).length;
+            const shown = (notes || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+
             return (
                 <div>
                     <div className="section">
                         <div className="section-title">Add a note</div>
                         <div className="form-group">
                             <label htmlFor="tag-pick">Tags</label>
-                            <select id="tag-pick" value="" onChange={e => addTag(e.target.value)} disabled={!tagList}>
-                                <option value="">{tagList === null ? 'Loading tags...' : '-- Add a tag --'}</option>
-                                {(tagList || []).filter(t => !pickTags.includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                            {pickTags.length > 0 && (
-                                <div className="chips">
-                                    {pickTags.map(t => (
-                                        <span key={t} className="chip">{t}<button type="button" onClick={() => removeTag(t)} aria-label={'Remove ' + t}>&times;</button></span>
-                                    ))}
-                                </div>
-                            )}
+                            <TagPicker id="tag-pick" tagList={tagList} value={pickTags} onChange={setPickTags} onNewTag={addNewTag} />
                         </div>
                         <div className="form-group">
                             <div className="row">
@@ -227,18 +333,62 @@
                     </div>
 
                     <div className="section">
-                        <div className="section-title">Notes</div>
+                        <div className="row">
+                            <div className="section-title" style={{ marginBottom: 0 }}>Notes</div>
+                            {isAdmin && (
+                                <label className="check">
+                                    <input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />
+                                    Show hidden ({hiddenCount})
+                                </label>
+                            )}
+                        </div>
+                        {listMessage && <div className="error" style={{ marginBottom: '10px' }}>{listMessage}</div>}
                         {notes === null && <p className="muted">Loading notes...</p>}
-                        {notes && notes.length === 0 && <p className="muted">No notes yet for this job.</p>}
-                        {(notes || []).map(n => (
-                            <div key={n.id} className="note">
-                                <div className="note-meta">{fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}</div>
-                                <div className="chips" style={{ marginTop: 0 }}>
-                                    {(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}
+                        {notes && shown.length === 0 && <p className="muted">No notes yet for this job.</p>}
+                        {shown.map(n => {
+                            const hidden = n.deleted === true;
+                            const isEditing = editing && editing.id === n.id;
+                            return (
+                                <div key={n.id} className={hidden ? 'note note-hidden' : 'note'}>
+                                    <div className="row">
+                                        <div className="note-meta" style={{ marginBottom: 0 }}>
+                                            {fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}
+                                            {n.editedAt && <span title={'Edited ' + fmtTime(n.editedAt)}> · edited</span>}
+                                        </div>
+                                        {!isEditing && (
+                                            <div className="note-actions">
+                                                {canEdit(n) && <button className="btn-secondary btn-sm" onClick={() => { setListMessage(''); setEditing({ id: n.id, text: n.text || '', tags: n.tags || [] }); }}>Edit</button>}
+                                                {isAdmin && !hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, true)}>Hide</button>}
+                                                {isAdmin && hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, false)}>Restore</button>}
+                                            </div>
+                                        )}
+                                    </div>
+                                    {hidden && <div className="note-meta">Hidden by {(n.deletedBy && n.deletedBy.name) || 'Unknown'} · {fmtTime(n.deletedAt)}</div>}
+                                    {isEditing ? (
+                                        <div style={{ marginTop: '8px' }}>
+                                            <div className="form-group">
+                                                <TagPicker id={'edit-tags-' + n.id} tagList={tagList} value={editing.tags}
+                                                    onChange={tags => setEditing({ ...editing, tags })} onNewTag={addNewTag} />
+                                            </div>
+                                            <div className="form-group">
+                                                <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: capLines(e.target.value) })} />
+                                            </div>
+                                            <div className="note-actions">
+                                                <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => saveEdit(n)}>Save edit</button>
+                                                <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setListMessage(''); }}>Cancel</button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <div className="chips">
+                                                {(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}
+                                            </div>
+                                            <div className="note-text">{n.text}</div>
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="note-text">{n.text}</div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             );
