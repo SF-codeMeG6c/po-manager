@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Notes - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        a { color: #0066cc; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+
+        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+        .job-code { font-size: 18px; font-weight: 600; color: #333; }
+        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
+        .notice { background: #f9f9f9; border-radius: 6px; padding: 14px; font-size: 14px; color: #555; }
+
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        select, textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        select:focus, textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        textarea { min-height: 90px; resize: vertical; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-danger { background: #d32f2f; color: white; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .form-group { margin-bottom: 12px; }
+        .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 5px; }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .chip { display: inline-flex; align-items: center; gap: 4px; background: #e8f1fb; color: #0052a3; border-radius: 12px; padding: 3px 10px; font-size: 12px; font-weight: 500; }
+        .chip button { background: none; padding: 0 2px; color: #0052a3; font-size: 14px; line-height: 1; }
+        .note { border: 1px solid #eee; border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; }
+        .note-meta { font-size: 12px; color: #888; margin-bottom: 6px; }
+        .note-text { font-size: 14px; color: #333; white-space: pre-wrap; margin-top: 8px; }
+        .muted { font-size: 13px; color: #888; }
+        .note-hidden { background: #fafafa; border-style: dashed; opacity: 0.75; }
+        .note-actions { display: flex; gap: 6px; }
+        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; font-weight: normal; margin-bottom: 0; }
+        .check input { width: auto; }
+        input[type=date] { padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .followups { background: #fffaf0; border: 1px solid #f3e2c0; border-radius: 6px; padding: 12px 14px; margin-bottom: 30px; }
+        .fu-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid #f3e2c0; }
+        .fu-item:first-of-type { border-top: none; }
+        .fu-date { font-size: 13px; font-weight: 600; color: #333; white-space: nowrap; }
+        .fu-date.late { color: #d32f2f; }
+        .fu-text { font-size: 13px; color: #555; margin-top: 2px; white-space: pre-wrap; }
+        .fu-line { font-size: 12px; color: #8a6d1f; margin-top: 6px; }
+        input[type=tel], input[type=email] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .card-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 10px; }
+        .card-group { margin-bottom: 14px; }
+        .card-view .card-group { margin-bottom: 0; background: #f9f9f9; border-radius: 6px; padding: 10px 12px; }
+        .card-group-title { font-size: 13px; font-weight: 600; color: #333; margin-bottom: 6px; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px 12px; }
+        .card-field label { font-size: 12px; margin-bottom: 3px; }
+        .card-line { font-size: 13px; color: #333; margin-bottom: 3px; overflow-wrap: anywhere; }
+        .card-label { color: #888; margin-right: 6px; }
+        .filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px 12px; background: #f9f9f9; border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
+        .filters label { font-size: 12px; margin-bottom: 3px; }
+        .filters select, .filters input[type=date] { width: 100%; padding: 6px 8px; font-size: 13px; }
+        .filter-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; color: #666; }
+        .print-only { display: none; }
+        @media print {
+            body { background: white; padding: 0; }
+            .container { box-shadow: none; padding: 0; max-width: none; }
+            .no-print, button, .back-link, .topbar, .filters { display: none !important; }
+            .print-only { display: block; }
+            .note { break-inside: avoid; }
+            a { color: #333; text-decoration: none; }
+        }
+        .job-link { font-weight: 600; color: #0066cc; }
+        input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link no-print">&larr; Dashboard</a>
+        <h1>Customer Notes</h1>
+        <p class="subtitle">Customer calls, requests and decisions for each job</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Same Firebase project as the other tools
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Roles that can use Customer Notes
+        const ALLOWED = ['owner', 'admin', 'estimator', 'super', 'office'];
+
+        // Job from the address: /notes/?job=ID ('' = no job, the all-jobs view)
+        const URL_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
+
+        // Date and time for a note ('Saving...' until the server time arrives)
+        const fmtTime = (ts) => ts && ts.toDate
+            ? ts.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' })
+            : 'Saving...';
+
+        // Follow-up dates are stored as 'YYYY-MM-DD'. Show them as 10/15/26, with no time-zone shifts.
+        const fmtDay = (d) => { const p = (d || '').split('-'); return p.length === 3 ? `${+p[1]}/${+p[2]}/${p[0].slice(2)}` : ''; };
+        const todayStr = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+
+        // Local date of a timestamp as 'YYYY-MM-DD' (for date-range filters)
+        const dayOf = (ts) => {
+            if (!ts || !ts.toDate) return '';
+            const t = ts.toDate();
+            return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+        };
+
+        // Filters: tag, date range (by the date a note was written) and person
+        const NO_FILTERS = { tag: '', from: '', to: '', person: '' };
+        const applyFilters = (list, f) => list.filter(n =>
+            (!f.tag || (n.tags || []).includes(f.tag))
+            && (!f.from || dayOf(n.createdAt) >= f.from)
+            && (!f.to || dayOf(n.createdAt) <= f.to)
+            && (!f.person || (n.createdBy && n.createdBy.uid) === f.person));
+        const peopleIn = (list) => {
+            const seen = {};
+            list.forEach(n => { if (n.createdBy && n.createdBy.uid) seen[n.createdBy.uid] = n.createdBy.name || 'Unknown'; });
+            return Object.keys(seen).map(uid => ({ uid, name: seen[uid] })).sort((a, b) => a.name.localeCompare(b.name));
+        };
+
+        function NoteFilters({ tagList, people, value, onChange }) {
+            const set = (k, v) => onChange({ ...value, [k]: v });
+            return (
+                <div className="filters">
+                    <div>
+                        <label htmlFor="f-tag">Tag</label>
+                        <select id="f-tag" value={value.tag} onChange={e => set('tag', e.target.value)}>
+                            <option value="">All tags</option>
+                            {(tagList || []).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="f-from">From</label>
+                        <input id="f-from" type="date" value={value.from} onChange={e => set('from', e.target.value)} />
+                    </div>
+                    <div>
+                        <label htmlFor="f-to">To</label>
+                        <input id="f-to" type="date" value={value.to} onChange={e => set('to', e.target.value)} />
+                    </div>
+                    <div>
+                        <label htmlFor="f-person">Person</label>
+                        <select id="f-person" value={value.person} onChange={e => set('person', e.target.value)}>
+                            <option value="">Everyone</option>
+                            {people.map(p => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+                        </select>
+                    </div>
+                </div>
+            );
+        }
+
+        // CSV export that opens cleanly in Excel
+        const csvCell = (v) => {
+            let t = v === undefined || v === null ? '' : String(v);
+            if (/^[=+\-@]/.test(t)) t = "'" + t;            // stop Excel treating text as a formula
+            return '"' + t.replace(/"/g, '""') + '"';
+        };
+        const timeOf = (ts) => ts && ts.toDate ? ts.toDate().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+        const fullDay = (d) => { const p = (d || '').split('-'); return p.length === 3 ? `${+p[1]}/${+p[2]}/${p[0]}` : ''; };
+        const exportNotesCsv = (list, fileName, withHidden) => {
+            const head = ['Job', 'Date', 'Time', 'Written by', 'Tags', 'Note', 'Follow-up date', 'Follow-up done', 'Done by', 'Edited', 'Edited by'];
+            if (withHidden) head.push('Hidden', 'Hidden by', 'Hidden on');
+            const rows = list.map(n => {
+                const r = [n.jobCode || '', fullDay(dayOf(n.createdAt)), timeOf(n.createdAt), n.createdBy ? n.createdBy.name : '',
+                    (n.tags || []).join(', '), n.text || '', fullDay(n.followUpDate),
+                    n.followUpDate ? (n.followUpDone ? 'Yes' : 'No') : '', n.followUpDoneBy ? n.followUpDoneBy.name : '',
+                    n.editedAt ? fmtTime(n.editedAt) : '', n.editedBy ? n.editedBy.name : ''];
+                if (withHidden) r.push(n.deleted ? 'Yes' : '', n.deletedBy ? n.deletedBy.name : '', n.deletedAt ? fmtTime(n.deletedAt) : '');
+                return r;
+            });
+            const csv = '\ufeff' + [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
+            const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+        const safeName = (t) => (t || 'job').replace(/[^\w.-]+/g, '_');
+
+        // Capitalize the start of each line (same as PO Manager)
+        const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, c) => nl + sp + c.toUpperCase());
+
+        // Put spoken text where the cursor is in a textbox; returns new text + cursor spot (same as PO Manager)
+        const insertAtCursor = (el, text) => {
+            const cur = el.value || '';
+            const pos = el.selectionStart ?? cur.length;
+            const before = cur.slice(0, pos), after = cur.slice(pos);
+            const sepBefore = before && !/[\s]$/.test(before) ? ' ' : '';
+            const sepAfter = after && !/^[\s]/.test(after) ? ' ' : '';
+            const value = capLines(before + sepBefore + text + sepAfter + after);
+            return { value, pos: (before + sepBefore + text).length };
+        };
+
+        const ADMINS = ['owner', 'admin'];   // can hide and restore notes
+        const EDIT_HOURS = 24;               // the author can edit a note this long after saving it
+
+        // A copy of a note as it is now, for its history (versions). Leaves out empty fields.
+        const noteCopy = (n) => {
+            const copy = {};
+            ['text', 'tags', 'followUpDate', 'createdAt', 'createdBy', 'editedAt', 'editedBy', 'deleted', 'deletedBy', 'deletedAt']
+                .forEach(k => { if (n[k] !== undefined && n[k] !== null) copy[k] = n[k]; });
+            return copy;
+        };
+
+        // Tags: pick from the company list, remove with ×, or add a new tag to the list
+        function TagPicker({ id, tagList, value, onChange, onNewTag }) {
+            const [adding, setAdding] = useState(false);
+            const [newTag, setNewTag] = useState('');
+            const [err, setErr] = useState('');
+            const pick = (t) => { if (t && !value.includes(t)) onChange([...value, t]); };
+            const saveNew = async () => {
+                const name = newTag.trim().replace(/\s+/g, ' ');
+                if (!name) return;
+                if (name.length > 30) { setErr('Keep tags to 30 characters or less.'); return; }
+                const existing = (tagList || []).find(t => t.toLowerCase() === name.toLowerCase());
+                setErr('');
+                try {
+                    if (!existing) await onNewTag(name);
+                    pick(existing || name);
+                    setNewTag('');
+                    setAdding(false);
+                } catch (error) {
+                    setErr('Error adding tag: ' + error.message);
+                }
+            };
+            return (
+                <div>
+                    <div className="row" style={{ marginBottom: 0 }}>
+                        <select id={id} value="" onChange={e => pick(e.target.value)} disabled={!tagList}>
+                            <option value="">{tagList === null ? 'Loading tags...' : '-- Add a tag --'}</option>
+                            {(tagList || []).filter(t => !value.includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        {!adding && <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setAdding(true)}>+ New tag</button>}
+                    </div>
+                    {adding && (
+                        <div className="row" style={{ marginTop: '8px', marginBottom: 0 }}>
+                            <input type="text" value={newTag} placeholder="New tag name" maxLength={30} autoFocus
+                                onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveNew(); }} />
+                            <button type="button" className="btn-secondary btn-sm" onClick={saveNew}>Add</button>
+                            <button type="button" className="btn-secondary btn-sm" onClick={() => { setAdding(false); setNewTag(''); setErr(''); }}>Cancel</button>
+                        </div>
+                    )}
+                    {err && <div className="error">{err}</div>}
+                    {value.length > 0 && (
+                        <div className="chips">
+                            {value.map(t => (
+                                <span key={t} className="chip">{t}<button type="button" onClick={() => onChange(value.filter(x => x !== t))} aria-label={'Remove ' + t}>&times;</button></span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Contact card fields (all optional). Lock box is the job's own lockBox field, shared with PO Manager.
+        const EMPTY_CARD = {
+            homeowners: [{ name: '', phone: '', email: '' }, { name: '', phone: '', email: '' }],
+            insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
+            publicAdjusting: { company: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
+            mortgage: { company: '', phone: '' }
+        };
+        const CARD_SECTIONS = [
+            { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
+            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
+            { key: 'mortgage', title: 'Mortgage company', fields: [['company', 'Company'], ['phone', 'Contact phone', 'tel']] }
+        ];
+        const HOMEOWNER_FIELDS = [['name', 'Name'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
+
+        // Fill in any missing fields so the form always has every box
+        const fullCard = (d) => {
+            const c = JSON.parse(JSON.stringify(EMPTY_CARD));
+            if (!d) return c;
+            (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h }; });
+            ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}) }; });
+            return c;
+        };
+        // Trim every field; drop homeowners with nothing filled in
+        const cleanCard = (c) => {
+            const t = (o) => { const r = {}; Object.keys(o).forEach(k => { r[k] = (o[k] || '').trim(); }); return r; };
+            return {
+                homeowners: c.homeowners.map(t).filter(h => h.name || h.phone || h.email),
+                insurance: t(c.insurance),
+                publicAdjusting: t(c.publicAdjusting),
+                mortgage: t(c.mortgage)
+            };
+        };
+        const telHref = (p) => 'tel:' + (p || '').replace(/[^\d+]/g, '');
+
+        // A phone or email as a tap-to-call or tap-to-email link
+        function CardValue({ value, kind }) {
+            if (kind === 'tel') return <a href={telHref(value)}>{value}</a>;
+            if (kind === 'email') return <a href={'mailto:' + value}>{value}</a>;
+            return <span>{value}</span>;
+        }
+
+        // Customer contact card: view, then one Edit button for the whole card
+        function ContactCard({ job, profile }) {
+            const [card, setCard] = useState(undefined);       // undefined = loading, null = none yet
+            const [lockBox, setLockBox] = useState('');
+            const [editing, setEditing] = useState(null);      // the form while editing
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+            const jobRef = db.collection('jobs').doc(job.id);
+            const cardRef = jobRef.collection('notesInfo').doc('contactCard');
+
+            useEffect(() => cardRef.onSnapshot(
+                doc => setCard(doc.exists ? doc.data() : null),
+                error => { setCard(null); setMessage('Error loading contact card: ' + error.message); }
+            ), [job.id]);
+            // Lock box comes live from the job, so a change in PO Manager shows here too
+            useEffect(() => jobRef.onSnapshot(
+                doc => setLockBox(doc.exists ? (doc.data().lockBox || '') : ''),
+                () => {}
+            ), [job.id]);
+
+            const startEdit = () => { setMessage(''); setEditing({ ...fullCard(card), lockBox }); };
+            const setField = (section, field, value) => setEditing(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
+            const setHomeowner = (i, field, value) => setEditing(prev => {
+                const homeowners = prev.homeowners.map((h, j) => (j === i ? { ...h, [field]: value } : h));
+                return { ...prev, homeowners };
+            });
+
+            // Save: copy the card as it was (with the lock box) to history first, all in one save
+            const save = async () => {
+                setMessage('');
+                const clean = cleanCard(editing);
+                const newLock = (editing.lockBox || '').trim();
+                const lockChanged = newLock !== (lockBox || '');
+                const now = firebase.firestore.FieldValue.serverTimestamp();
+                setSaving(true);
+                try {
+                    const batch = db.batch();
+                    if (card || lockBox) {
+                        const old = card ? { ...card } : {};
+                        batch.set(cardRef.collection('history').doc(), { ...old, lockBox: lockBox || '', savedAt: now, savedBy: me });
+                    }
+                    batch.set(cardRef, { ...clean, updatedAt: now, updatedBy: me });
+                    if (lockChanged) batch.update(jobRef, { lockBox: newLock, lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
+                    await batch.commit();
+                    setEditing(null);
+                } catch (error) {
+                    setMessage('Error saving contact card: ' + error.message);
+                }
+                setSaving(false);
+            };
+
+            if (card === undefined) return <div className="section"><div className="section-title">Contact card</div><p className="muted">Loading...</p></div>;
+
+            if (editing) {
+                const input = (value, onChange, label, kind) => (
+                    <div className="card-field" key={label}>
+                        <label>{label}</label>
+                        <input type={kind === 'tel' ? 'tel' : kind === 'email' ? 'email' : 'text'} value={value} onChange={e => onChange(e.target.value)} />
+                    </div>
+                );
+                return (
+                    <div className="section">
+                        <div className="section-title">Contact card</div>
+                        {editing.homeowners.map((h, i) => (
+                            <div key={i} className="card-group">
+                                <div className="card-group-title">Homeowner {i + 1}</div>
+                                <div className="card-grid">{HOMEOWNER_FIELDS.map(([f, label, kind]) => input(h[f], v => setHomeowner(i, f, v), label, kind))}</div>
+                            </div>
+                        ))}
+                        {CARD_SECTIONS.map(s => (
+                            <div key={s.key} className="card-group">
+                                <div className="card-group-title">{s.title}</div>
+                                <div className="card-grid">{s.fields.map(([f, label, kind]) => input(editing[s.key][f], v => setField(s.key, f, v), label, kind))}</div>
+                            </div>
+                        ))}
+                        <div className="card-group">
+                            <div className="card-group-title">Lock box</div>
+                            <div className="card-grid">{input(editing.lockBox, v => setEditing(prev => ({ ...prev, lockBox: v })), 'Lock box code (also shows in PO Manager)')}</div>
+                        </div>
+                        <div className="note-actions">
+                            <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save contact card'}</button>
+                            <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setMessage(''); }} disabled={saving}>Cancel</button>
+                        </div>
+                        {message && <div className="error">{message}</div>}
+                    </div>
+                );
+            }
+
+            const c = fullCard(card);
+            const owners = c.homeowners.filter(h => h.name || h.phone || h.email);
+            const filled = (s) => s.fields.some(([f]) => c[s.key][f]);
+            const nothing = owners.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
+            return (
+                <div className="section">
+                    <div className="row">
+                        <div className="section-title" style={{ marginBottom: 0 }}>Contact card</div>
+                        <button className="btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+                    </div>
+                    {nothing && <p className="muted" style={{ marginTop: '8px' }}>No contact info yet. Click Edit to add it.</p>}
+                    <div className="card-view">
+                        {owners.map((h, i) => (
+                            <div key={i} className="card-group">
+                                <div className="card-group-title">Homeowner{owners.length > 1 ? ' ' + (i + 1) : ''}</div>
+                                {HOMEOWNER_FIELDS.filter(([f]) => h[f]).map(([f, label, kind]) => (
+                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={h[f]} kind={kind} /></div>
+                                ))}
+                            </div>
+                        ))}
+                        {CARD_SECTIONS.filter(filled).map(s => (
+                            <div key={s.key} className="card-group">
+                                <div className="card-group-title">{s.title}</div>
+                                {s.fields.filter(([f]) => c[s.key][f]).map(([f, label, kind]) => (
+                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={c[s.key][f]} kind={kind} /></div>
+                                ))}
+                            </div>
+                        ))}
+                        {lockBox && (
+                            <div className="card-group">
+                                <div className="card-group-title">Lock box</div>
+                                <div className="card-line"><span className="card-label">Code</span><span>{lockBox}</span></div>
+                            </div>
+                        )}
+                    </div>
+                    {card && card.updatedBy && <div className="note-meta" style={{ marginTop: '6px' }}>Last updated by {card.updatedBy.name} · {fmtTime(card.updatedAt)}</div>}
+                    {message && <div className="error">{message}</div>}
+                </div>
+            );
+        }
+
+        // One job's notes: the Add a note box and the notes list
+        function JobNotes({ job, profile }) {
+            const [tagList, setTagList] = useState(null);   // null = loading
+            const [notes, setNotes] = useState(null);       // null = loading; includes hidden notes
+            const [pickTags, setPickTags] = useState([]);
+            const [text, setText] = useState('');
+            const [followUp, setFollowUp] = useState('');
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const [listening, setListening] = useState(false);
+            const [showHidden, setShowHidden] = useState(false);
+            const [filters, setFilters] = useState(NO_FILTERS);
+            const [editing, setEditing] = useState(null);   // { id, text, tags } while editing a note
+            const [listMessage, setListMessage] = useState('');
+            const recognitionRef = useRef(null);
+            const textRef = useRef(null);
+            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+            const isAdmin = ADMINS.includes(profile.role);
+            const notesRef = db.collection('jobs').doc(job.id).collection('notes');
+
+            // Company-wide tag list
+            useEffect(() => {
+                return db.collection('notesSettings').doc('tags').onSnapshot(doc => {
+                    setTagList(doc.exists && Array.isArray(doc.data().list) ? doc.data().list : []);
+                }, error => { setTagList([]); setMessage('Error loading tags: ' + error.message); });
+            }, []);
+
+            // This job's notes, newest first
+            useEffect(() => {
+                return notesRef.orderBy('createdAt', 'desc').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data({ serverTimestamps: 'estimate' }) }));
+                    setNotes(list);
+                }, error => { setNotes([]); setListMessage('Error loading notes: ' + error.message); });
+            }, [job.id]);
+
+            // Stop voice if the page closes while listening
+            useEffect(() => () => { recognitionRef.current && recognitionRef.current.stop(); }, []);
+
+            // Add a new tag to the company list. Tags can be added here but never removed.
+            const addNewTag = (name) => db.collection('notesSettings').doc('tags')
+                .update({ list: firebase.firestore.FieldValue.arrayUnion(name) });
+
+            // Voice to text (Chrome/Edge), same approach as PO Manager
+            const toggleVoice = () => {
+                if (listening) { recognitionRef.current && recognitionRef.current.stop(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setMessage('Voice input not supported in this browser (use Chrome or Edge)'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let spoken = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) {
+                        if (e.results[i].isFinal) spoken += e.results[i][0].transcript;
+                    }
+                    const el = textRef.current;
+                    if (!spoken || !el) return;
+                    const { value, pos } = insertAtCursor(el, spoken.trim());
+                    setText(value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => { setMessage('Voice input error: ' + e.error); };
+                rec.onend = () => setListening(false);
+                recognitionRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+
+            const handleSave = async () => {
+                setMessage('');
+                if (!text.trim()) { setMessage('Type a note first.'); return; }
+                if (pickTags.length === 0) { setMessage('Pick at least one tag.'); return; }
+                if (listening && recognitionRef.current) recognitionRef.current.stop();
+                setSaving(true);
+                try {
+                    await notesRef.add({
+                        text: capLines(text.trim()),
+                        tags: pickTags,
+                        jobId: job.id,
+                        jobCode: job.code,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdBy: me,
+                        followUpDate: followUp,
+                        followUpDone: false,
+                        deleted: false
+                    });
+                    setText('');
+                    setPickTags([]);
+                    setFollowUp('');
+                } catch (error) {
+                    setMessage('Error saving note: ' + error.message);
+                }
+                setSaving(false);
+            };
+
+            // The author can edit for 24 hours after saving
+            const canEdit = (n) => n.createdBy && n.createdBy.uid === me.uid && n.deleted !== true && n.createdAt && n.createdAt.toDate
+                && Date.now() < n.createdAt.toDate().getTime() + EDIT_HOURS * 3600 * 1000;
+
+            // Save an edit. The note as it was is copied to its history first, in the same save.
+            const saveEdit = async (n) => {
+                setListMessage('');
+                const newText = capLines(editing.text.trim());
+                if (!newText) { setListMessage('A note can\'t be empty.'); return; }
+                if (editing.tags.length === 0) { setListMessage('Pick at least one tag.'); return; }
+                if (newText === n.text && editing.tags.join('|') === (n.tags || []).join('|')
+                    && editing.followUpDate === (n.followUpDate || '')) { setEditing(null); return; }
+                try {
+                    const batch = db.batch();
+                    batch.set(notesRef.doc(n.id).collection('versions').doc(),
+                        { ...noteCopy(n), action: 'edit', savedAt: firebase.firestore.FieldValue.serverTimestamp(), savedBy: me });
+                    batch.update(notesRef.doc(n.id),
+                        { text: newText, tags: editing.tags, followUpDate: editing.followUpDate, editedAt: firebase.firestore.FieldValue.serverTimestamp(), editedBy: me });
+                    await batch.commit();
+                    setEditing(null);
+                } catch (error) {
+                    setListMessage('Error saving edit: ' + error.message + ' (notes can only be edited for 24 hours)');
+                }
+            };
+
+            // Owner and Admin: hide or restore a note. Nothing is ever deleted; each change keeps a copy in history.
+            const setHidden = async (n, hide) => {
+                setListMessage('');
+                if (hide && !window.confirm('Hide this note? Owner and Admin can restore it later.')) return;
+                const now = firebase.firestore.FieldValue.serverTimestamp();
+                try {
+                    const batch = db.batch();
+                    batch.set(notesRef.doc(n.id).collection('versions').doc(),
+                        { ...noteCopy(n), action: hide ? 'hide' : 'restore', savedAt: now, savedBy: me });
+                    batch.update(notesRef.doc(n.id), hide
+                        ? { deleted: true, deletedBy: me, deletedAt: now }
+                        : { deleted: false, deletedBy: firebase.firestore.FieldValue.delete(), deletedAt: firebase.firestore.FieldValue.delete() });
+                    await batch.commit();
+                } catch (error) {
+                    setListMessage('Error ' + (hide ? 'hiding' : 'restoring') + ' note: ' + error.message);
+                }
+            };
+
+            // Anyone who can see the job can mark a follow-up done; it records who and when
+            const markDone = async (n) => {
+                setListMessage('');
+                try {
+                    await notesRef.doc(n.id).update({ followUpDone: true, followUpDoneBy: me, followUpDoneAt: firebase.firestore.FieldValue.serverTimestamp() });
+                } catch (error) {
+                    setListMessage('Error marking follow-up done: ' + error.message);
+                }
+            };
+
+            const today = todayStr();
+            const openFollowUps = (notes || []).filter(n => n.deleted !== true && n.followUpDate && n.followUpDone !== true)
+                .sort((a, b) => a.followUpDate.localeCompare(b.followUpDate));
+            const hiddenCount = (notes || []).filter(n => n.deleted === true).length;
+            const visible = (notes || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+            const shown = applyFilters(visible, filters);
+            const filtering = JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
+            const handleExport = () => exportNotesCsv(shown.map(n => ({ ...n, jobCode: n.jobCode || job.code })),
+                `Notes_${safeName(job.code)}_${todayStr()}.csv`, isAdmin && showHidden);
+
+            return (
+                <div>
+                    {openFollowUps.length > 0 && (
+                        <div className="followups">
+                            <div className="section-title" style={{ marginBottom: '6px' }}>Open follow-ups ({openFollowUps.length})</div>
+                            {openFollowUps.map(n => {
+                                const late = n.followUpDate < today;
+                                return (
+                                    <div key={n.id} className="fu-item">
+                                        <div>
+                                            <div className={late ? 'fu-date late' : 'fu-date'}>
+                                                {fmtDay(n.followUpDate)}{n.followUpDate === today ? ' (today)' : late ? ' (overdue)' : ''}
+                                                <span className="note-meta" style={{ fontWeight: 400 }}> · {(n.tags || []).join(', ')} · {(n.createdBy && n.createdBy.name) || 'Unknown'}</span>
+                                            </div>
+                                            <div className="fu-text">{n.text}</div>
+                                        </div>
+                                        <button className="btn-secondary btn-sm" onClick={() => markDone(n)}>Done</button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    <div className="section no-print">
+                        <div className="section-title">Add a note</div>
+                        <div className="form-group">
+                            <label htmlFor="tag-pick">Tags</label>
+                            <TagPicker id="tag-pick" tagList={tagList} value={pickTags} onChange={setPickTags} onNewTag={addNewTag} />
+                        </div>
+                        <div className="form-group">
+                            <div className="row">
+                                <label htmlFor="note-text" style={{ marginBottom: 0 }}>Note</label>
+                                <button type="button" className={listening ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleVoice}>
+                                    {listening ? '■ Stop' : '🎤 Voice'}
+                                </button>
+                            </div>
+                            <textarea id="note-text" ref={textRef} value={text} placeholder="Type or use Voice..."
+                                onChange={e => setText(capLines(e.target.value))} />
+                        </div>
+                        <div className="form-group">
+                            <label htmlFor="follow-up">Follow-up date (optional)</label>
+                            <input id="follow-up" type="date" value={followUp} onChange={e => setFollowUp(e.target.value)} />
+                            {followUp && <button type="button" className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setFollowUp('')}>Clear</button>}
+                        </div>
+                        <button className="btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save note'}</button>
+                        {message && <div className="error">{message}</div>}
+                    </div>
+
+                    <div className="section">
+                        <div className="row">
+                            <div className="section-title" style={{ marginBottom: 0 }}>Notes</div>
+                            {isAdmin && (
+                                <label className="check">
+                                    <input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />
+                                    Show hidden ({hiddenCount})
+                                </label>
+                            )}
+                        </div>
+                        <NoteFilters tagList={tagList} people={peopleIn(notes || [])} value={filters} onChange={setFilters} />
+                        <div className="filter-bar">
+                            <span>
+                                {filtering ? `Showing ${shown.length} of ${visible.length} notes` : `${shown.length} note${shown.length === 1 ? '' : 's'}`}
+                                {filtering && <button className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setFilters(NO_FILTERS)}>Clear filters</button>}
+                            </span>
+                            <span className="note-actions">
+                                <button className="btn-secondary btn-sm" onClick={handleExport} disabled={shown.length === 0}>Export to Excel (CSV)</button>
+                                <button className="btn-secondary btn-sm" onClick={() => window.print()} disabled={shown.length === 0}>Print / PDF</button>
+                            </span>
+                        </div>
+                        <div className="print-only note-meta">Printed {fmtTime({ toDate: () => new Date() })}{filtering ? ' · filtered' : ''}</div>
+                        {listMessage && <div className="error" style={{ marginBottom: '10px' }}>{listMessage}</div>}
+                        {notes === null && <p className="muted">Loading notes...</p>}
+                        {notes && visible.length === 0 && <p className="muted">No notes yet for this job.</p>}
+                        {notes && visible.length > 0 && shown.length === 0 && <p className="muted">No notes match these filters.</p>}
+                        {shown.map(n => {
+                            const hidden = n.deleted === true;
+                            const isEditing = editing && editing.id === n.id;
+                            return (
+                                <div key={n.id} className={hidden ? 'note note-hidden' : 'note'}>
+                                    <div className="row">
+                                        <div className="note-meta" style={{ marginBottom: 0 }}>
+                                            {fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}
+                                            {n.editedAt && <span title={'Edited ' + fmtTime(n.editedAt)}> · edited</span>}
+                                        </div>
+                                        {!isEditing && (
+                                            <div className="note-actions">
+                                                {canEdit(n) && <button className="btn-secondary btn-sm" onClick={() => { setListMessage(''); setEditing({ id: n.id, text: n.text || '', tags: n.tags || [], followUpDate: n.followUpDate || '' }); }}>Edit</button>}
+                                                {isAdmin && !hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, true)}>Hide</button>}
+                                                {isAdmin && hidden && <button className="btn-secondary btn-sm" onClick={() => setHidden(n, false)}>Restore</button>}
+                                            </div>
+                                        )}
+                                    </div>
+                                    {hidden && <div className="note-meta">Hidden by {(n.deletedBy && n.deletedBy.name) || 'Unknown'} · {fmtTime(n.deletedAt)}</div>}
+                                    {isEditing ? (
+                                        <div style={{ marginTop: '8px' }}>
+                                            <div className="form-group">
+                                                <TagPicker id={'edit-tags-' + n.id} tagList={tagList} value={editing.tags}
+                                                    onChange={tags => setEditing({ ...editing, tags })} onNewTag={addNewTag} />
+                                            </div>
+                                            <div className="form-group">
+                                                <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: capLines(e.target.value) })} />
+                                            </div>
+                                            <div className="form-group">
+                                                <label htmlFor={'edit-fu-' + n.id}>Follow-up date (optional)</label>
+                                                <input id={'edit-fu-' + n.id} type="date" value={editing.followUpDate} onChange={e => setEditing({ ...editing, followUpDate: e.target.value })} />
+                                                {editing.followUpDate && <button type="button" className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} onClick={() => setEditing({ ...editing, followUpDate: '' })}>Clear</button>}
+                                            </div>
+                                            <div className="note-actions">
+                                                <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => saveEdit(n)}>Save edit</button>
+                                                <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setListMessage(''); }}>Cancel</button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <div className="chips">
+                                                {(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}
+                                            </div>
+                                            <div className="note-text">{n.text}</div>
+                                            {n.followUpDate && (
+                                                <div className="fu-line">
+                                                    Follow up {fmtDay(n.followUpDate)}
+                                                    {n.followUpDone === true
+                                                        ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'}${n.followUpDoneAt ? ' ' + fmtTime(n.followUpDoneAt) : ''}`
+                                                        : ' · open'}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        // Search across all jobs the person can see. Owner, Admin, Estimator and Office search every job at once
+        // (a "collection group" query); Supers search their assigned jobs one by one, as the rules require.
+        const SEES_ALL = ['owner', 'admin', 'estimator', 'office'];
+        const daysAgo = (n) => { const t = new Date(Date.now() - n * 86400000); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+
+        function AllJobsSearch({ profile }) {
+            const [tagList, setTagList] = useState(null);
+            const [filters, setFilters] = useState({ ...NO_FILTERS, from: daysAgo(30) });
+            const [results, setResults] = useState(null);     // null = not searched yet
+            const [searching, setSearching] = useState(false);
+            const [message, setMessage] = useState('');
+            const [showHidden, setShowHidden] = useState(false);
+            const [ran, setRan] = useState(null);             // the filters used for the last search
+            const isAdmin = ADMINS.includes(profile.role);
+
+            useEffect(() => db.collection('notesSettings').doc('tags').onSnapshot(
+                doc => setTagList(doc.exists && Array.isArray(doc.data().list) ? doc.data().list : []),
+                () => setTagList([])
+            ), []);
+
+            // Dates go to the database; tag and person are applied after, so only one index is needed
+            const dated = (q, f) => {
+                if (f.from) q = q.where('createdAt', '>=', new Date(f.from + 'T00:00:00'));
+                if (f.to) q = q.where('createdAt', '<=', new Date(f.to + 'T23:59:59.999'));
+                return q.orderBy('createdAt', 'desc');
+            };
+
+            const runSearch = async (f) => {
+                setMessage('');
+                if (f.from && f.to && f.from > f.to) { setMessage('The From date is after the To date.'); return; }
+                setSearching(true);
+                try {
+                    const list = [];
+                    const add = (doc) => {
+                        const d = doc.data({ serverTimestamps: 'estimate' });
+                        list.push({ id: doc.id, ...d, jobId: d.jobId || doc.ref.parent.parent.id });
+                    };
+                    if (SEES_ALL.includes(profile.role)) {
+                        (await dated(db.collectionGroup('notes'), f).get()).forEach(add);
+                    } else {
+                        const jobs = await db.collection('jobs').where('assignedSupers', 'array-contains', profile.uid).get();
+                        const ids = [];
+                        jobs.forEach(j => ids.push(j.id));
+                        const snaps = await Promise.all(ids.map(id => dated(db.collection('jobs').doc(id).collection('notes'), f).get()));
+                        snaps.forEach(s => s.forEach(add));
+                        list.sort((a, b) => (b.createdAt && b.createdAt.toMillis ? b.createdAt.toMillis() : 0) - (a.createdAt && a.createdAt.toMillis ? a.createdAt.toMillis() : 0));
+                    }
+                    setResults(list);
+                    setRan(f);
+                } catch (error) {
+                    // The first time a search runs, Firestore may ask for an index. Its message includes a link to send to Spencer.
+                    setMessage('Search error: ' + error.message + (/index/i.test(error.message) ? ' — Please send this message (with its link) to Spencer.' : ''));
+                    setResults(null);
+                }
+                setSearching(false);
+            };
+
+            useEffect(() => { runSearch(filters); }, []);
+
+            // Changing a date needs a new search; tag and person filter what is already loaded
+            const datesChanged = ran && (ran.from !== filters.from || ran.to !== filters.to);
+            const visible = (results || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+            const shown = applyFilters(visible, { ...filters, from: '', to: '' });
+            const hiddenCount = (results || []).filter(n => n.deleted === true).length;
+            const handleExport = () => exportNotesCsv(shown, `Notes_AllJobs_${todayStr()}.csv`, isAdmin && showHidden);
+
+            return (
+                <div className="section">
+                    <div className="row">
+                        <div className="section-title" style={{ marginBottom: 0 }}>Search all jobs</div>
+                        {isAdmin && (
+                            <label className="check">
+                                <input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />
+                                Show hidden ({hiddenCount})
+                            </label>
+                        )}
+                    </div>
+                    <p className="muted" style={{ margin: '4px 0 10px' }}>
+                        {SEES_ALL.includes(profile.role) ? 'Searches every job.' : 'Searches the jobs assigned to you.'} To add or change notes, open a job.
+                    </p>
+                    <NoteFilters tagList={tagList} people={peopleIn(results || [])} value={filters} onChange={setFilters} />
+                    <div className="filter-bar">
+                        <span className="note-actions" style={{ alignItems: 'center' }}>
+                            <button className={datesChanged ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} style={{ width: 'auto' }}
+                                onClick={() => runSearch(filters)} disabled={searching}>{searching ? 'Searching...' : 'Search'}</button>
+                            <button className="btn-secondary btn-sm" onClick={() => { setFilters(NO_FILTERS); runSearch(NO_FILTERS); }} disabled={searching}>All dates</button>
+                            {results && !searching && <span>{shown.length} note{shown.length === 1 ? '' : 's'}{datesChanged ? ' · dates changed, click Search' : ''}</span>}
+                        </span>
+                        <span className="note-actions">
+                            <button className="btn-secondary btn-sm" onClick={handleExport} disabled={shown.length === 0}>Export to Excel (CSV)</button>
+                            <button className="btn-secondary btn-sm" onClick={() => window.print()} disabled={shown.length === 0}>Print / PDF</button>
+                        </span>
+                    </div>
+                    <div className="print-only note-meta">
+                        Printed {fmtTime({ toDate: () => new Date() })}
+                        {ran && (ran.from || ran.to) ? ` · ${ran.from ? fullDay(ran.from) : 'start'} to ${ran.to ? fullDay(ran.to) : 'today'}` : ''}
+                    </div>
+                    {message && <div className="error" style={{ marginBottom: '10px' }}>{message}</div>}
+                    {searching && results === null && <p className="muted">Searching...</p>}
+                    {results && shown.length === 0 && !searching && <p className="muted">No notes match these filters.</p>}
+                    {shown.map(n => (
+                        <div key={n.jobId + '/' + n.id} className={n.deleted === true ? 'note note-hidden' : 'note'}>
+                            <div className="note-meta">
+                                <a href={'/notes/?job=' + encodeURIComponent(n.jobId)} className="job-link">{n.jobCode || 'Job'}</a>
+                                {' · '}{fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}
+                                {n.editedAt && ' · edited'}
+                            </div>
+                            {n.deleted === true && <div className="note-meta">Hidden by {(n.deletedBy && n.deletedBy.name) || 'Unknown'}{n.deletedAt ? ' · ' + fmtTime(n.deletedAt) : ''}</div>}
+                            <div className="chips">{(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}</div>
+                            <div className="note-text">{n.text}</div>
+                            {n.followUpDate && (
+                                <div className="fu-line">
+                                    Follow up {fmtDay(n.followUpDate)}
+                                    {n.followUpDone === true ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'}` : ' · open'}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        function NotesApp() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
+            const [authError, setAuthError] = useState('');
+            const [job, setJob] = useState(null);         // null = loading, false = not found or no access, object = the job
+
+            // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
+            useEffect(() => {
+                return auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && ALLOWED.includes(d.role)) setProfile({ uid: currentUser.uid, ...d });
+                        else if (d && d.role === 'pending') setProfile('pending');
+                        else setProfile(false);
+                    } catch (err) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            // Load the one job named in the address. The rules block a Super who isn't assigned, which counts as "no access".
+            useEffect(() => {
+                setJob(null);
+                if (!profile || typeof profile !== 'object' || !URL_JOB_ID) return;
+                db.collection('jobs').doc(URL_JOB_ID).get().then(doc => {
+                    if (!doc.exists) { setJob(false); return; }
+                    const d = doc.data();
+                    setJob({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                }).catch(() => setJob(false));
+            }, [profile]);
+
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
+            const handleLogout = () => auth.signOut();
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Sign in</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) return <div className="section">Loading...</div>;
+
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">Waiting for approval</div>
+                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            if (profile === false) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Account not set up</div>
+                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
+                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div>
+                    <div className="topbar">
+                        <span>Signed in as {profile.name || user.email}</span>
+                        <div className="topbar-right">
+                            <a href="/notes/">Search all jobs</a>
+                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        </div>
+                    </div>
+
+                    {!URL_JOB_ID && <AllJobsSearch profile={profile} />}
+
+                    {URL_JOB_ID && job === null && <div className="section">Loading job...</div>}
+
+                    {URL_JOB_ID && job === false && (
+                        <div className="notice">
+                            This job wasn't found, or you don't have access to it. Go back to the <a href="/">Dashboard</a> and pick a job.
+                        </div>
+                    )}
+
+                    {URL_JOB_ID && job && (
+                        <div>
+                            <div className="job-head">
+                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
+                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
+                            </div>
+                            <ContactCard job={job} profile={profile} />
+                            <JobNotes job={job} profile={profile} />
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<NotesApp />, document.getElementById('app'));
+    </script>
+</body>
+</html>
