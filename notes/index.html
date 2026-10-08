@@ -81,6 +81,7 @@
             .note { break-inside: avoid; }
             a { color: #333; text-decoration: none; }
         }
+        .job-link { font-weight: 600; color: #0066cc; }
         input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
     </style>
 </head>
@@ -750,6 +751,128 @@
             );
         }
 
+        // Search across all jobs the person can see. Owner, Admin, Estimator and Office search every job at once
+        // (a "collection group" query); Supers search their assigned jobs one by one, as the rules require.
+        const SEES_ALL = ['owner', 'admin', 'estimator', 'office'];
+        const daysAgo = (n) => { const t = new Date(Date.now() - n * 86400000); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+
+        function AllJobsSearch({ profile }) {
+            const [tagList, setTagList] = useState(null);
+            const [filters, setFilters] = useState({ ...NO_FILTERS, from: daysAgo(30) });
+            const [results, setResults] = useState(null);     // null = not searched yet
+            const [searching, setSearching] = useState(false);
+            const [message, setMessage] = useState('');
+            const [showHidden, setShowHidden] = useState(false);
+            const [ran, setRan] = useState(null);             // the filters used for the last search
+            const isAdmin = ADMINS.includes(profile.role);
+
+            useEffect(() => db.collection('notesSettings').doc('tags').onSnapshot(
+                doc => setTagList(doc.exists && Array.isArray(doc.data().list) ? doc.data().list : []),
+                () => setTagList([])
+            ), []);
+
+            // Dates go to the database; tag and person are applied after, so only one index is needed
+            const dated = (q, f) => {
+                if (f.from) q = q.where('createdAt', '>=', new Date(f.from + 'T00:00:00'));
+                if (f.to) q = q.where('createdAt', '<=', new Date(f.to + 'T23:59:59.999'));
+                return q.orderBy('createdAt', 'desc');
+            };
+
+            const runSearch = async (f) => {
+                setMessage('');
+                if (f.from && f.to && f.from > f.to) { setMessage('The From date is after the To date.'); return; }
+                setSearching(true);
+                try {
+                    const list = [];
+                    const add = (doc) => {
+                        const d = doc.data({ serverTimestamps: 'estimate' });
+                        list.push({ id: doc.id, ...d, jobId: d.jobId || doc.ref.parent.parent.id });
+                    };
+                    if (SEES_ALL.includes(profile.role)) {
+                        (await dated(db.collectionGroup('notes'), f).get()).forEach(add);
+                    } else {
+                        const jobs = await db.collection('jobs').where('assignedSupers', 'array-contains', profile.uid).get();
+                        const ids = [];
+                        jobs.forEach(j => ids.push(j.id));
+                        const snaps = await Promise.all(ids.map(id => dated(db.collection('jobs').doc(id).collection('notes'), f).get()));
+                        snaps.forEach(s => s.forEach(add));
+                        list.sort((a, b) => (b.createdAt && b.createdAt.toMillis ? b.createdAt.toMillis() : 0) - (a.createdAt && a.createdAt.toMillis ? a.createdAt.toMillis() : 0));
+                    }
+                    setResults(list);
+                    setRan(f);
+                } catch (error) {
+                    // The first time a search runs, Firestore may ask for an index. Its message includes a link to send to Spencer.
+                    setMessage('Search error: ' + error.message + (/index/i.test(error.message) ? ' — Please send this message (with its link) to Spencer.' : ''));
+                    setResults(null);
+                }
+                setSearching(false);
+            };
+
+            useEffect(() => { runSearch(filters); }, []);
+
+            // Changing a date needs a new search; tag and person filter what is already loaded
+            const datesChanged = ran && (ran.from !== filters.from || ran.to !== filters.to);
+            const visible = (results || []).filter(n => n.deleted !== true || (isAdmin && showHidden));
+            const shown = applyFilters(visible, { ...filters, from: '', to: '' });
+            const hiddenCount = (results || []).filter(n => n.deleted === true).length;
+            const handleExport = () => exportNotesCsv(shown, `Notes_AllJobs_${todayStr()}.csv`, isAdmin && showHidden);
+
+            return (
+                <div className="section">
+                    <div className="row">
+                        <div className="section-title" style={{ marginBottom: 0 }}>Search all jobs</div>
+                        {isAdmin && (
+                            <label className="check">
+                                <input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />
+                                Show hidden ({hiddenCount})
+                            </label>
+                        )}
+                    </div>
+                    <p className="muted" style={{ margin: '4px 0 10px' }}>
+                        {SEES_ALL.includes(profile.role) ? 'Searches every job.' : 'Searches the jobs assigned to you.'} To add or change notes, open a job.
+                    </p>
+                    <NoteFilters tagList={tagList} people={peopleIn(results || [])} value={filters} onChange={setFilters} />
+                    <div className="filter-bar">
+                        <span className="note-actions" style={{ alignItems: 'center' }}>
+                            <button className={datesChanged ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} style={{ width: 'auto' }}
+                                onClick={() => runSearch(filters)} disabled={searching}>{searching ? 'Searching...' : 'Search'}</button>
+                            <button className="btn-secondary btn-sm" onClick={() => { setFilters(NO_FILTERS); runSearch(NO_FILTERS); }} disabled={searching}>All dates</button>
+                            {results && !searching && <span>{shown.length} note{shown.length === 1 ? '' : 's'}{datesChanged ? ' · dates changed, click Search' : ''}</span>}
+                        </span>
+                        <span className="note-actions">
+                            <button className="btn-secondary btn-sm" onClick={handleExport} disabled={shown.length === 0}>Export to Excel (CSV)</button>
+                            <button className="btn-secondary btn-sm" onClick={() => window.print()} disabled={shown.length === 0}>Print / PDF</button>
+                        </span>
+                    </div>
+                    <div className="print-only note-meta">
+                        Printed {fmtTime({ toDate: () => new Date() })}
+                        {ran && (ran.from || ran.to) ? ` · ${ran.from ? fullDay(ran.from) : 'start'} to ${ran.to ? fullDay(ran.to) : 'today'}` : ''}
+                    </div>
+                    {message && <div className="error" style={{ marginBottom: '10px' }}>{message}</div>}
+                    {searching && results === null && <p className="muted">Searching...</p>}
+                    {results && shown.length === 0 && !searching && <p className="muted">No notes match these filters.</p>}
+                    {shown.map(n => (
+                        <div key={n.jobId + '/' + n.id} className={n.deleted === true ? 'note note-hidden' : 'note'}>
+                            <div className="note-meta">
+                                <a href={'/notes/?job=' + encodeURIComponent(n.jobId)} className="job-link">{n.jobCode || 'Job'}</a>
+                                {' · '}{fmtTime(n.createdAt)} · {(n.createdBy && n.createdBy.name) || 'Unknown'}
+                                {n.editedAt && ' · edited'}
+                            </div>
+                            {n.deleted === true && <div className="note-meta">Hidden by {(n.deletedBy && n.deletedBy.name) || 'Unknown'}{n.deletedAt ? ' · ' + fmtTime(n.deletedAt) : ''}</div>}
+                            <div className="chips">{(n.tags || []).map(t => <span key={t} className="chip">{t}</span>)}</div>
+                            <div className="note-text">{n.text}</div>
+                            {n.followUpDate && (
+                                <div className="fu-line">
+                                    Follow up {fmtDay(n.followUpDate)}
+                                    {n.followUpDone === true ? ` · Done by ${(n.followUpDoneBy && n.followUpDoneBy.name) || 'Unknown'}` : ' · open'}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
         function NotesApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
@@ -840,11 +963,7 @@
                         </div>
                     </div>
 
-                    {!URL_JOB_ID && (
-                        <div className="notice">
-                            Search across all jobs is coming soon. To see one job's notes, open Customer Notes from that job on the <a href="/">Dashboard</a>.
-                        </div>
-                    )}
+                    {!URL_JOB_ID && <AllJobsSearch profile={profile} />}
 
                     {URL_JOB_ID && job === null && <div className="section">Loading job...</div>}
 
