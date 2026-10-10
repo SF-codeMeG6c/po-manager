@@ -383,6 +383,8 @@
             const settle = n(settlement);
             return { trades: live.length, missing, retail, op, tp, tax, subtotal, selling, inHouse: round2(selling - subtotal), settle, diff: round2(selling - settle) };
         };
+        // The settlement box: an amount shows as dollars and cents; anything else stays as typed
+        const moneyBox = (v) => n(v) > 0 ? money(round2(n(v))) : String(v == null ? '' : v).trim();
         // The one line shown in the Save bar
         const totalText = (t) => !(t.retail > 0) ? ''
             : !(t.settle > 0) ? `Selling price ${money(t.selling)}`
@@ -2288,7 +2290,7 @@
                         setRecord(doc.data());
                         setLines(sortLines(doc.data().lines || []));
                         setSuperPick(doc.data().supervisor || null);
-                        setSettle(doc.data().settlement || '');
+                        setSettle(moneyBox(doc.data().settlement));
                         setTaxPct(doc.data().taxPct == null ? DEFAULT_TAX_PCT : String(doc.data().taxPct));
                     } else {
                         setRecord(false);
@@ -2545,7 +2547,8 @@
                             <div className="inline" style={{ marginTop: '14px', fontSize: '13px' }}>
                                 <label>Settlement amount</label>
                                 <input className="num" style={{ width: '150px' }} value={settle} placeholder="0.00"
-                                    onChange={e => { setSettle(e.target.value); setDirty(true); setMessage(''); }} />
+                                    onChange={e => { setSettle(e.target.value); setDirty(true); setMessage(''); }}
+                                    onBlur={() => setSettle(moneyBox(settle))} />
                                 <label style={{ marginLeft: '14px' }}>Tax and fees %</label>
                                 <input className="num" style={{ width: '70px' }} value={taxPct}
                                     onChange={e => { setTaxPct(e.target.value); setDirty(true); setMessage(''); }} />
