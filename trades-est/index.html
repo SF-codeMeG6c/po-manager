@@ -823,6 +823,34 @@
         const attKey = (list) => JSON.stringify((list || []).map(a => [a.name, a.type, a.url || '']));
         const MAX_EMAIL_BYTES = 9.5 * 1024 * 1024; // Postmark limit is 10 MB total
         const millis = (ts) => { const d = toDate(ts); return d ? d.getTime() : 0; };
+
+        // ---------- PO amounts follow the worksheet ----------
+        // A PO that is not Complete takes its amount from its trade's worksheet: the vendor price, or on an Allowance trade
+        // the labor number (labor PO) or the material number (material PO). It follows only while it is the one PO of its
+        // kind on the trade and the worksheet has a price; otherwise the amount is typed by hand. Complete stops it;
+        // back to Pending starts it again.
+        const partOf = (l, r) => l.method === 'allowance' ? (r.part === 'material' ? 'material' : 'labor') : '';
+        // The amount (as text) a PO should have, or null when it does not follow
+        const followAmount = (r, lines, requests) => {
+            if (!r || r.deleted || r.status === 'Complete') return null;
+            const l = (lines || []).find(x => x.id === r.lineId && !x.deleted);
+            if (!l || !hasWorksheet(l.method)) return null;
+            const part = partOf(l, r);
+            if ((requests || []).some(x => x.id !== r.id && !x.deleted && x.lineId === r.lineId && partOf(l, x) === part)) return null;
+            const c = calcWs({ ...blankWs(), ...(l.ws || {}) }, l.method);
+            const amt = l.method === 'allowance' ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
+            return amt > 0 ? amountText(amt) : null;
+        };
+        const amountDiffers = (r, amount) => amount !== null && round2(n(amount)) !== round2(n(r.contractAmount));
+        // The record change that moves a PO's amount: what it said before is kept, like any other edit
+        const followUpdate = (r, amount, by, now) => {
+            const prev = { savedAt: r.updatedAt || r.createdAt || null, savedBy: r.updatedBy || r.createdBy || null, replacedAt: now, replacedBy: by, attachments: r.attachments || [], replacedWhy: 'amount followed the worksheet' };
+            REQ_FIELDS.forEach(k => { prev[k] = r[k] || ''; });
+            const data = { contractAmount: amount, updatedBy: by, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) };
+            // An Ask for a price amount is not on the form, so the form that was sent has not changed
+            if (r.kind === 'ask' && r.sentUpdatedAt && millis(r.updatedAt) <= millis(r.sentUpdatedAt)) data.sentUpdatedAt = now;
+            return data;
+        };
         const fmtTime = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; };
 
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
@@ -946,7 +974,11 @@
                 if ((r.status || 'Pending') === status) return;
                 try {
                     const now = new Date();
-                    await reqRef(r.id).update({ status, statusBy: me, statusAt: now, statusHistory: firebase.firestore.FieldValue.arrayUnion({ status, by: me, at: now }) });
+                    const data = { status, statusBy: me, statusAt: now, statusHistory: firebase.firestore.FieldValue.arrayUnion({ status, by: me, at: now }) };
+                    // Back to Pending: the amount follows the saved worksheet again
+                    const amount = status === 'Pending' && po && po.follow ? po.follow({ ...r, status }) : null;
+                    if (amountDiffers(r, amount)) Object.assign(data, followUpdate(r, amount, me, now));
+                    await reqRef(r.id).update(data);
                     setNote('');
                 } catch (err) { setNote('Error saving the status: ' + err.message); }
             };
@@ -1092,7 +1124,7 @@
                                     </tr>
                                     {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
                                         <tr key={i} className="gone" title={(v.scope || '') + ((v.attachments || []).length ? '\n\nAttachments: ' + v.attachments.map(a => a.name).join(', ') : '')}>
-                                            <td><span style={{ fontSize: '12px' }}>Earlier version:</span> {titleOf(v)} · {kindText(v.kind)}{v.part ? ` (${v.part})` : ''}</td>
+                                            <td><span style={{ fontSize: '12px' }}>Earlier version:</span> {titleOf(v)} · {kindText(v.kind)}{v.part ? ` (${v.part})` : ''}{v.replacedWhy ? ` · replaced when the ${v.replacedWhy}` : ''}</td>
                                             <td colSpan="2" style={{ fontSize: '12px' }}>{v.savedBy ? v.savedBy.name : ''} {fmtStamp(v.savedAt)}</td>
                                             <td style={{ fontSize: '12px' }}>Hover to read its scope</td>
                                         </tr>
@@ -1302,9 +1334,18 @@
                 setListening(true);
             };
 
+            // Does the request on screen take its amount from the worksheet? '' = yes; otherwise why it is typed by hand
+            const whyByHand = () => {
+                const status = draft.id ? ((mine.find(r => r.id === draft.id) || {}).status || 'Pending') : 'Pending';
+                if (status === 'Complete') return 'This PO is Complete, so its amount no longer follows the worksheet.';
+                const part = partOf(line, draft);
+                if (live.some(r => r.id !== draft.id && partOf(line, r) === part)) return `This trade has more than one ${part ? part + ' ' : ''}PO, so their amounts are typed by hand.`;
+                return wsAmount(draft.part) > 0 ? '' : 'The worksheet has no price yet. Once it does, this amount follows it.';
+            };
             const save = async () => {
                 const f = {};
                 REQ_FIELDS.forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
+                if (!whyByHand()) f.contractAmount = amountText(wsAmount(draft.part));
                 if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required.'); return; }
                 // The first line stays on everything going out for pricing until the handoff; a PO that is not sent has none
                 f.scope = withFirstLine(f.scope, f.kind).trim();
@@ -1351,6 +1392,7 @@
             };
             const sortedTemplates = [...(templates || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
             const wsNow = draft ? wsAmount(draft.part) : 0;
+            const byHand = draft ? whyByHand() : '';
             const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
 
             // Top of the worksheet: the title and the button that starts a request
@@ -1408,9 +1450,12 @@
                         )}
                         <div className="inline" style={{ margin: '8px 0 4px' }}>
                             <label>Amount</label>
-                            <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
+                            {byHand
+                                ? <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
+                                : <input className="num" style={{ width: '130px', background: '#f0f0f0' }} value={amountText(wsNow)} disabled title="From the worksheet" />}
                             <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : 'The sub sees this as the Contract Amount.'}</span>
-                            {wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
+                            <span style={{ fontSize: '13px', color: '#666' }}>{byHand || 'Follows the worksheet until this PO is marked Complete.'}</span>
+                            {byHand && wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
                                 <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
                                 <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
                             </>)}
@@ -2326,11 +2371,17 @@
                     const batch = db.batch();
                     batch.set(ref, data, { merge: true });
                     batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, ...totals, savedBy: by, savedAt: now });
+                    // PO amounts follow the worksheet: bring each PO that follows up to the price being saved
+                    let moved = 0;
+                    (requests || []).forEach(r => {
+                        const amount = followAmount(r, clean, requests);
+                        if (amountDiffers(r, amount)) { batch.update(ref.collection('requests').doc(r.id), followUpdate(r, amount, by, now)); moved++; }
+                    });
                     await batch.commit();
                     setRecord({ ...(record || {}), ...data });
                     setLines(clean);
                     setDirty(false);
-                    setMessage('Saved');
+                    setMessage(moved ? `Saved. ${moved} PO amount${moved === 1 ? '' : 's'} updated from the worksheet.` : 'Saved');
                 } catch (e) {
                     setMessage('Error saving: ' + e.message);
                 }
@@ -2445,7 +2496,8 @@
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
-                draftOpen, setDraftOpen
+                draftOpen, setDraftOpen,
+                follow: (r) => followAmount(r, record && record.lines, requests) // amount a PO should have from the saved worksheet, or null
             };
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
