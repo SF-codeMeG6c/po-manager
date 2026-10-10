@@ -34,6 +34,7 @@
         .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; background: white; border-top: 1px solid #ccc; box-shadow: 0 -2px 8px rgba(0,0,0,0.12); }
         .savebar-in { max-width: 1000px; margin: 0 auto; padding: 10px 30px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: #666; }
         .savebar-in .grow { flex: 1; }
+        .savebar-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
         .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
         .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -354,6 +355,69 @@
                 leftover: round2(newTotal - retail)                       // rounding leftover at the new prices
             };
         }
+
+        // ---------- Running total for the job: what the customer pays over or under the settlement ----------
+        //   retail of all trades + overhead and profit (20% of retail) + tax and fees (a percent of retail) = subtotal
+        //   selling price = subtotal / 0.865, so in-house labor is 13.5% of the selling price (as in the GPM tool)
+        const OP_PCT = 0.20;
+        const IN_HOUSE_LABOR_PCT = 0.135;
+        const DEFAULT_TAX_PCT = '1.3';
+        // Retail one trade adds: Retail needed (Quote, Calculator), the Xactimate total (Factor),
+        // the Xactimate total + scratch pad retail (Allowance). null = nothing yet. A trade counts with or without a PO.
+        const tradeRetail = (l) => {
+            if (!hasWorksheet(l.method)) return null;
+            const c = calcWs({ ...blankWs(), ...(l.ws || {}) }, l.method);
+            const r = l.method === 'allowance' ? c.retailBase : l.method === 'factor' ? c.xactTotal : c.retail;
+            return r > 0 ? r : null;
+        };
+        const runningTotal = (lines, settlement, taxPct) => {
+            const live = (lines || []).filter(l => !l.deleted);
+            const each = live.map(l => ({ code: (l.code || '').trim() || (l.name || '').trim(), retail: tradeRetail(l) }));
+            const missing = each.filter(t => t.retail === null).map(t => t.code);
+            const retail = round2(each.reduce((t, x) => t + (x.retail || 0), 0));
+            const tp = Math.max(0, n(taxPct));
+            const op = round2(retail * OP_PCT);
+            const tax = round2(retail * tp / 100);
+            const subtotal = round2(retail + op + tax);
+            const selling = round2(subtotal / (1 - IN_HOUSE_LABOR_PCT));
+            const settle = n(settlement);
+            return { trades: live.length, missing, retail, op, tp, tax, subtotal, selling, inHouse: round2(selling - subtotal), settle, diff: round2(selling - settle) };
+        };
+        // The one line shown in the Save bar
+        const totalText = (t) => !(t.retail > 0) ? ''
+            : !(t.settle > 0) ? `Selling price ${money(t.selling)}`
+            : t.diff > 0 ? `Customer pays ${money(t.diff)} over the settlement`
+            : t.diff < 0 ? `Customer pays ${money(-t.diff)} under the settlement`
+            : 'Selling price equals the settlement';
+
+        // Pop-up with the lines behind the running total
+        function Breakdown({ t, onClose }) {
+            const row = (label, value, bold) => <tr className={bold ? 'sum' : ''}><td>{label}</td><td className="money">{value}</td></tr>;
+            return (
+                <div className="calc-back" onClick={onClose}>
+                    <div className="calc" style={{ width: '460px', maxWidth: '94%' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ fontWeight: 700, marginBottom: '8px' }}>Running total</div>
+                        <table>
+                            <tbody>
+                                {row(`Retail of all trades (${t.trades - t.missing.length} of ${t.trades})`, money(t.retail))}
+                                {row('Overhead and profit, 20% of retail', money(t.op))}
+                                {row(`Tax and fees, ${t.tp}% of retail`, money(t.tax))}
+                                {row('Subtotal', money(t.subtotal), true)}
+                                {row('Selling price (subtotal divided by 0.865)', money(t.selling), true)}
+                                {row('In-house labor inside the selling price (13.5%)', money(t.inHouse))}
+                                {row('Settlement', t.settle > 0 ? money(t.settle) : 'not entered')}
+                                {t.settle > 0 && row('Customer pays', t.diff === 0 ? 'the settlement' : `${money(Math.abs(t.diff))} ${t.diff > 0 ? 'over' : 'under'}`, true)}
+                            </tbody>
+                        </table>
+                        {t.missing.length > 0 && (
+                            <div className="muted">{t.missing.length} {t.missing.length === 1 ? 'trade has' : 'trades have'} no retail yet and {t.missing.length === 1 ? 'is' : 'are'} not in the total: {t.missing.join(', ')}</div>
+                        )}
+                        <button className="btn-secondary" style={{ width: '100%', marginTop: '12px' }} onClick={onClose}>Close</button>
+                    </div>
+                </div>
+            );
+        }
+
         const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
         // Xactimate categories a trade code starts with on the picker: "INS" -> INS, "FNC/DOR #2" -> FNC and DOR, "PNT-DEO" -> PNT
@@ -2089,6 +2153,9 @@
             const [supers, setSupers] = useState(null);       // company-wide Supervisor list (the one PO Manager keeps): null = loading
             const [supersError, setSupersError] = useState('');
             const [superPick, setSuperPick] = useState(null); // this job's supervisor: { id, name, phone, email } or null
+            const [settle, setSettle] = useState('');          // this job's settlement amount, typed, for the running total
+            const [taxPct, setTaxPct] = useState(DEFAULT_TAX_PCT); // this job's tax and fees percent, for the running total
+            const [showTotal, setShowTotal] = useState(false); // running total pop-up
             const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
             const [requestsError, setRequestsError] = useState('');
             const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
@@ -2213,12 +2280,16 @@
                 setLines(null);
                 setDirty(false);
                 setSuperPick(null);
+                setSettle('');
+                setTaxPct(DEFAULT_TAX_PCT);
                 if (!profile || !jobId || !startReady) return;
                 db.collection('tradesEst').doc(jobId).get().then(doc => {
                     if (doc.exists) {
                         setRecord(doc.data());
                         setLines(sortLines(doc.data().lines || []));
                         setSuperPick(doc.data().supervisor || null);
+                        setSettle(doc.data().settlement || '');
+                        setTaxPct(doc.data().taxPct == null ? DEFAULT_TAX_PCT : String(doc.data().taxPct));
                     } else {
                         setRecord(false);
                         setLines(copyStart(startRef.current || []));
@@ -2247,11 +2318,12 @@
                     const by = { uid: user.uid, name: profile.name || user.email };
                     const now = new Date();
                     const clean = cleanLines(lines);
-                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, updatedBy: by, updatedAt: now };
+                    const totals = { settlement: settle.trim(), taxPct: taxPct.trim() };
+                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, ...totals, updatedBy: by, updatedAt: now };
                     const ref = db.collection('tradesEst').doc(jobId);
                     const batch = db.batch();
                     batch.set(ref, data, { merge: true });
-                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, savedBy: by, savedAt: now });
+                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, ...totals, savedBy: by, savedAt: now });
                     await batch.commit();
                     setRecord({ ...(record || {}), ...data });
                     setLines(clean);
@@ -2383,14 +2455,25 @@
             // Save bar, pinned to the bottom of the window: the job's Save, or the start list's Save and Close while it is being edited.
             // The blank strip above it keeps the end of the page from sitting under the bar.
             const barFor = editingStart && startEdit ? 'start' : (!editingStart && lines ? 'job' : '');
+            // Running total for the job on screen: follows the worksheets as they are typed, before saving
+            const total = barFor === 'job' ? runningTotal(lines, settle, taxPct) : null;
             const saveBar = barFor && (<>
-                <div style={{ height: '64px' }}></div>
+                <div style={{ height: '110px' }}></div>
                 <div className="savebar">
                     <div className="savebar-in">
-                        <span>{barFor === 'start' ? startText : (record === null ? 'Loading...' : savedText)}</span>
-                        {(barFor === 'start' ? startDirty : dirty) && <span className="unsaved">Unsaved changes</span>}
-                        {message && <span style={{ fontWeight: 600, color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</span>}
+                        <div className="savebar-left">
+                            <span>{barFor === 'start' ? startText : (record === null ? 'Loading...' : savedText)}</span>
+                            {((barFor === 'start' ? startDirty : dirty) || message) && (
+                                <span>
+                                    {(barFor === 'start' ? startDirty : dirty) && <span className="unsaved">Unsaved changes</span>}
+                                    {(barFor === 'start' ? startDirty : dirty) && message && ' | '}
+                                    {message && <span style={{ fontWeight: 600, color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</span>}
+                                </span>
+                            )}
+                        </div>
                         <span className="grow"></span>
+                        {total && totalText(total) && <span style={{ fontWeight: 700, fontSize: '14px', color: total.settle > 0 && total.diff > 0 ? '#cc6600' : '#333' }}>{totalText(total)}</span>}
+                        {total && <button className="btn-secondary btn-sm" onClick={() => setShowTotal(true)}>Breakdown</button>}
                         {barFor === 'start' && (
                             <button className="btn-secondary" onClick={closeStart} disabled={saving}>{jobId ? 'Close start list and go back to the job' : 'Close start list'}</button>
                         )}
@@ -2458,6 +2541,17 @@
                                 {supersError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{supersError}</div>}
                             </div>
                         )}
+                        {jobId && lines && !editingStart && (
+                            <div className="inline" style={{ marginTop: '14px', fontSize: '13px' }}>
+                                <label>Settlement amount</label>
+                                <input className="num" style={{ width: '150px' }} value={settle} placeholder="0.00"
+                                    onChange={e => { setSettle(e.target.value); setDirty(true); setMessage(''); }} />
+                                <label style={{ marginLeft: '14px' }}>Tax and fees %</label>
+                                <input className="num" style={{ width: '70px' }} value={taxPct}
+                                    onChange={e => { setTaxPct(e.target.value); setDirty(true); setMessage(''); }} />
+                                <span style={{ color: '#666' }}>For the running total in the bar at the bottom. Saved with the job.</span>
+                            </div>
+                        )}
                         {jobId && <div className="muted">{record === null ? 'Loading...' : savedText}{dirty && <span className="unsaved"> | Unsaved changes</span>}</div>}
                     </div>
 
@@ -2491,6 +2585,7 @@
 
                     {!editingStart && !lines && msg}
                     {saveBar}
+                    {showTotal && total && <Breakdown t={total} onClose={() => setShowTotal(false)} />}
                 </div>
             );
         }
