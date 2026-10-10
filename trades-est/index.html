@@ -90,7 +90,8 @@
 <body>
     <div class="container">
         <a class="back" href="/">← Dashboard</a>
-        <h1 style="margin-bottom: 24px">Trades-EST</h1>
+        <h1>Trades-EST</h1>
+        <p class="subtitle">Freeman Restoration trade pricing</p>
         <div id="app"></div>
     </div>
 
@@ -2213,9 +2214,9 @@
             const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
             const [requestsError, setRequestsError] = useState('');
             const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
-            const [myPhone, setMyPhone] = useState(null);     // the signed-in person's saved phone (userContacts/{uid}): null = loading
-            const [phoneInput, setPhoneInput] = useState('');
-            const [phoneNote, setPhoneNote] = useState('');
+            const [estimators, setEstimators] = useState(null); // people who can be a job's estimator: null = loading
+            const [estimatorsError, setEstimatorsError] = useState('');
+            const [estPick, setEstPick] = useState(null);     // this job's estimator: { uid, name, email, phone } or null
             const [jump, setJump] = useState(null);           // Edit on a PO: { lineId, requestId } to open in that trade's worksheet
             const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
 
@@ -2280,29 +2281,21 @@
                 }, e => { setSupers([]); setSupersError('Error loading the Supervisor list: ' + e.message); });
             }, [profile]);
 
-            // The signed-in person's own phone, typed once. It will go on the quote request emails they send.
+            // Who can be a job's estimator: active Owner, Admin and Estimator users, read only here.
+            // Their phone numbers are typed on the Users screen in PO Manager.
             useEffect(() => {
-                if (!profile || !user) return;
-                return db.collection('userContacts').doc(user.uid).onSnapshot(doc => {
-                    const p = doc.exists ? (doc.data().phone || '') : '';
-                    setMyPhone(p);
-                    setPhoneInput(p);
-                }, e => { setMyPhone(''); setPhoneNote('Error loading your phone: ' + e.message); });
+                if (!profile) return;
+                return db.collection('users').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (d.active === true && ALLOWED.includes(d.role)) list.push({ uid: doc.id, name: d.name || d.email || '', email: d.email || '', phone: d.phone || '' });
+                    });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setEstimators(list);
+                    setEstimatorsError('');
+                }, e => { setEstimators([]); setEstimatorsError('Error loading the estimator list: ' + e.message); });
             }, [profile]);
-            const savePhone = async () => {
-                const phone = phoneInput.trim();
-                setPhoneNote('');
-                try {
-                    const now = new Date();
-                    const data = { phone, name: profile.name || user.email || '', email: user.email || '', updatedAt: now };
-                    // A number being replaced is kept in the record
-                    if (myPhone) data.history = firebase.firestore.FieldValue.arrayUnion({ phone: myPhone, replacedAt: now });
-                    await db.collection('userContacts').doc(user.uid).set(data, { merge: true });
-                    setPhoneNote(phone ? 'Phone saved' : 'Phone removed');
-                } catch (e) {
-                    setPhoneNote('Error saving your phone: ' + e.message);
-                }
-            };
 
             // PO Manager's templates, for filling in a request's vendor
             useEffect(() => {
@@ -2334,6 +2327,7 @@
                 setLines(null);
                 setDirty(false);
                 setSuperPick(null);
+                setEstPick(null);
                 setSettle('');
                 setTaxPct(DEFAULT_TAX_PCT);
                 if (!profile || !jobId || !startReady) return;
@@ -2342,6 +2336,7 @@
                         setRecord(doc.data());
                         setLines(sortLines(doc.data().lines || []));
                         setSuperPick(doc.data().supervisor || null);
+                        setEstPick(doc.data().estimator || null);
                         setSettle(moneyBox(doc.data().settlement));
                         setTaxPct(doc.data().taxPct == null ? DEFAULT_TAX_PCT : String(doc.data().taxPct));
                     } else {
@@ -2362,6 +2357,8 @@
                 }
             };
 
+            // The job's estimator as the Users screen has them now (a phone typed there since the pick shows up here)
+            const estNow = estPick ? ((estimators || []).find(e => e.uid === estPick.uid) || estPick) : null;
             // Save the job's trade list. Every save also keeps a copy in history (versions).
             const save = async () => {
                 const job = jobs.find(j => j.id === jobId);
@@ -2373,11 +2370,12 @@
                     const now = new Date();
                     const clean = cleanLines(lines);
                     const totals = { settlement: settle.trim(), taxPct: taxPct.trim() };
-                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, ...totals, updatedBy: by, updatedAt: now };
+                    const estimator = estNow ? { uid: estNow.uid, name: estNow.name, email: estNow.email, phone: estNow.phone } : null;
+                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, estimator, ...totals, updatedBy: by, updatedAt: now };
                     const ref = db.collection('tradesEst').doc(jobId);
                     const batch = db.batch();
                     batch.set(ref, data, { merge: true });
-                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, ...totals, savedBy: by, savedAt: now });
+                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, estimator, ...totals, savedBy: by, savedAt: now });
                     // PO amounts follow the worksheet: bring each PO that follows up to the price being saved
                     let moved = 0;
                     (requests || []).forEach(r => {
@@ -2548,17 +2546,7 @@
             return (
                 <div>
                     <div className="row">
-                        <div>
-                            <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
-                            <div className="inline" style={{ marginTop: '6px', fontSize: '13px' }}>
-                                <label>My phone</label>
-                                <input style={{ width: '160px' }} value={phoneInput} disabled={myPhone === null} placeholder="For quote request emails"
-                                    onChange={e => { setPhoneInput(e.target.value); setPhoneNote(''); }}
-                                    onKeyDown={e => { if (e.key === 'Enter' && myPhone !== null && phoneInput.trim() !== myPhone) savePhone(); }} />
-                                <button className="btn-secondary btn-sm" onClick={savePhone} disabled={myPhone === null || phoneInput.trim() === myPhone}>Save</button>
-                                {phoneNote && <span style={{ fontWeight: 600, color: phoneNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{phoneNote}</span>}
-                            </div>
-                        </div>
+                        <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
                     </div>
 
                     <div className="section">
@@ -2579,7 +2567,8 @@
                             Show archived jobs
                         </label>
                         {jobId && lines && !editingStart && (
-                            <div className="form-group" style={{ marginTop: '14px', marginBottom: 0 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '14px' }}>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
                                 <label>Supervisor for this job</label>
                                 <select value={superPick ? superPick.id : ''} disabled={supers === null} onChange={e => {
                                     const s = (supers || []).find(x => x.id === e.target.value);
@@ -2592,6 +2581,21 @@
                                 </select>
                                 {superPick && <div className="muted" style={{ marginTop: '4px' }}>{[superPick.phone, superPick.email].filter(Boolean).join(' | ') || 'No phone or email on the Supervisor list for this name.'}</div>}
                                 {supersError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{supersError}</div>}
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label>Estimator for this job</label>
+                                <select value={estPick ? estPick.uid : ''} disabled={estimators === null} onChange={e => {
+                                    const p = (estimators || []).find(x => x.uid === e.target.value);
+                                    setEstPick(p ? { uid: p.uid, name: p.name, email: p.email, phone: p.phone } : null);
+                                    setDirty(true); setMessage('');
+                                }}>
+                                    <option value="">{estimators === null ? 'Loading...' : '-- No estimator picked --'}</option>
+                                    {estPick && !(estimators || []).some(p => p.uid === estPick.uid) && <option value={estPick.uid}>{estPick.name} (no longer on the list)</option>}
+                                    {(estimators || []).map(p => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+                                </select>
+                                {estNow && <div className="muted" style={{ marginTop: '4px' }}>{[estNow.phone || 'No phone yet (add it on the Users screen in PO Manager)', estNow.email].filter(Boolean).join(' | ')}</div>}
+                                {estimatorsError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{estimatorsError}</div>}
+                            </div>
                             </div>
                         )}
                         {jobId && lines && !editingStart && (
