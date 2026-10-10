@@ -134,7 +134,7 @@
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
             const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
             const [usersList, setUsersList] = useState([]);
-            const [userEdits, setUserEdits] = useState({}); // uid -> { role, active } not yet saved
+            const [userEdits, setUserEdits] = useState({}); // uid -> { role, active, phone } not yet saved
             const [supersList, setSupersList] = useState([]); // active users with the Super role
             const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
             const [secretInput, setSecretInput] = useState('');
@@ -314,8 +314,15 @@ I prefer plain, brief instructions, one step at a time.`;
                 const edit = userEdits[u.id] || {};
                 const role = edit.role !== undefined ? edit.role : u.role;
                 const active = edit.active !== undefined ? edit.active : u.active === true;
+                const phone = edit.phone !== undefined ? edit.phone.trim() : (u.phone || '');
                 try {
-                    await db.collection('users').doc(u.id).update({ role, active, updatedAt: new Date() });
+                    const now = new Date();
+                    const data = { role, active, phone, updatedAt: now };
+                    // A phone number being replaced is kept in the record
+                    if (u.phone && phone !== u.phone) {
+                        data.phoneHistory = firebase.firestore.FieldValue.arrayUnion({ phone: u.phone, replacedAt: now, replacedBy: { uid: user.uid, name: (profile && profile.name) || user.email } });
+                    }
+                    await db.collection('users').doc(u.id).update(data);
                     setUserEdits(prev => { const next = { ...prev }; delete next[u.id]; return next; });
                     setMessage(`Saved ${u.name || u.email}: ${role}${active ? '' : ' (inactive)'}`);
                 } catch (error) {
@@ -942,6 +949,7 @@ I prefer plain, brief instructions, one step at a time.`;
                                     <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
                                         <th style={{ padding: '6px' }}>Name</th>
                                         <th style={{ padding: '6px' }}>Email</th>
+                                        <th style={{ padding: '6px' }}>Phone</th>
                                         <th style={{ padding: '6px' }}>Role</th>
                                         <th style={{ padding: '6px' }}>Active</th>
                                         <th style={{ padding: '6px' }}></th>
@@ -953,7 +961,8 @@ I prefer plain, brief instructions, one step at a time.`;
                                         const edit = userEdits[u.id] || {};
                                         const role = edit.role !== undefined ? edit.role : u.role;
                                         const active = edit.active !== undefined ? edit.active : u.active === true;
-                                        const changed = edit.role !== undefined || edit.active !== undefined;
+                                        const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
+                                        const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
                                         return (
                                             <tr key={u.id} style={{ borderBottom: '1px solid #eee', background: u.role === 'pending' ? '#fff7e6' : 'transparent' }}>
                                                 <td style={{ padding: '6px' }}>
@@ -961,6 +970,10 @@ I prefer plain, brief instructions, one step at a time.`;
                                                     {u.role === 'pending' && <div style={{ fontSize: '11px', color: '#cc6600' }}>Waiting for access</div>}
                                                 </td>
                                                 <td style={{ padding: '6px' }}>{u.email}</td>
+                                                <td style={{ padding: '6px' }}>
+                                                    <input value={phone} placeholder="Phone" style={{ width: '140px', marginBottom: 0 }}
+                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], phone: e.target.value } }))} />
+                                                </td>
                                                 <td style={{ padding: '6px' }}>
                                                     <select value={role} disabled={isMe}
                                                         onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
@@ -977,10 +990,8 @@ I prefer plain, brief instructions, one step at a time.`;
                                                         onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
                                                 </td>
                                                 <td style={{ padding: '6px' }}>
-                                                    {!isMe && (
-                                                        <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
-                                                            disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
-                                                    )}
+                                                    <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
+                                                        disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
                                                 </td>
                                             </tr>
                                         );
