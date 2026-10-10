@@ -26,6 +26,10 @@
         .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
+        /* Blue: the buttons that start something in a worksheet */
+        .btn-blue { background: #0066cc; color: white; }
+        .btn-blue:hover { background: #0052a3; }
+        .btn-blue:disabled { background: #ccc; cursor: not-allowed; }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
         .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
         .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -1082,8 +1086,9 @@
             );
         }
 
-        // The quote requests for one trade, at the bottom of its worksheet
-        function Requests({ line, ws, c, po }) {
+        // The quote requests for one trade. The title and "+ New request" button show at the top of its worksheet
+        // (headSlot); the edit box opens further down, under the Xactimate lines.
+        function Requests({ line, ws, c, po, headSlot }) {
             const { jobId, jobCode, me, requests, requestsError, templates, savedIds } = po;
             const act = useRequestActions(po);            // this section only needs its message line and the request records
             const { note, setNote, reqRef } = act;
@@ -1126,16 +1131,14 @@
             const pickKind = (kind) => setDraft(d => ({ ...d, kind, scope: withFirstLine(d.scope, kind) }));
             // Tell the page a request is open here, so the tracker holds its Edit, Delete and Send until it is saved or cancelled
             useEffect(() => { po.setDraftOpen(!!draft); return () => po.setDraftOpen(false); }, [!!draft]);
-            // "+ PO" on the trade row, or Edit on one of its POs: this trade's worksheet was opened for it,
-            // so start the new request, or start editing that one, and bring the edit box into view
+            // Bring the edit box into view (it opens under the Xactimate lines)
+            const toEditor = () => setTimeout(() => { const el = document.getElementById('req-editor'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
+            // Edit on one of this trade's POs: its worksheet was opened for it, so start editing that one
             useEffect(() => {
                 const j = po.jump;
                 if (!j || j.lineId !== line.id || requests === null) return;
-                const r = j.isNew ? null : requests.find(x => x.id === j.requestId && !x.deleted);
-                if (j.isNew ? saved : !!r) {
-                    if (j.isNew) startNew(); else startEdit(r);
-                    setTimeout(() => { const el = document.getElementById('req-editor'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
-                }
+                const r = requests.find(x => x.id === j.requestId && !x.deleted);
+                if (r) { startEdit(r); toEditor(); }
                 po.clearJump();
             }, [po.jump, requests === null]);
             const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
@@ -1280,17 +1283,20 @@
             const wsNow = draft ? wsAmount(draft.part) : 0;
             const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
 
-            return (<>
-                <div className="sub-title">Quote requests</div>
+            // Top of the worksheet: the title and the button that starts a request
+            const head = (<>
+                <div className="sub-title" style={{ marginTop: 0 }}>Quote requests</div>
                 {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
-                {!draft && (
-                    <div className="inline" style={{ fontSize: '13px' }}>
-                        <button className="btn-secondary btn-sm" onClick={startNew} disabled={!saved || requests === null || busy}>+ New request</button>
-                        {!saved && <span style={{ color: '#666' }}>Click Save at the bottom of the page first. A request can only be added to a trade that is in the saved trade list.</span>}
-                        {saved && <span style={{ color: '#666' }}>{live.length ? `This trade's ${live.length === 1 ? 'PO is' : live.length + ' POs are'} listed under its row, above this worksheet.` : 'No POs on this trade yet.'}</span>}
-                    </div>
-                )}
+                <div className="inline" style={{ fontSize: '13px' }}>
+                    <button className="btn-blue btn-sm" onClick={() => { startNew(); toEditor(); }} disabled={!saved || requests === null || busy || !!draft}>+ New request</button>
+                    {draft && <span style={{ color: '#666' }}>A request is open below, under the Xactimate lines.</span>}
+                    {!draft && !saved && <span style={{ color: '#666' }}>Click Save at the bottom of the page first. A request can only be added to a trade that is in the saved trade list.</span>}
+                    {!draft && saved && <span style={{ color: '#666' }}>{live.length ? `This trade's ${live.length === 1 ? 'PO is' : live.length + ' POs are'} listed under its row, above this worksheet.` : 'No POs on this trade yet.'}</span>}
+                </div>
+            </>);
 
+            return (<>
+                {headSlot && ReactDOM.createPortal(head, headSlot)}
                 {draft && (
                     <div className="req" id="req-editor">
                         <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
@@ -1406,6 +1412,7 @@
             const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
             const [itemNote, setItemNote] = useState('');  // result of saving the price list to the start list
             const [splitNote, setSplitNote] = useState(''); // result of saving the starting split to the start list
+            const [reqHead, setReqHead] = useState(null);   // spot at the top of the worksheet for the Quote requests title and button
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const isFactor = line.method === 'factor';
             const isAllow = line.method === 'allowance';
@@ -1573,7 +1580,7 @@
                             <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
+                    <button className="btn-blue btn-sm" style={{ marginTop: '6px' }}
                         onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
             </>);
 
@@ -1676,19 +1683,10 @@
                             <tr><td colSpan="2" style={{ fontWeight: 700 }}>Labor + material</td><td colSpan="2" className="money" style={{ fontWeight: 700 }}>{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
+                    <button className="btn-blue btn-sm" style={{ marginTop: '6px' }}
                         onClick={() => set('apad', [...ws.apad, { id: newId(), note: '', retail: '', factor: own(ws.defSf) ? ws.defSf : DEFAULT_SPLIT, labor: own(ws.defSl) ? ws.defSl : DEFAULT_LABOR_PCT }])}>+ Add scratch pad line</button>
                     {startItems && <button className="btn-secondary btn-sm" style={{ marginTop: '6px', marginLeft: '8px' }} title="Make the Other lines starting numbers the start for this trade on every new job" onClick={saveSplit}>Save starting split to start list</button>}
                     {splitNote && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: splitNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{splitNote}</div>}
-            </>);
-
-            const retailBlock = (<>
-                    <div className="sub-title">Retail needed</div>
-                    <div className="inline">
-                        <label>Vendor price divided by</label>
-                        <input className="num" style={{ width: '80px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
-                        <span>= <strong>{money(c.retail)}</strong> retail needed in Xactimate</span>
-                    </div>
             </>);
 
             // Baseboard reminder: finish carpentry baseboard lines that carry labor and material together.
@@ -1732,14 +1730,14 @@
             const xactBlock = (<>
                     <div className="sub-title">Xactimate lines</div>
                     <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
-                        <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333' }}>
+                        <label className="btn-blue btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#fff' }}>
                             {busy ? 'Reading...' : 'Upload Work Order'}
                             <input type="file" accept="application/pdf" onChange={upload} disabled={busy} style={{ display: 'none' }} />
                         </label>
                         <span style={{ color: '#666' }}>
                             {ws.wo
                                 ? `From the Work Order dated ${ws.wo.date}${ws.wo.estimate ? ' (' + ws.wo.estimate + ')' : ''}, ${(ws.wo.cats || []).join(' + ')}, uploaded by ${ws.wo.uploadedBy ? ws.wo.uploadedBy.name : ''} on ${fmtStamp(ws.wo.uploadedAt)}`
-                                : 'No Work Order uploaded for this trade yet. Upload one, or add lines by hand.'}
+                                : 'No Work Order uploaded for this trade yet.'}
                         </span>
                     </div>
                     {note && <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
@@ -1791,16 +1789,16 @@
                             </tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
             </>);
 
             // Quote requests for this trade (their own records; the worksheet numbers above are only where they start from)
-            const requestsBlock = po && <Requests line={line} ws={ws} c={c} po={po} />;
+            const requestsBlock = po && <Requests line={line} ws={ws} c={c} po={po} headSlot={reqHead} />;
+            const headSlot = po && <div ref={setReqHead} />;
 
             if (isAllow) {
                 return (
                     <div className="ws">
+                        {headSlot}
                         {allowBlock}
                         {calcBlock}
                         {xactBlock}
@@ -1823,6 +1821,7 @@
             if (isFactor) {
                 return (
                     <div className="ws">
+                        {headSlot}
                         {vendorBlock}
                         {calcBlock}
                         {xactBlock}
@@ -1841,17 +1840,26 @@
 
             return (
                 <div className="ws">
+                    {headSlot}
                     {itemsBlock}
                     {vendorBlock}
                     {calcBlock}
-                    {retailBlock}
                     {xactBlock}
                     {requestsBlock}
                     <div className="sub-title">Comparison</div>
                     <table style={{ maxWidth: '520px' }}>
                         <tbody>
                             <tr><td>Vendor price</td><td className="money">{money(c.vendorPrice)}</td></tr>
-                            <tr><td>Retail needed</td><td className="money">{money(c.retail)}</td></tr>
+                            <tr>
+                                <td>
+                                    <div className="inline" style={{ fontSize: '13px' }}>
+                                        <span>Retail needed</span>
+                                        <span style={{ color: '#666' }}>vendor price divided by</span>
+                                        <input className="num" style={{ width: '70px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
+                                    </div>
+                                </td>
+                                <td className="money">{money(c.retail)}</td>
+                            </tr>
                             <tr><td>Xactimate total now</td><td className="money">{money(c.xactTotal)}</td></tr>
                             <tr><td>Difference</td><td className="money">{ready ? overShort(c.diff) : '-'}</td></tr>
                             <tr><td>Margin now</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
@@ -1894,7 +1902,7 @@
         function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
-            // Edit clicked on a PO, or "+ PO" on a trade: open that trade's worksheet
+            // Edit clicked on a PO: open that trade's worksheet
             const jump = po ? po.jump : null;
             useEffect(() => { if (jump) setOpenId(jump.lineId); }, [jump]);
             // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
@@ -1918,11 +1926,6 @@
             const countOf = (kinds) => live.filter(l => statusOf[l.id] && kinds.includes(statusOf[l.id].kind)).length;
             const orphans = liveReqs.filter(r => !live.some(l => l.id === r.lineId));
             const doneReqs = liveReqs.filter(r => r.status === 'Complete').length;
-            // "+ PO": open the trade's worksheet with a new request started
-            const whyNoPO = (l) => !hasWorksheet(l.method) ? 'Pick a Method on this trade first.'
-                : !po.savedIds.has(l.id) ? 'Click Save at the bottom of the page first.'
-                : po.requests === null ? 'Loading...'
-                : po.draftOpen ? 'Save or cancel the request that is open first.' : '';
             // With the filter on: trades not started (or not saved yet), plus the one that is open so it never vanishes mid-edit
             const shown = tags && todoOnly ? live.filter(l => ['todo', 'unsaved'].includes(statusOf[l.id].kind) || l.id === openId) : live;
             const cols = tags ? 6 : 5;
@@ -1991,7 +1994,6 @@
                                                     {openId === l.id ? 'Close' : 'Open'}
                                                 </button>
                                             )}
-                                            {tags && <>{' '}<button className="btn-secondary btn-sm" title={whyNoPO(l) || 'Start a new PO on this trade'} disabled={!!whyNoPO(l)} onClick={() => po.newRequest(l)}>+ PO</button></>}
                                             {!worksheets && l.method === 'calculator' && (
                                                 <button className="btn-secondary btn-sm" title="Items and prices for this trade" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Items'}
@@ -2089,7 +2091,7 @@
             const [myPhone, setMyPhone] = useState(null);     // the signed-in person's saved phone (userContacts/{uid}): null = loading
             const [phoneInput, setPhoneInput] = useState('');
             const [phoneNote, setPhoneNote] = useState('');
-            const [jump, setJump] = useState(null);           // Edit on a PO, or "+ PO" on a trade: { lineId, requestId | isNew } to open in that trade's worksheet
+            const [jump, setJump] = useState(null);           // Edit on a PO: { lineId, requestId } to open in that trade's worksheet
             const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
 
             // Sign-in and role check (this page never creates user records)
@@ -2365,7 +2367,6 @@
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
-                newRequest: (l) => setJump({ lineId: l.id, isNew: true }),
                 draftOpen, setDraftOpen
             };
             const savedText = record && record.updatedAt
