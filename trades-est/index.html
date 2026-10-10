@@ -30,6 +30,10 @@
         .btn-blue { background: #0066cc; color: white; }
         .btn-blue:hover { background: #0052a3; }
         .btn-blue:disabled { background: #ccc; cursor: not-allowed; }
+        /* Save bar: stays at the bottom of the window (under the pop-up windows) */
+        .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; background: white; border-top: 1px solid #ccc; box-shadow: 0 -2px 8px rgba(0,0,0,0.12); }
+        .savebar-in { max-width: 1000px; margin: 0 auto; padding: 10px 30px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: #666; }
+        .savebar-in .grow { flex: 1; }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
         .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
         .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -1290,7 +1294,7 @@
                 <div className="inline" style={{ fontSize: '13px' }}>
                     <button className="btn-blue btn-sm" onClick={() => { startNew(); toEditor(); }} disabled={!saved || requests === null || busy || !!draft}>+ New request</button>
                     {draft && <span style={{ color: '#666' }}>A request is open below, under the Xactimate lines.</span>}
-                    {!draft && !saved && <span style={{ color: '#666' }}>Click Save at the bottom of the page first. A request can only be added to a trade that is in the saved trade list.</span>}
+                    {!draft && !saved && <span style={{ color: '#666' }}>Click Save first. A request can only be added to a trade that is in the saved trade list.</span>}
                     {!draft && saved && <span style={{ color: '#666' }}>{live.length ? `This trade's ${live.length === 1 ? 'PO is' : live.length + ' POs are'} listed under its row, above this worksheet.` : 'No POs on this trade yet.'}</span>}
                 </div>
             </>);
@@ -2376,6 +2380,26 @@
                 ? `Last saved by ${startRec.updatedBy ? startRec.updatedBy.name : ''} on ${fmtStamp(startRec.updatedAt)}`
                 : 'Built-in list. Not changed yet.';
             const msg = message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>;
+            // Save bar, pinned to the bottom of the window: the job's Save, or the start list's Save and Close while it is being edited.
+            // The blank strip above it keeps the end of the page from sitting under the bar.
+            const barFor = editingStart && startEdit ? 'start' : (!editingStart && lines ? 'job' : '');
+            const saveBar = barFor && (<>
+                <div style={{ height: '64px' }}></div>
+                <div className="savebar">
+                    <div className="savebar-in">
+                        <span>{barFor === 'start' ? startText : (record === null ? 'Loading...' : savedText)}</span>
+                        {(barFor === 'start' ? startDirty : dirty) && <span className="unsaved">Unsaved changes</span>}
+                        {message && <span style={{ fontWeight: 600, color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</span>}
+                        <span className="grow"></span>
+                        {barFor === 'start' && (
+                            <button className="btn-secondary" onClick={closeStart} disabled={saving}>{jobId ? 'Close start list and go back to the job' : 'Close start list'}</button>
+                        )}
+                        <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '10px 28px' }} onClick={barFor === 'start' ? saveStart : save} disabled={saving}>
+                            {saving ? 'Saving...' : barFor === 'start' ? 'Save start list' : 'Save'}
+                        </button>
+                    </div>
+                </div>
+            </>);
 
             return (
                 <div>
@@ -2446,11 +2470,6 @@
                             <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>{startText}{startDirty && <span className="unsaved"> | Unsaved changes</span>}</div>
                             <LineTable lines={startEdit} me={me} canRestore={canRestore} worksheets={false}
                                 onChange={next => { setStartEdit(next); setStartDirty(true); setMessage(''); }} />
-                            <button className="btn-primary" onClick={saveStart} disabled={saving}>{saving ? 'Saving...' : 'Save start list'}</button>
-                            <button className="btn-secondary" style={{ width: '100%', marginTop: '8px' }} onClick={closeStart} disabled={saving}>
-                                {jobId ? 'Close start list and go back to the job' : 'Close start list'}
-                            </button>
-                            {msg}
                         </div>
                     )}
 
@@ -2467,12 +2486,11 @@
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
                             <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
-                            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                            {msg}
                         </div>
                     )}
 
                     {!editingStart && !lines && msg}
+                    {saveBar}
                 </div>
             );
         }
