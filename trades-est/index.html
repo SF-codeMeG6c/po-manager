@@ -90,8 +90,7 @@
 <body>
     <div class="container">
         <a class="back" href="/">← Dashboard</a>
-        <h1>Trades-EST</h1>
-        <p class="subtitle">Freeman Restoration trade pricing: vendor price, retail needed, Xactimate comparison</p>
+        <h1 style="margin-bottom: 24px">Trades-EST</h1>
         <div id="app"></div>
     </div>
 
@@ -1524,6 +1523,7 @@
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad box the calculator is open for: { list, id, field }
+            const [calcOpen, setCalcOpen] = useState(false); // plain calculator from the worksheet's Calculator button
             const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
             const [itemNote, setItemNote] = useState('');  // result of saving the price list to the start list
             const [splitNote, setSplitNote] = useState(''); // result of saving the starting split to the start list
@@ -1695,15 +1695,18 @@
                             <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-blue btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                        <button className="btn-blue btn-sm"
+                            onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+                        <button className="btn-secondary btn-sm" onClick={() => setCalcOpen(true)}>Calculator</button>
+                    </div>
             </>);
 
-            const calcBlock = calcFor && (
+            const calcBlock = calcFor ? (
                 <Calculator start={((ws[calcFor.list] || []).find(x => x.id === calcFor.id) || {})[calcFor.field]}
                     onUse={v => { setRow(calcFor.list, calcFor.id, calcFor.field, v); setCalcFor(null); }}
                     onClose={() => setCalcFor(null)} />
-            );
+            ) : calcOpen && <Calculator onClose={() => setCalcOpen(false)} />;
 
             // Send this trade's starting split (factor and labor percent for lines not marked I or M) up to the start list
             const saveSplit = async () => {
@@ -1798,9 +1801,14 @@
                             <tr><td colSpan="2" style={{ fontWeight: 700 }}>Labor + material</td><td colSpan="2" className="money" style={{ fontWeight: 700 }}>{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-blue btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('apad', [...ws.apad, { id: newId(), note: '', retail: '', factor: own(ws.defSf) ? ws.defSf : DEFAULT_SPLIT, labor: own(ws.defSl) ? ws.defSl : DEFAULT_LABOR_PCT }])}>+ Add scratch pad line</button>
-                    {startItems && <button className="btn-secondary btn-sm" style={{ marginTop: '6px', marginLeft: '8px' }} title="Make the Other lines starting numbers the start for this trade on every new job" onClick={saveSplit}>Save starting split to start list</button>}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                        <div>
+                            <button className="btn-blue btn-sm"
+                                onClick={() => set('apad', [...ws.apad, { id: newId(), note: '', retail: '', factor: own(ws.defSf) ? ws.defSf : DEFAULT_SPLIT, labor: own(ws.defSl) ? ws.defSl : DEFAULT_LABOR_PCT }])}>+ Add scratch pad line</button>
+                            {startItems && <button className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} title="Make the Other lines starting numbers the start for this trade on every new job" onClick={saveSplit}>Save starting split to start list</button>}
+                        </div>
+                        <button className="btn-secondary btn-sm" onClick={() => setCalcOpen(true)}>Calculator</button>
+                    </div>
                     {splitNote && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: splitNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{splitNote}</div>}
             </>);
 
@@ -2194,7 +2202,6 @@
             const [startEdit, setStartEdit] = useState(null);   // start list on screen while editing
             const [startDirty, setStartDirty] = useState(false);
             const startRef = React.useRef(null);
-            const [showCalc, setShowCalc] = useState(false); // general calculator from the top button
             const [check, setCheck] = useState(null);         // Work Order read for the check report
             const [checkBusy, setCheckBusy] = useState(false);
             const [supers, setSupers] = useState(null);       // company-wide Supervisor list (the one PO Manager keeps): null = loading
@@ -2552,18 +2559,10 @@
                                 {phoneNote && <span style={{ fontWeight: 600, color: phoneNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{phoneNote}</span>}
                             </div>
                         </div>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                            <button className="btn-secondary" onClick={() => setShowCalc(true)}>Calculator</button>
-                            <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
-                        </div>
                     </div>
-                    {showCalc && <Calculator onClose={() => setShowCalc(false)} />}
 
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                            <div className="section-title">JOB</div>
-                            {!editingStart && <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>}
-                        </div>
+                        <div className="section-title">JOB</div>
                         <div className="form-group">
                             <select value={jobId} disabled={editingStart} onChange={e => {
                                 if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
@@ -2626,10 +2625,13 @@
                         <div className="section">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                 <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
-                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
-                                    {checkBusy ? 'Reading...' : 'Check Work Order'}
-                                    <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
-                                </label>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <label className="btn-secondary btn-sm" style={{ display: 'block', textAlign: 'center', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
+                                        {checkBusy ? 'Reading...' : 'Check Work Order'}
+                                        <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
+                                    </label>
+                                    <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>
+                                </div>
                             </div>
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
