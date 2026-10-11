@@ -2487,8 +2487,7 @@
             if (profile === false) {
                 return (
                     <div className="section">
-                        <p>Signed in as {user.email}. No access: Trades-EST is for Owner, Admin and Estimator.</p>
-                        <button className="btn-secondary" style={{ marginTop: '12px' }} onClick={() => auth.signOut()}>Logout</button>
+                        <p>No access. Trades-EST is for Owner, Admin and Estimator. Contact an admin.</p>
                     </div>
                 );
             }
@@ -2547,10 +2546,6 @@
 
             return (
                 <div>
-                    <div className="row">
-                        <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
-                    </div>
-
                     <div className="section">
                         <div className="section-title">JOB</div>
                         <div className="form-group">
