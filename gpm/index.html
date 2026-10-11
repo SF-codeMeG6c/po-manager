@@ -510,8 +510,6 @@
                 }
             };
 
-            const handleLogout = () => auth.signOut();
-
             // Pick a job: load its saved GPM inputs, or start blank
             const handlePickJob = async (id) => {
                 if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
@@ -612,8 +610,7 @@
                 return (
                     <div className="section">
                         <div className="section-title">NO ACCESS</div>
-                        <p>Signed in as {user.email}. The GPM Tool is only for Owner, Admin and Estimator. Contact an admin if you need access.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>No access. GPM is for Owner, Admin and Estimator. Contact an admin.</p>
                     </div>
                 );
             }
@@ -631,11 +628,6 @@
             return (
                 <div>
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                            <p style={{ margin: 0 }}>Signed in as {profile.name || user.email} ({profile.role})</p>
-                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
-                        </div>
-
                         <div className="section-title">JOB</div>
                         <div className="form-group">
                             <select value={jobId} onChange={e => handlePickJob(e.target.value)}>
