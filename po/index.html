@@ -132,32 +132,13 @@
             const [showDeleted, setShowDeleted] = useState(false); // Owner/Admin: show hidden (deleted) POs
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
-            const [showUsers, setShowUsers] = useState(false); // Users screen (Owner/Admin)
-            const [usersList, setUsersList] = useState([]);
-            const [userEdits, setUserEdits] = useState({}); // uid -> { role, active, phone } not yet saved
             const [supersList, setSupersList] = useState([]); // active users with the Super role
-            const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
-            const [secretInput, setSecretInput] = useState('');
-
-            useEffect(() => {
-                if (!showUsers) return;
-                const unsub = db.collection('users').onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
-                    list.sort((a, b) => {
-                        const ap = a.role === 'pending' ? 0 : 1, bp = b.role === 'pending' ? 0 : 1;
-                        return ap !== bp ? ap - bp : (a.name || '').localeCompare(b.name || '');
-                    });
-                    setUsersList(list);
-                }, error => console.error('Users list error:', error));
-                return () => unsub();
-            }, [showUsers]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
                     setUser(currentUser);
                     setProfile(null);
-                    if (!currentUser) return;
+                    if (!currentUser) { clearSignedOutState(); return; }
                     try {
                         const snap = await db.collection('users').doc(currentUser.uid).get();
                         if (snap.exists && snap.data().active === true) {
@@ -165,13 +146,6 @@
                             loadJobs(currentUser.uid, snap.data().role);
                             loadSupervisors();
                             if (['owner', 'admin', 'estimator'].includes(snap.data().role)) loadSupers();
-                            if (['owner', 'admin'].includes(snap.data().role)) {
-                                db.collection('settings').doc('app').onSnapshot(doc => {
-                                    const d = doc.exists ? (doc.data().msSecretExpires || '') : '';
-                                    setSecretExpires(d);
-                                    setSecretInput(d);
-                                }, error => console.error('Settings error:', error));
-                            }
                             loadFormLibraryData(currentUser.uid);
                         } else if (!snap.exists) {
                             // New person: create their own record as pending (no access until approved)
@@ -267,37 +241,6 @@
             const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
             const canEditJobs = !!profile && ['owner', 'admin', 'estimator'].includes(profile.role);
 
-            const handleSaveSecretDate = async () => {
-                try {
-                    await db.collection('settings').doc('app').set({ msSecretExpires: secretInput }, { merge: true });
-                    setMessage('Secret expiration date saved');
-                } catch (error) {
-                    setMessage('Error saving date: ' + error.message);
-                }
-            };
-
-            const secretDaysLeft = secretExpires
-                ? Math.ceil((new Date(secretExpires + 'T00:00:00') - new Date()) / 86400000)
-                : null;
-
-            const renewalText = `I need to renew the Microsoft sign-in client secret for my Freeman Job Tools web app. It expires on ${secretExpires}.
-
-Setup:
-- Web app: PO Manager, hosted on Netlify (charming-griffin-e1112f.netlify.app), code on GitHub (po-manager/index.html)
-- Firebase project: po-project-ea1ca. Sign-in uses Firebase Authentication with the Microsoft provider.
-- Microsoft Entra app registration: "Freeman Job Tools" (single tenant), tenant ID 977675c3-2808-4305-ac2e-f4418dc1d69c
-- Redirect URI: https://po-project-ea1ca.firebaseapp.com/__/auth/handler
-- Current client secret description: "Firebase"
-
-Please walk me through this one step at a time:
-1. Create a new client secret in Entra (App registrations > Freeman Job Tools > Certificates & secrets), 24 months.
-2. Paste the new secret Value into Firebase (Authentication > Sign-in method > Microsoft > Application secret) and save.
-3. Test Microsoft sign-in in a private/incognito window.
-4. Update the expiration date in the PO Manager app (Users screen > secret expires date).
-5. Only after the test works, delete the old secret in Entra.
-
-I prefer plain, brief instructions, one step at a time.`;
-
             const handleToggleSuper = async (superId, checked) => {
                 if (!currentJobId) return;
                 const FV = firebase.firestore.FieldValue;
@@ -310,28 +253,8 @@ I prefer plain, brief instructions, one step at a time.`;
                 }
             };
 
-            const handleSaveUser = async (u) => {
-                const edit = userEdits[u.id] || {};
-                const role = edit.role !== undefined ? edit.role : u.role;
-                const active = edit.active !== undefined ? edit.active : u.active === true;
-                const phone = edit.phone !== undefined ? edit.phone.trim() : (u.phone || '');
-                try {
-                    const now = new Date();
-                    const data = { role, active, phone, updatedAt: now };
-                    // A phone number being replaced is kept in the record
-                    if (u.phone && phone !== u.phone) {
-                        data.phoneHistory = firebase.firestore.FieldValue.arrayUnion({ phone: u.phone, replacedAt: now, replacedBy: { uid: user.uid, name: (profile && profile.name) || user.email } });
-                    }
-                    await db.collection('users').doc(u.id).update(data);
-                    setUserEdits(prev => { const next = { ...prev }; delete next[u.id]; return next; });
-                    setMessage(`Saved ${u.name || u.email}: ${role}${active ? '' : ' (inactive)'}`);
-                } catch (error) {
-                    setMessage('Error saving user: ' + error.message);
-                }
-            };
-
-            const handleLogout = async () => {
-                await auth.signOut();
+            // Clear the page when the person is signed out. Logout is on the Dashboard.
+            const clearSignedOutState = () => {
                 setJobCode('');
                 setJobAddress('');
                 setCityStateZip('');
@@ -893,8 +816,7 @@ I prefer plain, brief instructions, one step at a time.`;
                 return (
                     <div className="section">
                         <div className="section-title">WAITING FOR APPROVAL</div>
-                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account is waiting for approval. An admin will set up your access.</p>
                     </div>
                 );
             }
@@ -903,8 +825,7 @@ I prefer plain, brief instructions, one step at a time.`;
                 return (
                     <div className="section">
                         <div className="section-title">PO MANAGER</div>
-                        <p>Signed in as {user.email}. PO Manager isn't included in your access. The dashboard is coming soon.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>No access. PO Manager is for Owner, Admin, Estimator and Super. Contact an admin.</p>
                     </div>
                 );
             }
@@ -913,112 +834,15 @@ I prefer plain, brief instructions, one step at a time.`;
                 return (
                     <div className="section">
                         <div className="section-title">ACCOUNT NOT SET UP</div>
-                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account doesn't have access. Contact an admin.</p>
                     </div>
                 );
             }
 
             return (
                 <div>
-                    {isAdminUser && secretDaysLeft !== null && secretDaysLeft <= 60 && (
-                        <div style={{ background: secretDaysLeft < 0 ? '#fdecea' : '#fff7e6', border: '1px solid ' + (secretDaysLeft < 0 ? '#d93025' : '#f0a020'), borderRadius: '6px', padding: '12px 16px', marginBottom: '16px', fontSize: '14px' }}>
-                            <strong>
-                                {secretDaysLeft < 0
-                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
-                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
-                            </strong>
-                            <div style={{ marginTop: '8px' }}>
-                                <button className="btn-secondary" style={{ width: 'auto', padding: '4px 12px' }}
-                                    onClick={() => navigator.clipboard.writeText(renewalText).then(() => setMessage('Renewal instructions copied. Paste them into a new Claude chat.'), () => setMessage('Copy failed. Select the text below and copy it.'))}>
-                                    Copy renewal instructions
-                                </button>
-                            </div>
-                            <details style={{ marginTop: '8px' }}>
-                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
-                                <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px', background: '#fff', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}>{renewalText}</pre>
-                            </details>
-                        </div>
-                    )}
-
-                    {isAdminUser && showUsers && (
-                        <div className="section">
-                            <div className="section-title">USERS</div>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
-                                <thead>
-                                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
-                                        <th style={{ padding: '6px' }}>Name</th>
-                                        <th style={{ padding: '6px' }}>Email</th>
-                                        <th style={{ padding: '6px' }}>Phone</th>
-                                        <th style={{ padding: '6px' }}>Role</th>
-                                        <th style={{ padding: '6px' }}>Active</th>
-                                        <th style={{ padding: '6px' }}></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {usersList.map(u => {
-                                        const isMe = u.id === user.uid;
-                                        const edit = userEdits[u.id] || {};
-                                        const role = edit.role !== undefined ? edit.role : u.role;
-                                        const active = edit.active !== undefined ? edit.active : u.active === true;
-                                        const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
-                                        const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
-                                        return (
-                                            <tr key={u.id} style={{ borderBottom: '1px solid #eee', background: u.role === 'pending' ? '#fff7e6' : 'transparent' }}>
-                                                <td style={{ padding: '6px' }}>
-                                                    {u.name}{isMe ? ' (you)' : ''}
-                                                    {u.role === 'pending' && <div style={{ fontSize: '11px', color: '#cc6600' }}>Waiting for access</div>}
-                                                </td>
-                                                <td style={{ padding: '6px' }}>{u.email}</td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <input value={phone} placeholder="Phone" style={{ width: '140px', marginBottom: 0 }}
-                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], phone: e.target.value } }))} />
-                                                </td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <select value={role} disabled={isMe}
-                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
-                                                        <option value="pending">Pending</option>
-                                                        <option value="owner">Owner</option>
-                                                        <option value="admin">Admin</option>
-                                                        <option value="estimator">Estimator</option>
-                                                        <option value="super">Super</option>
-                                                        <option value="office">Office</option>
-                                                    </select>
-                                                </td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <input type="checkbox" checked={active} disabled={isMe}
-                                                        onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
-                                                </td>
-                                                <td style={{ padding: '6px' }}>
-                                                    <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
-                                                        disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px', fontSize: '14px' }}>
-                                <span>Microsoft sign-in secret expires:</span>
-                                <input type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} style={{ width: 'auto' }} />
-                                <button className="btn-primary" style={{ width: 'auto', padding: '4px 12px' }}
-                                    disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
-                            </div>
-                        </div>
-                    )}
-
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <div className="section-title">JOB DETAILS</div>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                                {isAdminUser && (
-                                    <button className="btn-secondary" onClick={() => setShowUsers(!showUsers)} style={{ width: 'auto' }}>
-                                        {showUsers ? 'Hide Users' : 'Users'}
-                                    </button>
-                                )}
-                                <button className="btn-secondary" onClick={handleLogout} style={{ width: 'auto' }}>Logout</button>
-                            </div>
-                        </div>
+                        <div className="section-title">JOB DETAILS</div>
 
                         {canEditJobs && (<>
                         <div className="form-group">
