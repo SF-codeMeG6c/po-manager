@@ -14,9 +14,6 @@
         .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
         p { margin-bottom: 12px; font-size: 14px; color: #333; }
-        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; }
         .btn-primary:hover { background: #0052a3; }
@@ -25,9 +22,6 @@
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
 
         .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; font-size: 13px; color: #666; }
-        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
-        .job-code { font-size: 18px; font-weight: 600; color: #333; }
-        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
 
         .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
         .tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
@@ -39,14 +33,12 @@
         .tool.soon { background: #fafafa; color: #999; border-style: dashed; cursor: default; }
         .tool.soon svg { color: #bbb; }
         .tool small { font-size: 11px; font-weight: 400; color: #aaa; }
-        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-top: 8px; font-weight: normal; }
-        .check input { width: auto; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Freeman Job Tools</h1>
-        <p class="subtitle">Pick a job to open its tools</p>
+        <p class="subtitle">Pick a tool</p>
         <div id="app"></div>
     </div>
 
@@ -94,13 +86,14 @@
             wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2']
         };
 
-        // Tools for one job. roles = who sees a live tool; url = where it opens (null = coming soon)
+        // Job tools. Each opens with no job picked; the job is picked inside the tool.
+        // roles = who sees a live tool; url = where it opens (null = coming soon)
         const JOB_TOOLS = [
-            { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: id => `/po/?job=${id}` },
-            { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: id => `/gpm/?job=${id}` },
-            { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: id => `/frm-est/?job=${id}` },
-            { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: id => `/trades-est/?job=${id}` },
-            { key: 'notes',   name: 'Customer Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: id => `/notes/?job=${id}` },
+            { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: '/po/' },
+            { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: '/gpm/' },
+            { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: '/frm-est/' },
+            { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: '/trades-est/' },
+            { key: 'notes',   name: 'Customer Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/notes/' },
             { key: 'cost',    name: 'Job Costing',    url: null },
             { key: 'extras',  name: 'Extras',         url: null },
             { key: 'credits', name: 'Credits',        url: null },
@@ -114,8 +107,6 @@
             { key: 'wip',     name: 'WIP',                 url: null }
         ];
 
-        const LAST_JOB_KEY = 'dashboardLastJob';
-
         function ToolTile({ tool, href }) {
             if (href) {
                 return <a className="tool" href={href}><Icon d={ICONS[tool.key]} />{tool.name}</a>;
@@ -127,10 +118,6 @@
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
             const [authError, setAuthError] = useState('');
-            const [jobs, setJobs] = useState([]);
-            const [jobId, setJobId] = useState('');
-            const [showArchived, setShowArchived] = useState(false);
-            const [message, setMessage] = useState('');
 
             // Sign-in and role check. New people get a pending record (same as PO Manager).
             useEffect(() => {
@@ -164,27 +151,6 @@
                 });
             }, []);
 
-            // Job list: all jobs, or only assigned jobs for Supers
-            useEffect(() => {
-                if (!profile || typeof profile !== 'object') return;
-                let query = db.collection('jobs');
-                if (profile.role === 'super') query = query.where('assignedSupers', 'array-contains', profile.uid);
-                const unsub = query.onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => {
-                        const d = doc.data();
-                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
-                    });
-                    list.sort((a, b) => a.code.localeCompare(b.code));
-                    setJobs(list);
-                    // Reopen the last job picked on this computer
-                    let last = '';
-                    try { last = localStorage.getItem(LAST_JOB_KEY) || ''; } catch (e) {}
-                    setJobId(prev => prev || (list.some(j => j.id === last) ? last : ''));
-                }, error => setMessage('Error loading jobs: ' + error.message));
-                return () => unsub();
-            }, [profile]);
-
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
                 try {
@@ -196,16 +162,7 @@
                 }
             };
 
-            const handleLogout = () => {
-                setJobs([]);
-                setJobId('');
-                auth.signOut();
-            };
-
-            const handlePickJob = (id) => {
-                setJobId(id);
-                try { id ? localStorage.setItem(LAST_JOB_KEY, id) : localStorage.removeItem(LAST_JOB_KEY); } catch (e) {}
-            };
+            const handleLogout = () => auth.signOut();
 
             if (!user) {
                 return (
@@ -240,8 +197,6 @@
             }
 
             const role = profile.role;
-            const job = jobs.find(j => j.id === jobId);
-            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
             const liveTools = JOB_TOOLS.filter(t => t.url && t.roles.includes(role));
             const soonTools = JOB_TOOLS.filter(t => !t.url);
 
@@ -253,34 +208,12 @@
                     </div>
 
                     <div className="section">
-                        <div className="section-title">Job</div>
-                        <label htmlFor="job-pick">Pick a job</label>
-                        <select id="job-pick" value={jobId} onChange={e => handlePickJob(e.target.value)}>
-                            <option value="">-- Pick a job --</option>
-                            {visibleJobs.map(j => (
-                                <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
-                            ))}
-                        </select>
-                        <label className="check">
-                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
-                            Show archived jobs
-                        </label>
-                        {jobs.length === 0 && role === 'super' && <p style={{ marginTop: '12px', color: '#888' }}>No jobs assigned to you yet.</p>}
-                        {message && <div className="error">{message}</div>}
-                    </div>
-
-                    {job && (
-                        <div className="section">
-                            <div className="job-head">
-                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
-                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
-                            </div>
-                            <div className="tools">
-                                {liveTools.map(t => <ToolTile key={t.key} tool={t} href={t.url(job.id)} />)}
-                                {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
-                            </div>
+                        <div className="section-title">Job tools</div>
+                        <div className="tools">
+                            {liveTools.map(t => <ToolTile key={t.key} tool={t} href={t.url} />)}
+                            {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
                         </div>
-                    )}
+                    </div>
 
                     {role !== 'super' && (
                         <div className="section">
