@@ -898,7 +898,7 @@
             });
 
             // Send for pricing: build the form, keep that exact PDF in the job folder, then email it to the sub.
-            // Replies go to whoever clicks this (the function sets that from the sign-in).
+            // Replies go to the job's estimator, or to whoever clicks this when none is picked (the function decides and reports back).
             const send = async (r) => {
                 if (!r.email) return;
                 if (r.kind === 'none') { setNote(`Error: ${r.poNumber} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
@@ -924,10 +924,12 @@
                     const pdfUrl = await fileRef.getDownloadURL();
                     // The form as sent: its file, and the job and supervisor it went out with
                     await reqRef(r.id).update({ pdfUrl, fileName, header: formHeader(), pdfBuiltAt: d, pdfBuiltBy: me });
-                    await functions.httpsCallable('sendQuoteRequest')({ jobId, requestId: r.id });
+                    const sent = await functions.httpsCallable('sendQuoteRequest')({ jobId, requestId: r.id });
+                    const reply = (sent && sent.data) || {}; // { replyTo, replyName }: who the sub's reply goes to
                     // What was sent is this saved version: an edit after this shows "Changed since sent"
                     await reqRef(r.id).update({ sentUpdatedAt: r.updatedAt || null });
-                    setNote(`Request ${r.poNumber} sent to ${r.email}. Replies come to you.`);
+                    const toMe = !reply.replyTo || reply.replyTo.toLowerCase() === ((auth.currentUser && auth.currentUser.email) || '').toLowerCase();
+                    setNote(`Request ${r.poNumber} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
                 } catch (err) {
                     setNote('Error sending the request: ' + err.message);
                 }
