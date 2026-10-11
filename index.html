@@ -54,6 +54,11 @@
         button.tool:hover, button.tool.open { border-color: #0066cc; background: #f3f8fd; }
         button.tool:focus-visible { outline: 2px solid #0066cc; outline-offset: 2px; }
         button.tool svg { color: #0066cc; }
+        button.tool.alert { border-color: #f0a020; background: #fff7e6; }
+        button.tool.alert svg { color: #b36b00; }
+        button.tool.alert small { color: #8a5a00; font-weight: 600; }
+        button.tool.alert.expired { border-color: #d93025; background: #fdecea; }
+        button.tool.alert.expired svg, button.tool.alert.expired small { color: #a3261c; }
         .admin-users { margin-top: 20px; }
     </style>
 </head>
@@ -183,9 +188,9 @@
 
             const isAdminUser = !!profile && typeof profile === 'object' && ['owner', 'admin'].includes(profile.role);
 
-            // Users list, live while the Users screen is open. People waiting for access come first.
+            // Users list, live for Owner/Admin (the Users box shows how many people are waiting). Waiting people come first.
             useEffect(() => {
-                if (!showUsers || !isAdminUser) return;
+                if (!isAdminUser) return;
                 return db.collection('users').onSnapshot(snapshot => {
                     const list = [];
                     snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
@@ -195,7 +200,7 @@
                     });
                     setUsersList(list);
                 }, error => setUsersMsg({ text: 'Error loading users: ' + error.message, ok: false }));
-            }, [showUsers, isAdminUser]);
+            }, [isAdminUser]);
 
             // Microsoft sign-in secret expiry date (Owner/Admin)
             useEffect(() => {
@@ -289,6 +294,15 @@
                 ? Math.ceil((new Date(secretExpires + 'T00:00:00') - new Date()) / 86400000)
                 : null;
 
+            // Alerts on the Users box: people waiting for approval, and the secret within 14 days of expiring (or expired)
+            const pendingCount = usersList.filter(u => u.role === 'pending').length;
+            const secretSoon = secretDaysLeft !== null && secretDaysLeft <= 14;
+            const secretLine = !secretSoon ? '' : secretDaysLeft < 0 ? 'Sign-in secret expired'
+                : secretDaysLeft === 0 ? 'Sign-in secret expires today'
+                : `Sign-in secret expires in ${secretDaysLeft} day${secretDaysLeft === 1 ? '' : 's'}`;
+            const usersBoxClass = 'tool' + (showUsers ? ' open' : '')
+                + (secretSoon && secretDaysLeft < 0 ? ' alert expired' : (secretSoon || pendingCount > 0) ? ' alert' : '');
+
             const renewalText = `I need to renew the Microsoft sign-in client secret for my Freeman Job Tools web app. It expires on ${secretExpires}.
 
 Setup:
@@ -309,29 +323,6 @@ I prefer plain, brief instructions, one step at a time.`;
 
             return (
                 <div>
-                    {isAdminUser && secretDaysLeft !== null && secretDaysLeft <= 60 && (
-                        <div className={secretDaysLeft < 0 ? 'secret-warn expired' : 'secret-warn'}>
-                            <strong>
-                                {secretDaysLeft < 0
-                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
-                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
-                            </strong>
-                            <div style={{ marginTop: '8px' }}>
-                                <button className="btn-secondary btn-small"
-                                    onClick={() => navigator.clipboard.writeText(renewalText).then(
-                                        () => setCopyMsg({ text: 'Renewal instructions copied. Paste them into a new Claude chat.', ok: true }),
-                                        () => setCopyMsg({ text: 'Copy failed. Open "Show instructions", select the text and copy it.', ok: false }))}>
-                                    Copy renewal instructions
-                                </button>
-                            </div>
-                            {copyMsg && <div className={copyMsg.ok ? 'ok' : 'error'}>{copyMsg.text}</div>}
-                            <details style={{ marginTop: '8px' }}>
-                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
-                                <pre>{renewalText}</pre>
-                            </details>
-                        </div>
-                    )}
-
                     <div className="topbar">
                         <span>Signed in as {profile.name || user.email}</span>
                         <button className="btn-secondary" onClick={handleLogout}>Logout</button>
@@ -358,73 +349,99 @@ I prefer plain, brief instructions, one step at a time.`;
                         <div className="section">
                             <div className="section-title">Admin</div>
                             <div className="tools">
-                                <button type="button" className={showUsers ? 'tool open' : 'tool'} aria-expanded={showUsers}
+                                <button type="button" className={usersBoxClass} aria-expanded={showUsers}
                                     onClick={() => { setShowUsers(!showUsers); setUsersMsg(null); }}>
                                     <Icon d={ICONS.users} />Users
+                                    {pendingCount > 0 && <small>{pendingCount} waiting for approval</small>}
+                                    {secretLine && <small>{secretLine}</small>}
                                 </button>
                             </div>
                             {showUsers && (
-                                <div className="users-wrap admin-users">
-                                    <table className="users">
-                                        <thead>
-                                            <tr>
-                                                <th>Name</th>
-                                                <th>Email</th>
-                                                <th>Phone</th>
-                                                <th>Role</th>
-                                                <th>Active</th>
-                                                <th></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {usersList.map(u => {
-                                                const isMe = u.id === user.uid;
-                                                const edit = userEdits[u.id] || {};
-                                                const uRole = edit.role !== undefined ? edit.role : u.role;
-                                                const active = edit.active !== undefined ? edit.active : u.active === true;
-                                                const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
-                                                const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
-                                                return (
-                                                    <tr key={u.id} className={u.role === 'pending' ? 'waiting' : ''}>
-                                                        <td>
-                                                            {u.name}{isMe ? ' (you)' : ''}
-                                                            {u.role === 'pending' && <small>Waiting for access</small>}
-                                                        </td>
-                                                        <td>{u.email}</td>
-                                                        <td>
-                                                            <input type="text" value={phone} placeholder="Phone" aria-label={'Phone for ' + (u.name || u.email)}
-                                                                onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], phone: e.target.value } }))} />
-                                                        </td>
-                                                        <td>
-                                                            <select value={uRole} disabled={isMe} aria-label={'Role for ' + (u.name || u.email)}
-                                                                onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
-                                                                <option value="pending">Pending</option>
-                                                                <option value="owner">Owner</option>
-                                                                <option value="admin">Admin</option>
-                                                                <option value="estimator">Estimator</option>
-                                                                <option value="super">Super</option>
-                                                                <option value="office">Office</option>
-                                                            </select>
-                                                        </td>
-                                                        <td>
-                                                            <input type="checkbox" checked={active} disabled={isMe} aria-label={'Active for ' + (u.name || u.email)}
-                                                                onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
-                                                        </td>
-                                                        <td>
-                                                            <button className="btn-save" disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
+                                <div className="admin-users">
+                                    {secretDaysLeft !== null && secretDaysLeft <= 60 && (
+                                        <div className={secretDaysLeft < 0 ? 'secret-warn expired' : 'secret-warn'}>
+                                            <strong>
+                                                {secretDaysLeft < 0
+                                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
+                                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
+                                            </strong>
+                                            <div style={{ marginTop: '8px' }}>
+                                                <button className="btn-secondary btn-small"
+                                                    onClick={() => navigator.clipboard.writeText(renewalText).then(
+                                                        () => setCopyMsg({ text: 'Renewal instructions copied. Paste them into a new Claude chat.', ok: true }),
+                                                        () => setCopyMsg({ text: 'Copy failed. Open "Show instructions", select the text and copy it.', ok: false }))}>
+                                                    Copy renewal instructions
+                                                </button>
+                                            </div>
+                                            {copyMsg && <div className={copyMsg.ok ? 'ok' : 'error'}>{copyMsg.text}</div>}
+                                            <details style={{ marginTop: '8px' }}>
+                                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
+                                                <pre>{renewalText}</pre>
+                                            </details>
+                                        </div>
+                                    )}
+                                    <div className="users-wrap">
+                                        <table className="users">
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th>
+                                                    <th>Email</th>
+                                                    <th>Phone</th>
+                                                    <th>Role</th>
+                                                    <th>Active</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {usersList.map(u => {
+                                                    const isMe = u.id === user.uid;
+                                                    const edit = userEdits[u.id] || {};
+                                                    const uRole = edit.role !== undefined ? edit.role : u.role;
+                                                    const active = edit.active !== undefined ? edit.active : u.active === true;
+                                                    const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
+                                                    const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
+                                                    return (
+                                                        <tr key={u.id} className={u.role === 'pending' ? 'waiting' : ''}>
+                                                            <td>
+                                                                {u.name}{isMe ? ' (you)' : ''}
+                                                                {u.role === 'pending' && <small>Waiting for access</small>}
+                                                            </td>
+                                                            <td>{u.email}</td>
+                                                            <td>
+                                                                <input type="text" value={phone} placeholder="Phone" aria-label={'Phone for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], phone: e.target.value } }))} />
+                                                            </td>
+                                                            <td>
+                                                                <select value={uRole} disabled={isMe} aria-label={'Role for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
+                                                                    <option value="pending">Pending</option>
+                                                                    <option value="owner">Owner</option>
+                                                                    <option value="admin">Admin</option>
+                                                                    <option value="estimator">Estimator</option>
+                                                                    <option value="super">Super</option>
+                                                                    <option value="office">Office</option>
+                                                                </select>
+                                                            </td>
+                                                            <td>
+                                                                <input type="checkbox" checked={active} disabled={isMe} aria-label={'Active for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
+                                                            </td>
+                                                            <td>
+                                                                <button className="btn-save" disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="secret-row">
+                                        <label htmlFor="secret-date">Microsoft sign-in secret expires:</label>
+                                        <input id="secret-date" type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} />
+                                        <button className="btn-save" disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
+                                    </div>
                                 </div>
                             )}
-                            <div className="secret-row">
-                                <label htmlFor="secret-date">Microsoft sign-in secret expires:</label>
-                                <input id="secret-date" type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} />
-                                <button className="btn-save" disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
-                            </div>
                             {usersMsg && <div className={usersMsg.ok ? 'ok' : 'error'}>{usersMsg.text}</div>}
                         </div>
                     )}
