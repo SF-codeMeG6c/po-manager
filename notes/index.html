@@ -24,8 +24,7 @@
         .btn-secondary:hover { background: #e0e0e0; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
 
-        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
-        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
         .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
         .job-code { font-size: 18px; font-weight: 600; color: #333; }
         .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
@@ -961,8 +960,6 @@
                 }
             };
 
-            const handleLogout = () => auth.signOut();
-
             if (!user) {
                 return (
                     <div className="section">
@@ -979,8 +976,7 @@
                 return (
                     <div className="section">
                         <div className="section-title">Waiting for approval</div>
-                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account is waiting for approval. An admin will set up your access.</p>
                     </div>
                 );
             }
@@ -989,8 +985,7 @@
                 return (
                     <div className="section">
                         <div className="section-title">Account not set up</div>
-                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account doesn't have access. Contact an admin.</p>
                     </div>
                 );
             }
@@ -998,11 +993,7 @@
             return (
                 <div>
                     <div className="topbar">
-                        <span>Signed in as {profile.name || user.email}</span>
-                        <div className="topbar-right">
-                            <a href="/notes/">Search all jobs</a>
-                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
-                        </div>
+                        <a href="/notes/">Search all jobs</a>
                     </div>
 
                     <div className="section no-print">
