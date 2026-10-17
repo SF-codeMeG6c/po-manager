@@ -24,8 +24,7 @@
         .btn-secondary:hover { background: #e0e0e0; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
 
-        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
-        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; color: #666; }
         .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
         .job-code { font-size: 18px; font-weight: 600; color: #333; }
         .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
@@ -121,6 +120,11 @@
 
         // Job from the address: /notes/?job=ID ('' = no job, the all-jobs view)
         const URL_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
+
+        // Unsaved work on the page: a typed note, a note being edited, or the contact card open for editing.
+        // The job drop down checks this before it switches jobs.
+        const UNSAVED = { note: false, edit: false, card: false };
+        const hasUnsaved = () => UNSAVED.note || UNSAVED.edit || UNSAVED.card;
 
         // Date and time for a note ('Saving...' until the server time arrives)
         const fmtTime = (ts) => ts && ts.toDate
@@ -345,6 +349,8 @@
                 doc => setLockBox(doc.exists ? (doc.data().lockBox || '') : ''),
                 () => {}
             ), [job.id]);
+            // Tell the job drop down when the card is open for editing
+            useEffect(() => { UNSAVED.card = !!editing; return () => { UNSAVED.card = false; }; }, [editing]);
 
             const startEdit = () => { setMessage(''); setEditing({ ...fullCard(card), lockBox }); };
             const setField = (section, field, value) => setEditing(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
@@ -493,6 +499,13 @@
 
             // Stop voice if the page closes while listening
             useEffect(() => () => { recognitionRef.current && recognitionRef.current.stop(); }, []);
+
+            // Tell the job drop down when a note is typed but not saved, or a note is being edited
+            useEffect(() => {
+                UNSAVED.note = !!text.trim();
+                UNSAVED.edit = !!editing;
+                return () => { UNSAVED.note = false; UNSAVED.edit = false; };
+            }, [text, editing]);
 
             // Add a new tag to the company list. Tags can be added here but never removed.
             const addNewTag = (name) => db.collection('notesSettings').doc('tags')
@@ -878,6 +891,9 @@
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
             const [authError, setAuthError] = useState('');
             const [job, setJob] = useState(null);         // null = loading, false = not found or no access, object = the job
+            const [jobs, setJobs] = useState(null);       // job list for the drop down (null = loading)
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobsError, setJobsError] = useState('');
 
             // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
             useEffect(() => {
@@ -908,6 +924,31 @@
                 }).catch(() => setJob(false));
             }, [profile]);
 
+            // Job list for the drop down: all jobs, or only assigned jobs for Supers (same as the Dashboard)
+            useEffect(() => {
+                setJobs(null);
+                if (!profile || typeof profile !== 'object') return;
+                let query = db.collection('jobs');
+                if (profile.role === 'super') query = query.where('assignedSupers', 'array-contains', profile.uid);
+                return query.onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', archived: d.archived === true });
+                    });
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                    setJobsError('');
+                }, error => { setJobs([]); setJobsError('Error loading jobs: ' + error.message); });
+            }, [profile]);
+
+            // Switch jobs from the drop down. Opens the job the same way the Dashboard does. Blank = the all-jobs search.
+            const switchJob = (id) => {
+                if (id === URL_JOB_ID) return;
+                if (hasUnsaved() && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
+                window.location.href = id ? '/notes/?job=' + encodeURIComponent(id) : '/notes/';
+            };
+
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
                 try {
@@ -918,8 +959,6 @@
                     setAuthError(error.message);
                 }
             };
-
-            const handleLogout = () => auth.signOut();
 
             if (!user) {
                 return (
@@ -937,8 +976,7 @@
                 return (
                     <div className="section">
                         <div className="section-title">Waiting for approval</div>
-                        <p>You're signed in as {user.email}. Your account is waiting for approval. An admin will set up your access.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account is waiting for approval. An admin will set up your access.</p>
                     </div>
                 );
             }
@@ -947,8 +985,7 @@
                 return (
                     <div className="section">
                         <div className="section-title">Account not set up</div>
-                        <p>You're signed in as {user.email}, but your account doesn't have access. Contact an admin.</p>
-                        <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <p>Your account doesn't have access. Contact an admin.</p>
                     </div>
                 );
             }
@@ -956,11 +993,25 @@
             return (
                 <div>
                     <div className="topbar">
-                        <span>Signed in as {profile.name || user.email}</span>
-                        <div className="topbar-right">
-                            <a href="/notes/">Search all jobs</a>
-                            <button className="btn-secondary" onClick={handleLogout}>Logout</button>
+                        <a href="/notes/">Search all jobs</a>
+                    </div>
+
+                    <div className="section no-print">
+                        <div className="section-title">Job</div>
+                        <div className="form-group">
+                            <label htmlFor="job-pick">Pick a job</label>
+                            <select id="job-pick" value={URL_JOB_ID} onChange={e => switchJob(e.target.value)}>
+                                <option value="">{jobs === null ? 'Loading jobs...' : '-- Pick a job --'}</option>
+                                {(jobs || []).filter(j => showArchived || !j.archived || j.id === URL_JOB_ID).map(j => (
+                                    <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
                         </div>
+                        <label className="check">
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            Show archived jobs
+                        </label>
+                        {jobsError && <div className="error">{jobsError}</div>}
                     </div>
 
                     {!URL_JOB_ID && <AllJobsSearch profile={profile} />}
@@ -969,7 +1020,7 @@
 
                     {URL_JOB_ID && job === false && (
                         <div className="notice">
-                            This job wasn't found, or you don't have access to it. Go back to the <a href="/">Dashboard</a> and pick a job.
+                            This job wasn't found, or you don't have access to it. Pick a job above.
                         </div>
                     )}
 

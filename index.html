@@ -14,9 +14,6 @@
         .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
         p { margin-bottom: 12px; font-size: 14px; color: #333; }
-        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; }
         .btn-primary:hover { background: #0052a3; }
@@ -25,9 +22,23 @@
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
 
         .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; font-size: 13px; color: #666; }
-        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
-        .job-code { font-size: 18px; font-weight: 600; color: #333; }
-        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
+        .ok { color: #388e3c; font-size: 12px; margin-top: 5px; }
+
+        .users-wrap { overflow-x: auto; }
+        .users { width: 100%; border-collapse: collapse; font-size: 14px; color: #333; }
+        .users th { text-align: left; padding: 6px; border-bottom: 1px solid #ddd; }
+        .users td { padding: 6px; border-bottom: 1px solid #eee; }
+        .users tr.waiting { background: #fff7e6; }
+        .users small { display: block; font-size: 11px; color: #cc6600; }
+        .users input[type=text], .users select, .secret-row input { padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .users input[type=text] { width: 140px; }
+        .btn-save { background: #0066cc; color: white; padding: 4px 12px; }
+        .btn-save:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-small { padding: 4px 12px; }
+        .secret-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; font-size: 14px; color: #333; }
+        .secret-warn { border: 1px solid #f0a020; background: #fff7e6; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; font-size: 14px; color: #333; }
+        .secret-warn.expired { border-color: #d93025; background: #fdecea; }
+        .secret-warn pre { white-space: pre-wrap; font-size: 12px; background: #fff; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-top: 8px; }
 
         .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
         .tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
@@ -39,14 +50,22 @@
         .tool.soon { background: #fafafa; color: #999; border-style: dashed; cursor: default; }
         .tool.soon svg { color: #bbb; }
         .tool small { font-size: 11px; font-weight: 400; color: #aaa; }
-        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-top: 8px; font-weight: normal; }
-        .check input { width: auto; }
+        button.tool { font-family: inherit; cursor: pointer; width: 100%; }
+        button.tool:hover, button.tool.open { border-color: #0066cc; background: #f3f8fd; }
+        button.tool:focus-visible { outline: 2px solid #0066cc; outline-offset: 2px; }
+        button.tool svg { color: #0066cc; }
+        button.tool.alert { border-color: #f0a020; background: #fff7e6; }
+        button.tool.alert svg { color: #b36b00; }
+        button.tool.alert small { color: #8a5a00; font-weight: 600; }
+        button.tool.alert.expired { border-color: #d93025; background: #fdecea; }
+        button.tool.alert.expired svg, button.tool.alert.expired small { color: #a3261c; }
+        .admin-users { margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Freeman Job Tools</h1>
-        <p class="subtitle">Pick a job to open its tools</p>
+        <p class="subtitle">Pick a tool</p>
         <div id="app"></div>
     </div>
 
@@ -91,16 +110,18 @@
             stmt:    ['M6 3h12v18H6z', 'M9 7h6', 'M9 11h6', 'M9 15h4'],
             approve: ['M4 12l5 5L20 6'],
             ar:      ['M3 7h18v10H3z', 'M12 10v4', 'M7 12h.01', 'M17 12h.01'],
-            wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2']
+            wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2'],
+            users:   ['M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1', 'M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M21 19v-1a4 4 0 0 0-3-3.87', 'M15.5 4.13a3 3 0 0 1 0 5.74']
         };
 
-        // Tools for one job. roles = who sees a live tool; url = where it opens (null = coming soon)
+        // Job tools. Each opens with no job picked; the job is picked inside the tool.
+        // roles = who sees a live tool; url = where it opens (null = coming soon)
         const JOB_TOOLS = [
-            { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: id => `/po/?job=${id}` },
-            { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: id => `/gpm/?job=${id}` },
-            { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: id => `/frm-est/?job=${id}` },
-            { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: id => `/trades-est/?job=${id}` },
-            { key: 'notes',   name: 'Customer Notes', url: null },
+            { key: 'po',      name: 'PO Manager',     roles: ['owner', 'admin', 'estimator', 'super'], url: '/po/' },
+            { key: 'gpm',     name: 'GPM',            roles: ['owner', 'admin', 'estimator'],          url: '/gpm/' },
+            { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: '/frm-est/' },
+            { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: '/trades-est/' },
+            { key: 'notes',   name: 'Customer Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/notes/' },
             { key: 'cost',    name: 'Job Costing',    url: null },
             { key: 'extras',  name: 'Extras',         url: null },
             { key: 'credits', name: 'Credits',        url: null },
@@ -114,8 +135,6 @@
             { key: 'wip',     name: 'WIP',                 url: null }
         ];
 
-        const LAST_JOB_KEY = 'dashboardLastJob';
-
         function ToolTile({ tool, href }) {
             if (href) {
                 return <a className="tool" href={href}><Icon d={ICONS[tool.key]} />{tool.name}</a>;
@@ -127,10 +146,13 @@
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
             const [authError, setAuthError] = useState('');
-            const [jobs, setJobs] = useState([]);
-            const [jobId, setJobId] = useState('');
-            const [showArchived, setShowArchived] = useState(false);
-            const [message, setMessage] = useState('');
+            const [showUsers, setShowUsers] = useState(false);   // Users screen (Owner/Admin)
+            const [usersList, setUsersList] = useState([]);
+            const [userEdits, setUserEdits] = useState({});      // uid -> { role, active, phone } not yet saved
+            const [usersMsg, setUsersMsg] = useState(null);      // { text, ok } in the Admin section
+            const [copyMsg, setCopyMsg] = useState(null);        // { text, ok } in the secret warning
+            const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
+            const [secretInput, setSecretInput] = useState('');
 
             // Sign-in and role check. New people get a pending record (same as PO Manager).
             useEffect(() => {
@@ -164,26 +186,60 @@
                 });
             }, []);
 
-            // Job list: all jobs, or only assigned jobs for Supers
+            const isAdminUser = !!profile && typeof profile === 'object' && ['owner', 'admin'].includes(profile.role);
+
+            // Users list, live for Owner/Admin (the Users box shows how many people are waiting). Waiting people come first.
             useEffect(() => {
-                if (!profile || typeof profile !== 'object') return;
-                let query = db.collection('jobs');
-                if (profile.role === 'super') query = query.where('assignedSupers', 'array-contains', profile.uid);
-                const unsub = query.onSnapshot(snapshot => {
+                if (!isAdminUser) return;
+                return db.collection('users').onSnapshot(snapshot => {
                     const list = [];
-                    snapshot.forEach(doc => {
-                        const d = doc.data();
-                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    list.sort((a, b) => {
+                        const ap = a.role === 'pending' ? 0 : 1, bp = b.role === 'pending' ? 0 : 1;
+                        return ap !== bp ? ap - bp : (a.name || '').localeCompare(b.name || '');
                     });
-                    list.sort((a, b) => a.code.localeCompare(b.code));
-                    setJobs(list);
-                    // Reopen the last job picked on this computer
-                    let last = '';
-                    try { last = localStorage.getItem(LAST_JOB_KEY) || ''; } catch (e) {}
-                    setJobId(prev => prev || (list.some(j => j.id === last) ? last : ''));
-                }, error => setMessage('Error loading jobs: ' + error.message));
-                return () => unsub();
-            }, [profile]);
+                    setUsersList(list);
+                }, error => setUsersMsg({ text: 'Error loading users: ' + error.message, ok: false }));
+            }, [isAdminUser]);
+
+            // Microsoft sign-in secret expiry date (Owner/Admin)
+            useEffect(() => {
+                if (!isAdminUser) return;
+                return db.collection('settings').doc('app').onSnapshot(doc => {
+                    const d = doc.exists ? (doc.data().msSecretExpires || '') : '';
+                    setSecretExpires(d);
+                    setSecretInput(d);
+                }, error => console.error('Settings error:', error));
+            }, [isAdminUser]);
+
+            const handleSaveUser = async (u) => {
+                const edit = userEdits[u.id] || {};
+                const role = edit.role !== undefined ? edit.role : u.role;
+                const active = edit.active !== undefined ? edit.active : u.active === true;
+                const phone = edit.phone !== undefined ? edit.phone.trim() : (u.phone || '');
+                try {
+                    const now = new Date();
+                    const data = { role, active, phone, updatedAt: now };
+                    // A phone number being replaced is kept in the record
+                    if (u.phone && phone !== u.phone) {
+                        data.phoneHistory = firebase.firestore.FieldValue.arrayUnion({ phone: u.phone, replacedAt: now, replacedBy: { uid: user.uid, name: (profile && profile.name) || user.email } });
+                    }
+                    await db.collection('users').doc(u.id).update(data);
+                    setUserEdits(prev => { const next = { ...prev }; delete next[u.id]; return next; });
+                    setUsersMsg({ text: `Saved ${u.name || u.email}: ${role}${active ? '' : ' (inactive)'}`, ok: true });
+                } catch (error) {
+                    setUsersMsg({ text: 'Error saving user: ' + error.message, ok: false });
+                }
+            };
+
+            const handleSaveSecretDate = async () => {
+                try {
+                    await db.collection('settings').doc('app').set({ msSecretExpires: secretInput }, { merge: true });
+                    setUsersMsg({ text: 'Secret expiration date saved', ok: true });
+                } catch (error) {
+                    setUsersMsg({ text: 'Error saving date: ' + error.message, ok: false });
+                }
+            };
 
             const handleMicrosoftLogin = async () => {
                 setAuthError('');
@@ -196,16 +252,7 @@
                 }
             };
 
-            const handleLogout = () => {
-                setJobs([]);
-                setJobId('');
-                auth.signOut();
-            };
-
-            const handlePickJob = (id) => {
-                setJobId(id);
-                try { id ? localStorage.setItem(LAST_JOB_KEY, id) : localStorage.removeItem(LAST_JOB_KEY); } catch (e) {}
-            };
+            const handleLogout = () => auth.signOut();
 
             if (!user) {
                 return (
@@ -240,10 +287,39 @@
             }
 
             const role = profile.role;
-            const job = jobs.find(j => j.id === jobId);
-            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
             const liveTools = JOB_TOOLS.filter(t => t.url && t.roles.includes(role));
             const soonTools = JOB_TOOLS.filter(t => !t.url);
+
+            const secretDaysLeft = secretExpires
+                ? Math.ceil((new Date(secretExpires + 'T00:00:00') - new Date()) / 86400000)
+                : null;
+
+            // Alerts on the Users box: people waiting for approval, and the secret within 14 days of expiring (or expired)
+            const pendingCount = usersList.filter(u => u.role === 'pending').length;
+            const secretSoon = secretDaysLeft !== null && secretDaysLeft <= 14;
+            const secretLine = !secretSoon ? '' : secretDaysLeft < 0 ? 'Sign-in secret expired'
+                : secretDaysLeft === 0 ? 'Sign-in secret expires today'
+                : `Sign-in secret expires in ${secretDaysLeft} day${secretDaysLeft === 1 ? '' : 's'}`;
+            const usersBoxClass = 'tool' + (showUsers ? ' open' : '')
+                + (secretSoon && secretDaysLeft < 0 ? ' alert expired' : (secretSoon || pendingCount > 0) ? ' alert' : '');
+
+            const renewalText = `I need to renew the Microsoft sign-in client secret for my Freeman Job Tools web app. It expires on ${secretExpires}.
+
+Setup:
+- Web app: PO Manager, hosted on Netlify (charming-griffin-e1112f.netlify.app), code on GitHub (po-manager/index.html)
+- Firebase project: po-project-ea1ca. Sign-in uses Firebase Authentication with the Microsoft provider.
+- Microsoft Entra app registration: "Freeman Job Tools" (single tenant), tenant ID 977675c3-2808-4305-ac2e-f4418dc1d69c
+- Redirect URI: https://po-project-ea1ca.firebaseapp.com/__/auth/handler
+- Current client secret description: "Firebase"
+
+Please walk me through this one step at a time:
+1. Create a new client secret in Entra (App registrations > Freeman Job Tools > Certificates & secrets), 24 months.
+2. Paste the new secret Value into Firebase (Authentication > Sign-in method > Microsoft > Application secret) and save.
+3. Test Microsoft sign-in in a private/incognito window.
+4. Update the expiration date on the Dashboard (Users > secret expires date).
+5. Only after the test works, delete the old secret in Entra.
+
+I prefer plain, brief instructions, one step at a time.`;
 
             return (
                 <div>
@@ -253,34 +329,12 @@
                     </div>
 
                     <div className="section">
-                        <div className="section-title">Job</div>
-                        <label htmlFor="job-pick">Pick a job</label>
-                        <select id="job-pick" value={jobId} onChange={e => handlePickJob(e.target.value)}>
-                            <option value="">-- Pick a job --</option>
-                            {visibleJobs.map(j => (
-                                <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
-                            ))}
-                        </select>
-                        <label className="check">
-                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
-                            Show archived jobs
-                        </label>
-                        {jobs.length === 0 && role === 'super' && <p style={{ marginTop: '12px', color: '#888' }}>No jobs assigned to you yet.</p>}
-                        {message && <div className="error">{message}</div>}
-                    </div>
-
-                    {job && (
-                        <div className="section">
-                            <div className="job-head">
-                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
-                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
-                            </div>
-                            <div className="tools">
-                                {liveTools.map(t => <ToolTile key={t.key} tool={t} href={t.url(job.id)} />)}
-                                {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
-                            </div>
+                        <div className="section-title">Job tools</div>
+                        <div className="tools">
+                            {liveTools.map(t => <ToolTile key={t.key} tool={t} href={t.url} />)}
+                            {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
                         </div>
-                    )}
+                    </div>
 
                     {role !== 'super' && (
                         <div className="section">
@@ -288,6 +342,107 @@
                             <div className="tools">
                                 {COMPANY_TOOLS.map(t => <ToolTile key={t.key} tool={t} />)}
                             </div>
+                        </div>
+                    )}
+
+                    {isAdminUser && (
+                        <div className="section">
+                            <div className="section-title">Admin</div>
+                            <div className="tools">
+                                <button type="button" className={usersBoxClass} aria-expanded={showUsers}
+                                    onClick={() => { setShowUsers(!showUsers); setUsersMsg(null); }}>
+                                    <Icon d={ICONS.users} />Users
+                                    {pendingCount > 0 && <small>{pendingCount} waiting for approval</small>}
+                                    {secretLine && <small>{secretLine}</small>}
+                                </button>
+                            </div>
+                            {showUsers && (
+                                <div className="admin-users">
+                                    {secretDaysLeft !== null && secretDaysLeft <= 60 && (
+                                        <div className={secretDaysLeft < 0 ? 'secret-warn expired' : 'secret-warn'}>
+                                            <strong>
+                                                {secretDaysLeft < 0
+                                                    ? `Microsoft sign-in secret expired on ${secretExpires}. New sign-ins will fail until it's renewed.`
+                                                    : `Microsoft sign-in secret expires on ${secretExpires} (${secretDaysLeft} days). Renew it in Entra before then.`}
+                                            </strong>
+                                            <div style={{ marginTop: '8px' }}>
+                                                <button className="btn-secondary btn-small"
+                                                    onClick={() => navigator.clipboard.writeText(renewalText).then(
+                                                        () => setCopyMsg({ text: 'Renewal instructions copied. Paste them into a new Claude chat.', ok: true }),
+                                                        () => setCopyMsg({ text: 'Copy failed. Open "Show instructions", select the text and copy it.', ok: false }))}>
+                                                    Copy renewal instructions
+                                                </button>
+                                            </div>
+                                            {copyMsg && <div className={copyMsg.ok ? 'ok' : 'error'}>{copyMsg.text}</div>}
+                                            <details style={{ marginTop: '8px' }}>
+                                                <summary style={{ cursor: 'pointer' }}>Show instructions</summary>
+                                                <pre>{renewalText}</pre>
+                                            </details>
+                                        </div>
+                                    )}
+                                    <div className="users-wrap">
+                                        <table className="users">
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th>
+                                                    <th>Email</th>
+                                                    <th>Phone</th>
+                                                    <th>Role</th>
+                                                    <th>Active</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {usersList.map(u => {
+                                                    const isMe = u.id === user.uid;
+                                                    const edit = userEdits[u.id] || {};
+                                                    const uRole = edit.role !== undefined ? edit.role : u.role;
+                                                    const active = edit.active !== undefined ? edit.active : u.active === true;
+                                                    const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
+                                                    const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
+                                                    return (
+                                                        <tr key={u.id} className={u.role === 'pending' ? 'waiting' : ''}>
+                                                            <td>
+                                                                {u.name}{isMe ? ' (you)' : ''}
+                                                                {u.role === 'pending' && <small>Waiting for access</small>}
+                                                            </td>
+                                                            <td>{u.email}</td>
+                                                            <td>
+                                                                <input type="text" value={phone} placeholder="Phone" aria-label={'Phone for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], phone: e.target.value } }))} />
+                                                            </td>
+                                                            <td>
+                                                                <select value={uRole} disabled={isMe} aria-label={'Role for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], role: e.target.value } }))}>
+                                                                    <option value="pending">Pending</option>
+                                                                    <option value="owner">Owner</option>
+                                                                    <option value="admin">Admin</option>
+                                                                    <option value="estimator">Estimator</option>
+                                                                    <option value="super">Super</option>
+                                                                    <option value="office">Office</option>
+                                                                </select>
+                                                            </td>
+                                                            <td>
+                                                                <input type="checkbox" checked={active} disabled={isMe} aria-label={'Active for ' + (u.name || u.email)}
+                                                                    onChange={e => setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], active: e.target.checked } }))} />
+                                                            </td>
+                                                            <td>
+                                                                <button className="btn-save" disabled={!changed} onClick={() => handleSaveUser(u)}>Save</button>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="secret-row">
+                                        <label htmlFor="secret-date">Microsoft sign-in secret expires:</label>
+                                        <input id="secret-date" type="date" value={secretInput} onChange={e => setSecretInput(e.target.value)} />
+                                        <button className="btn-save" disabled={secretInput === secretExpires} onClick={handleSaveSecretDate}>Save</button>
+                                    </div>
+                                </div>
+                            )}
+                            {usersMsg && <div className={usersMsg.ok ? 'ok' : 'error'}>{usersMsg.text}</div>}
                         </div>
                     )}
                 </div>

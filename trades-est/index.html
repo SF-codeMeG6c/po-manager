@@ -17,14 +17,24 @@
         .sub-title { font-weight: 600; color: #444; margin: 18px 0 8px; font-size: 14px; }
         .form-group { margin-bottom: 12px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        input, select { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        input, select, textarea { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        textarea { resize: vertical; min-height: 80px; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; margin-top: 8px; }
         .btn-primary:hover { background: #0052a3; }
         .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-secondary:hover { background: #e0e0e0; }
+        /* Blue: the buttons that start something in a worksheet */
+        .btn-blue { background: #0066cc; color: white; }
+        .btn-blue:hover { background: #0052a3; }
+        .btn-blue:disabled { background: #ccc; cursor: not-allowed; }
+        /* Save bar: stays at the bottom of the window (under the pop-up windows) */
+        .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; background: white; border-top: 1px solid #ccc; box-shadow: 0 -2px 8px rgba(0,0,0,0.12); }
+        .savebar-in { max-width: 1000px; margin: 0 auto; padding: 10px 30px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: #666; }
+        .savebar-in .grow { flex: 1; }
+        .savebar-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
         .btn-x { background: #d32f2f; color: white; padding: 4px 9px; font-size: 12px; }
         .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -44,6 +54,13 @@
         .ws { background: #f9f9f9; border: 1px solid #e5e5e5; border-radius: 6px; padding: 14px; margin: 4px 0 10px; }
         .ws table { background: white; }
         .ws .sub-title:first-child { margin-top: 0; }
+        .req { background: white; border: 1px solid #ccc; border-radius: 6px; padding: 14px; margin-top: 10px; }
+        .req-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
+        .track td { vertical-align: top; padding: 8px 6px; border-bottom: 1px solid #eee; }
+        .track tr:hover td { background: #fafafa; }
+        .track .po-num { font-weight: 600; }
+        .po-under { margin: 0 0 10px 22px; padding-left: 10px; border-left: 3px solid #cfd8e6; }
+        .po-under .track th { font-size: 12px; padding: 3px 6px; border-bottom: 1px solid #ddd; }
         .sum td { font-weight: 700; border-top: 2px solid #ddd; }
         .short { color: #cc6600; font-weight: 600; }
         .over { color: #388e3c; font-weight: 600; }
@@ -74,7 +91,7 @@
     <div class="container">
         <a class="back" href="/">← Dashboard</a>
         <h1>Trades-EST</h1>
-        <p class="subtitle">Freeman Restoration trade pricing: vendor price, retail needed, Xactimate comparison</p>
+        <p class="subtitle">Freeman Restoration trade pricing</p>
         <div id="app"></div>
     </div>
 
@@ -84,6 +101,10 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-functions-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="/shared/po-form.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <script type="text/babel">
@@ -100,6 +121,8 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+        const storage = firebase.storage(); // request attachments, in the same job folder PO Manager uses
+        const functions = firebase.functions(); // sendQuoteRequest: emails a request through Postmark
 
         const ALLOWED = ['owner', 'admin', 'estimator'];
         const ADMINS = ['owner', 'admin']; // can restore removed trades
@@ -332,6 +355,71 @@
                 leftover: round2(newTotal - retail)                       // rounding leftover at the new prices
             };
         }
+
+        // ---------- Running total for the job: what the customer pays over or under the settlement ----------
+        //   retail of all trades + overhead and profit (20% of retail) + tax and fees (a percent of retail) = subtotal
+        //   selling price = subtotal / 0.865, so in-house labor is 13.5% of the selling price (as in the GPM tool)
+        const OP_PCT = 0.20;
+        const IN_HOUSE_LABOR_PCT = 0.135;
+        const DEFAULT_TAX_PCT = '1.3';
+        // Retail one trade adds: Retail needed (Quote, Calculator), the Xactimate total (Factor),
+        // the Xactimate total + scratch pad retail (Allowance). null = nothing yet. A trade counts with or without a PO.
+        const tradeRetail = (l) => {
+            if (!hasWorksheet(l.method)) return null;
+            const c = calcWs({ ...blankWs(), ...(l.ws || {}) }, l.method);
+            const r = l.method === 'allowance' ? c.retailBase : l.method === 'factor' ? c.xactTotal : c.retail;
+            return r > 0 ? r : null;
+        };
+        const runningTotal = (lines, settlement, taxPct) => {
+            const live = (lines || []).filter(l => !l.deleted);
+            const each = live.map(l => ({ code: (l.code || '').trim() || (l.name || '').trim(), retail: tradeRetail(l) }));
+            const missing = each.filter(t => t.retail === null).map(t => t.code);
+            const retail = round2(each.reduce((t, x) => t + (x.retail || 0), 0));
+            const tp = Math.max(0, n(taxPct));
+            const op = round2(retail * OP_PCT);
+            const tax = round2(retail * tp / 100);
+            const subtotal = round2(retail + op + tax);
+            const selling = round2(subtotal / (1 - IN_HOUSE_LABOR_PCT));
+            const settle = n(settlement);
+            return { trades: live.length, missing, retail, op, tp, tax, subtotal, selling, inHouse: round2(selling - subtotal), settle, diff: round2(selling - settle) };
+        };
+        // The settlement box: an amount shows as dollars and cents; anything else stays as typed
+        const moneyBox = (v) => n(v) > 0 ? money(round2(n(v))) : String(v == null ? '' : v).trim();
+        // The one line shown in the Save bar
+        const totalText = (t) => !(t.retail > 0) ? ''
+            : !(t.settle > 0) ? `Selling price ${money(t.selling)}`
+            : t.diff > 0 ? `Customer pays ${money(t.diff)} over the settlement`
+            : t.diff < 0 ? `Customer pays ${money(-t.diff)} under the settlement`
+            : 'Selling price equals the settlement';
+
+        // Pop-up with the lines behind the running total
+        function Breakdown({ t, onClose }) {
+            const row = (label, value, bold) => <tr className={bold ? 'sum' : ''}><td>{label}</td><td className="money">{value}</td></tr>;
+            return (
+                <div className="calc-back" onClick={onClose}>
+                    <div className="calc" style={{ width: '460px', maxWidth: '94%' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ fontWeight: 700, marginBottom: '8px' }}>Running total</div>
+                        <table>
+                            <tbody>
+                                {row(`Retail of all trades (${t.trades - t.missing.length} of ${t.trades})`, money(t.retail))}
+                                {row('Overhead and profit, 20% of retail', money(t.op))}
+                                {row(`Tax and fees, ${t.tp}% of retail`, money(t.tax))}
+                                {row('Subtotal', money(t.subtotal), true)}
+                                {row('Selling price (subtotal divided by 0.865)', money(t.selling), true)}
+                                {row('In-house labor inside the selling price (13.5%)', money(t.inHouse))}
+                                {row('Settlement', t.settle > 0 ? money(t.settle) : 'not entered')}
+                                {t.settle > 0 && row('Customer pays', t.diff === 0 ? 'the settlement' : `${money(Math.abs(t.diff))} ${t.diff > 0 ? 'over' : 'under'}`, true)}
+                            </tbody>
+                        </table>
+                        {t.missing.length > 0 && (
+                            <div className="muted">{t.missing.length} {t.missing.length === 1 ? 'trade has' : 'trades have'} no retail yet and {t.missing.length === 1 ? 'is' : 'are'} not in the total: {t.missing.join(', ')}</div>
+                        )}
+                        <button className="btn-secondary" style={{ width: '100%', marginTop: '12px' }} onClick={onClose}>Close</button>
+                    </div>
+                </div>
+            );
+        }
+
         const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
         // Xactimate categories a trade code starts with on the picker: "INS" -> INS, "FNC/DOR #2" -> FNC and DOR, "PNT-DEO" -> PNT
@@ -714,18 +802,735 @@
         const overShort = (x) => x === 0 ? <span>{money(0)}</span>
             : <span className={x < 0 ? 'short' : 'over'}>{money(Math.abs(x))} {x < 0 ? 'short' : 'over'}</span>;
 
+        // ---------- Quote requests: the PO before the customer signs ----------
+        // Each request is its own record (tradesEst/{jobId}/requests), outside the trade list, so saving the
+        // trade list never touches it. Field names match PO Manager's POs so the handoff at signing is a copy.
+        const REQUEST_FIRST_LINE = 'REQUEST FOR PRICING - NOT A PURCHASE ORDER';
+        // ask = the sub gives the price; confirm = the sub is shown ours; none = our price, nothing is sent to anyone
+        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price'], ['none', 'Our price, not sent']];
+        // Quote has no price yet; Calculator is our own price list (not sent); the others produce a price for the sub to confirm
+        const kindFor = (method) => method === 'quote' ? 'ask' : method === 'calculator' ? 'none' : 'confirm';
+        // The first line belongs on anything that goes out for pricing; a PO that is not sent does not carry it
+        const withFirstLine = (scope, kind) => {
+            const body = String(scope || '').replace(REQUEST_FIRST_LINE, '').replace(/^\s+/, '');
+            return kind === 'none' ? body : REQUEST_FIRST_LINE + '\n\n' + body;
+        };
+        const kindText = (k) => (KINDS.find(x => x[0] === k) || ['', ''])[1];
+        const REQ_FIELDS = ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'kind', 'part', 'contractAmount', 'scope'];
+        const amountText = (x) => x > 0 ? x.toFixed(2) : '';
+        const showAmount = (v) => String(v == null ? '' : v).trim() === '' ? '-' : money(n(v));
+        const ATT_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
+        const attKey = (list) => JSON.stringify((list || []).map(a => [a.name, a.type, a.url || '']));
+        const MAX_EMAIL_BYTES = 9.5 * 1024 * 1024; // Postmark limit is 10 MB total
+        const millis = (ts) => { const d = toDate(ts); return d ? d.getTime() : 0; };
+
+        // ---------- PO amounts follow the worksheet ----------
+        // A PO that is not Complete takes its amount from its trade's worksheet: the vendor price, or on an Allowance trade
+        // the labor number (labor PO) or the material number (material PO). It follows only while it is the one PO of its
+        // kind on the trade and the worksheet has a price; otherwise the amount is typed by hand. Complete stops it;
+        // back to Pending starts it again.
+        const partOf = (l, r) => l.method === 'allowance' ? (r.part === 'material' ? 'material' : 'labor') : '';
+        // The amount (as text) a PO should have, or null when it does not follow
+        const followAmount = (r, lines, requests) => {
+            if (!r || r.deleted || r.status === 'Complete') return null;
+            const l = (lines || []).find(x => x.id === r.lineId && !x.deleted);
+            if (!l || !hasWorksheet(l.method)) return null;
+            const part = partOf(l, r);
+            if ((requests || []).some(x => x.id !== r.id && !x.deleted && x.lineId === r.lineId && partOf(l, x) === part)) return null;
+            const c = calcWs({ ...blankWs(), ...(l.ws || {}) }, l.method);
+            const amt = l.method === 'allowance' ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
+            return amt > 0 ? amountText(amt) : null;
+        };
+        const amountDiffers = (r, amount) => amount !== null && round2(n(amount)) !== round2(n(r.contractAmount));
+        // The record change that moves a PO's amount: what it said before is kept, like any other edit
+        const followUpdate = (r, amount, by, now) => {
+            const prev = { savedAt: r.updatedAt || r.createdAt || null, savedBy: r.updatedBy || r.createdBy || null, replacedAt: now, replacedBy: by, attachments: r.attachments || [], replacedWhy: 'amount followed the worksheet' };
+            REQ_FIELDS.forEach(k => { prev[k] = r[k] || ''; });
+            const data = { contractAmount: amount, updatedBy: by, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) };
+            // An Ask for a price amount is not on the form, so the form that was sent has not changed
+            if (r.kind === 'ask' && r.sentUpdatedAt && millis(r.updatedAt) <= millis(r.sentUpdatedAt)) data.sentUpdatedAt = now;
+            return data;
+        };
+        const fmtTime = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; };
+
+        // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
+        const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, ch) => nl + sp + ch.toUpperCase());
+        const capInPlace = (el) => {
+            const fixed = capLines(el.value);
+            if (fixed !== el.value) {
+                const start = el.selectionStart, end = el.selectionEnd;
+                el.value = fixed;
+                el.setSelectionRange(start, end);
+            }
+            return fixed;
+        };
+        const insertAtCursor = (el, text) => {
+            const cur = el.value || '';
+            const pos = el.selectionStart == null ? cur.length : el.selectionStart;
+            const before = cur.slice(0, pos), after = cur.slice(pos);
+            const sepBefore = before && !/\s$/.test(before) ? ' ' : '';
+            const sepAfter = after && !/^\s/.test(after) ? ' ' : '';
+            return { value: capLines(before + sepBefore + text + sepAfter + after), pos: (before + sepBefore + text).length };
+        };
+
+        // What can be done with a saved request. Shared by the list inside a trade's worksheet and the job's tracker,
+        // so both places work the same way.
+        function useRequestActions(po) {
+            const { jobId, jobCode, job, superPick, me } = po || {}; // the start list has no job and no requests
+            const [previewId, setPreviewId] = useState(null); // request whose form is being built
+            const [sendingId, setSendingId] = useState(null); // request being emailed
+            const [note, setNote] = useState('');
+            const reqRef = (id) => { const col = db.collection('tradesEst').doc(jobId).collection('requests'); return id ? col.doc(id) : col.doc(); };
+
+            // What goes in the form's boxes for a request: the job, the job's supervisor pick, and the request itself
+            const formHeader = () => {
+                const sup = superPick || {};
+                return {
+                    jobCode: (job && job.code) || jobCode, jobAddress: (job && job.address) || '', cityStateZip: (job && job.cityStateZip) || '', lockBox: (job && job.lockBox) || '',
+                    superName: sup.name || '', superEmail: sup.email || '', superPhone: sup.phone || ''
+                };
+            };
+            const formValues = (r) => ({
+                ...formHeader(), poNumber: r.poNumber,
+                subName: r.subName, contact: r.contact, phone: r.phone, email: r.email, subCode: r.subCode, category: r.category,
+                amount: r.kind === 'ask' ? '' : r.contractAmount, // asking for a price: the sub sees no amount
+                scope: r.scope
+            });
+
+            // Send for pricing: build the form, keep that exact PDF in the job folder, then email it to the sub.
+            // Replies go to the job's estimator, or to whoever clicks this when none is picked (the function decides and reports back).
+            const send = async (r) => {
+                if (!r.email) return;
+                if (r.kind === 'none') { setNote(`Error: ${r.poNumber} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
+                if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${r.poNumber} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
+                const ask = r.lastEmail
+                    ? `Already sent on ${fmtTime(r.lastEmail.sentAt)} to ${r.lastEmail.to}. Send ${r.poNumber} again to ${r.email}?`
+                    : `Send ${r.poNumber} for pricing to ${r.subName} at ${r.email}?`;
+                if (!window.confirm(ask)) return;
+                setSendingId(r.id);
+                setNote('');
+                try {
+                    const bytes = await window.POForm.build(formValues(r), r.attachments || []);
+                    if (bytes.length > MAX_EMAIL_BYTES) throw new Error('the request is over 10 MB, too large to email. Remove or shrink attachments.');
+                    // File name: PO Manager's pattern with RFP in front; the amount only when the sub is shown it
+                    const d = new Date();
+                    const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
+                    const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+                    const fileName = ['RFP', clean(r.category), clean(r.subName), amountShown, r.poNumber, dateStr].filter(Boolean).join('_') + '.pdf';
+                    const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                    const pdfUrl = await fileRef.getDownloadURL();
+                    // The form as sent: its file, and the job and supervisor it went out with
+                    await reqRef(r.id).update({ pdfUrl, fileName, header: formHeader(), pdfBuiltAt: d, pdfBuiltBy: me });
+                    const sent = await functions.httpsCallable('sendQuoteRequest')({ jobId, requestId: r.id });
+                    const reply = (sent && sent.data) || {}; // { replyTo, replyName }: who the sub's reply goes to
+                    // What was sent is this saved version: an edit after this shows "Changed since sent"
+                    await reqRef(r.id).update({ sentUpdatedAt: r.updatedAt || null });
+                    const toMe = !reply.replyTo || reply.replyTo.toLowerCase() === ((auth.currentUser && auth.currentUser.email) || '').toLowerCase();
+                    setNote(`Request ${r.poNumber} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
+                } catch (err) {
+                    setNote('Error sending the request: ' + err.message);
+                }
+                setSendingId(null);
+            };
+
+            // Build the Subcontractor Scope of Work form for a saved request and open it in a new tab. Nothing is saved or sent.
+            const preview = async (r) => {
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const tab = window.open('', '_blank'); // opened right on the click so the browser allows it; the PDF goes in when it is ready
+                if (!tab) { setNote('Error: the browser blocked the new tab. Allow pop-ups for this site, then click Preview again.'); return; }
+                tab.document.write('<p style="font-family: sans-serif; padding: 20px">Building the form...</p>');
+                setPreviewId(r.id);
+                setNote('');
+                try {
+                    const bytes = await window.POForm.build(formValues(r), r.attachments || []);
+                    tab.location.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+                    // A browser set to download PDFs leaves the tab on the waiting page: say where the form went
+                    setTimeout(() => { try { if (!tab.closed && !/^blob:/.test(tab.location.href)) tab.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 20px">The form was downloaded. Look in your downloads, then close this tab.</p>'; } catch (e) { /* tab moved on */ } }, 1500);
+                } catch (err) {
+                    tab.close();
+                    setNote('Error building the form: ' + err.message);
+                }
+                setPreviewId(null);
+            };
+
+            // Delete hides the request (kept for records); Owner/Admin can restore it
+            const hide = async (r) => {
+                if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
+                try {
+                    await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
+                    setNote(`Request ${r.poNumber} deleted.`);
+                } catch (err) { setNote('Error deleting the request: ' + err.message); }
+            };
+            const restore = async (r) => {
+                try {
+                    await reqRef(r.id).update({ deleted: false, restoredBy: me, restoredAt: new Date() });
+                    setNote(`Request ${r.poNumber} restored.`);
+                } catch (err) { setNote('Error restoring the request: ' + err.message); }
+            };
+
+            // Pending or Complete, set by hand like PO Manager's tracker. Saved on the click; each change is kept.
+            const setStatus = async (r, status) => {
+                if ((r.status || 'Pending') === status) return;
+                try {
+                    const now = new Date();
+                    const data = { status, statusBy: me, statusAt: now, statusHistory: firebase.firestore.FieldValue.arrayUnion({ status, by: me, at: now }) };
+                    // Back to Pending: the amount follows the saved worksheet again
+                    const amount = status === 'Pending' && po && po.follow ? po.follow({ ...r, status }) : null;
+                    if (amountDiffers(r, amount)) Object.assign(data, followUpdate(r, amount, me, now));
+                    await reqRef(r.id).update(data);
+                    setNote('');
+                } catch (err) { setNote('Error saving the status: ' + err.message); }
+            };
+            // Notes for the team (not on the form, not in the email). Same field name as PO Manager so they move with the PO at the handoff.
+            const saveNotes = async (r, text) => {
+                const notes = String(text || '').replace(/\s+$/, '');
+                if (notes === (r.notes || '')) return;
+                const now = new Date();
+                const data = { notes, notesBy: me, notesAt: now };
+                // What the note said before is kept in the record
+                if (r.notes) data.noteHistory = firebase.firestore.FieldValue.arrayUnion({ notes: r.notes, savedBy: r.notesBy || null, savedAt: r.notesAt || null, replacedAt: now, replacedBy: me });
+                await reqRef(r.id).update(data);
+            };
+            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes };
+        }
+
+        // Notes window, like PO Manager's: a big box with Voice
+        function NoteModal({ title, start, onSave, onClose }) {
+            const [text, setText] = useState(start || '');
+            const [listening, setListening] = useState(false);
+            const [saving, setSaving] = useState(false);
+            const [err, setErr] = useState('');
+            const boxRef = React.useRef(null);
+            const recRef = React.useRef(null);
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+            const toggleVoice = () => {
+                if (listening) { if (recRef.current) recRef.current.stop(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setErr('Voice input is not supported in this browser (use Chrome or Edge).'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let said = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript;
+                    const el = boxRef.current;
+                    if (!said.trim() || !el) return;
+                    const { value, pos } = insertAtCursor(el, said.trim());
+                    setText(value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => setErr('Voice input stopped (' + e.error + ').');
+                rec.onend = () => { setListening(false); recRef.current = null; };
+                recRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+            const save = async () => {
+                if (recRef.current) recRef.current.stop();
+                setSaving(true);
+                setErr('');
+                try { await onSave(text); onClose(); } catch (e) { setErr('Error saving the note: ' + e.message); setSaving(false); }
+            };
+            return (
+                <div className="calc-back">
+                    <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: '4px' }}>Notes</div>
+                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '10px', wordBreak: 'break-all' }}>{title}</div>
+                        <textarea ref={boxRef} rows="15" autoFocus value={text} placeholder="Type or use Voice..." onChange={e => setText(capInPlace(e.target))} />
+                        {err && <div className="bad" style={{ fontSize: '13px', marginTop: '6px' }}>{err}</div>}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                            <button type="button" className={listening ? 'btn-x' : 'btn-secondary'} style={{ padding: '10px' }} onClick={toggleVoice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                            <div style={{ flex: 1 }} />
+                            <button type="button" className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+                            <button type="button" className="btn-primary" style={{ width: 'auto', marginTop: 0 }} onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Saved requests as rows, laid out like PO Manager's tracker: File, Notes, Status, Actions.
+        // lock = a request is open for editing somewhere, so Edit, Delete and Send wait.
+        function RequestRows({ rows, act, onEdit, lock }) {
+            const [histId, setHistId] = useState(null);   // request showing its earlier versions
+            const [noteId, setNoteId] = useState(null);   // request whose notes window is open
+            const noteFor = rows.find(r => r.id === noteId);
+            const titleOf = (r) => [r.category, r.subName, String(r.contractAmount == null ? '' : r.contractAmount).trim() === '' ? 'no amount' : money(n(r.contractAmount))].join(' | ');
+            const radio = { display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap', color: '#333', cursor: 'pointer' };
+            return (<>
+                <table className="track">
+                    <thead><tr><th>File</th><th style={{ width: '190px' }}>Notes</th><th style={{ width: '105px' }}>Status</th><th style={{ width: '245px' }}>Actions</th></tr></thead>
+                    <tbody>
+                        {rows.map(r => {
+                            const status = r.status === 'Complete' ? 'Complete' : 'Pending';
+                            const by = [r.createdBy && `Created by ${r.createdBy.name} ${fmtDay(r.createdAt)}`,
+                                (r.versions || []).length > 0 && r.updatedBy && `Edited by ${r.updatedBy.name} ${fmtDay(r.updatedAt)}`,
+                                (r.attachments || []).length > 0 && `${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+                            return (
+                                <React.Fragment key={r.id}>
+                                    <tr>
+                                        <td>
+                                            <div>{titleOf(r)}</div>
+                                            <div style={{ marginTop: '2px' }}><span className="po-num">{r.poNumber}</span> <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
+                                            <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
+                                        </td>
+                                        <td>
+                                            <button type="button" className="btn-secondary btn-sm" onClick={() => setNoteId(r.id)} title={r.notes || ''}
+                                                style={{ textAlign: 'left', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                📝 {r.notes ? r.notes.split('\n')[0] : 'Add note'}
+                                            </button>
+                                        </td>
+                                        <td>
+                                            {['Pending', 'Complete'].map(sName => (
+                                                <label key={sName} style={radio}>
+                                                    <input type="radio" style={{ width: 'auto', margin: 0 }} checked={status === sName} onChange={() => act.setStatus(r, sName)} />{sName}
+                                                </label>
+                                            ))}
+                                        </td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => act.preview(r)} disabled={!!act.previewId}>{act.previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
+                                            <button className="btn-secondary btn-sm" onClick={() => onEdit(r)} disabled={lock} title={lock ? 'Save or cancel the request that is open first.' : ''}>Edit</button>{' '}
+                                            {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
+                                            <button className="btn-x" onClick={() => act.hide(r)} disabled={lock}>Delete</button>
+                                            <div style={{ marginTop: '4px' }}>
+                                                <button className="btn-sm" style={{ background: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? '#ccc' : '#0066cc', color: 'white', cursor: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
+                                                    disabled={r.kind === 'none' || !r.email || !!act.sendingId || lock}
+                                                    title={r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                    {act.sendingId === r.id ? 'Sending...' : 'Send for pricing'}
+                                                </button>
+                                                {r.kind === 'none' ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
+                                                    : !r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
+                                            </div>
+                                            {r.lastEmail && (() => {
+                                                const e = r.lastEmail;
+                                                const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
+                                                const label = e.status === 'Delivered' ? `Delivered ${fmtTime(e.statusAt)} ✓`
+                                                    : e.status === 'Bounced' ? `Bounced ${fmtTime(e.statusAt)} ✗`
+                                                    : `Sent ${fmtTime(e.sentAt)}`;
+                                                // Edited since the version that was sent
+                                                const changed = millis(r.updatedAt) > millis(r.sentUpdatedAt);
+                                                const history = (r.emailHistory || []).map(h =>
+                                                    `${h.to} | Sent ${fmtTime(h.sentAt)}${h.sentBy ? ' by ' + h.sentBy.name : ''} | ${h.status}${h.statusAt ? ' ' + fmtTime(h.statusAt) : ''}${h.detail ? ' (' + h.detail + ')' : ''}`).join('\n');
+                                                return (
+                                                    <div title={history} style={{ fontSize: '11px', marginTop: '4px', cursor: 'help', whiteSpace: 'normal' }}>
+                                                        <div style={{ color, fontWeight: 600 }}>{label}</div>
+                                                        {changed && <div style={{ color: '#cc6600', fontWeight: 600 }}>Changed since sent</div>}
+                                                    </div>
+                                                );
+                                            })()}
+                                        </td>
+                                    </tr>
+                                    {histId === r.id && [...(r.versions || [])].reverse().map((v, i) => (
+                                        <tr key={i} className="gone" title={(v.scope || '') + ((v.attachments || []).length ? '\n\nAttachments: ' + v.attachments.map(a => a.name).join(', ') : '')}>
+                                            <td><span style={{ fontSize: '12px' }}>Earlier version:</span> {titleOf(v)} · {kindText(v.kind)}{v.part ? ` (${v.part})` : ''}{v.replacedWhy ? ` · replaced when the ${v.replacedWhy}` : ''}</td>
+                                            <td colSpan="2" style={{ fontSize: '12px' }}>{v.savedBy ? v.savedBy.name : ''} {fmtStamp(v.savedAt)}</td>
+                                            <td style={{ fontSize: '12px' }}>Hover to read its scope</td>
+                                        </tr>
+                                    ))}
+                                </React.Fragment>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                {noteFor && <NoteModal title={`${noteFor.poNumber} · ${titleOf(noteFor)}`} start={noteFor.notes || ''} onSave={text => act.saveNotes(noteFor, text)} onClose={() => setNoteId(null)} />}
+            </>);
+        }
+
+        // Deleted requests (hidden, kept for records), with Restore for Owner/Admin
+        function DeletedRows({ rows, act }) {
+            return (
+                <table style={{ marginTop: '8px' }}>
+                    <tbody>
+                        {rows.map(r => (
+                            <tr key={r.id} className="gone">
+                                <td style={{ width: '150px' }}>{r.poNumber}</td>
+                                <td>{r.category} | {r.subName}</td>
+                                <td>Deleted by {r.deletedBy ? r.deletedBy.name : ''} {fmtDay(r.deletedAt)}</td>
+                                <td style={{ width: '80px' }}><button className="btn-secondary btn-sm" onClick={() => act.restore(r)}>Restore</button></td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            );
+        }
+
+        // A trade's POs, shown right under its row on the trade list (no need to open the trade).
+        // line = the trade they hang on; null for POs whose trade was taken off the list.
+        function TradePOs({ rows, po, line }) {
+            const act = useRequestActions(po);
+            // Editing happens in the trade's worksheet, where the pricing is: open it with this request ready to edit
+            const edit = (r) => {
+                if (!line) { act.setNote(`Error: the trade for ${r.poNumber} is no longer on the trade list. Restore the trade to edit this request.`); return; }
+                if (!hasWorksheet(line.method)) { act.setNote(`Error: ${line.code} has no Method picked, so its worksheet cannot open. Pick a Method on that trade, then click Edit again.`); return; }
+                act.setNote('');
+                po.editRequest(r);
+            };
+            return (
+                <div className="po-under">
+                    <RequestRows rows={rows} act={act} onEdit={edit} lock={po.draftOpen} />
+                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
+                </div>
+            );
+        }
+
+        // Deleted POs on the job (hidden, kept for records). Owner/Admin can restore them.
+        function DeletedPOs({ rows, po }) {
+            const act = useRequestActions(po);
+            const [show, setShow] = useState(false);
+            return (
+                <div style={{ marginTop: '10px' }} className="po-deleted">
+                    <button className="btn-secondary btn-sm" onClick={() => setShow(!show)}>{show ? 'Hide deleted POs' : `Show deleted POs (${rows.length})`}</button>
+                    {show && <DeletedRows rows={rows} act={act} />}
+                    {act.note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: act.note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{act.note}</div>}
+                </div>
+            );
+        }
+
+        // The quote requests for one trade. The title and "+ New request" button show at the top of its worksheet
+        // (headSlot); the edit box opens further down, under the Xactimate lines.
+        function Requests({ line, ws, c, po, headSlot }) {
+            const { jobId, jobCode, me, requests, requestsError, templates, savedIds } = po;
+            const act = useRequestActions(po);            // this section only needs its message line and the request records
+            const { note, setNote, reqRef } = act;
+            const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
+            const [busy, setBusy] = useState(false);
+            const [listening, setListening] = useState(false);
+            const recRef = React.useRef(null);
+            const scopeRef = React.useRef(null);
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+
+            const isAllow = line.method === 'allowance';
+            const saved = savedIds.has(line.id);          // the trade is in the saved trade list
+            const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+            const live = mine.filter(r => !r.deleted);
+            // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
+            const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
+            const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
+            const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+
+            const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
+            const startNew = () => {
+                // Allowance: the second request starts on material when labor already has one
+                const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
+                setDraft({
+                    id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
+                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: withFirstLine('', kindFor(line.method)),
+                    attachments: []
+                });
+                setNote('');
+            };
+            const startEdit = (r) => {
+                const d = { id: r.id };
+                REQ_FIELDS.forEach(k => { d[k] = r[k] || ''; });
+                d.attachments = r.attachments || [];
+                setDraft(d);
+                setNote('');
+            };
+            const closeDraft = () => { stopVoice(); setDraft(null); };
+            // Changing the kind puts the first line on (going out for pricing) or takes it off (not sent)
+            const pickKind = (kind) => setDraft(d => ({ ...d, kind, scope: withFirstLine(d.scope, kind) }));
+            // Tell the page a request is open here, so the tracker holds its Edit, Delete and Send until it is saved or cancelled
+            useEffect(() => { po.setDraftOpen(!!draft); return () => po.setDraftOpen(false); }, [!!draft]);
+            // Bring the edit box into view (it opens under the Xactimate lines)
+            const toEditor = () => setTimeout(() => { const el = document.getElementById('req-editor'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
+            // Edit on one of this trade's POs: its worksheet was opened for it, so start editing that one
+            useEffect(() => {
+                const j = po.jump;
+                if (!j || j.lineId !== line.id || requests === null) return;
+                const r = requests.find(x => x.id === j.requestId && !x.deleted);
+                if (r) { startEdit(r); toEditor(); }
+                po.clearJump();
+            }, [po.jump, requests === null]);
+            const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
+            const loadTemplate = (id) => {
+                const t = (templates || []).find(x => x.id === id);
+                if (!t) return;
+                const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
+                const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
+                const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
+                setDraft(d => ({
+                    ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
+                    scope: swap ? withFirstLine(body, d.kind) : d.scope
+                }));
+            };
+
+            // Attachments: new ones are { name, type, file } until Save request stores them; saved ones are { name, type, url }
+            const addFiles = (e) => {
+                const files = Array.from(e.target.files || []);
+                e.target.value = '';
+                const bad = files.filter(f => !ATT_TYPES.includes(f.type));
+                setNote(bad.length ? 'Error: skipped (only PDF, JPG, PNG): ' + bad.map(f => f.name).join(', ') : '');
+                const good = files.filter(f => ATT_TYPES.includes(f.type)).map(f => ({ name: f.name, type: f.type, file: f }));
+                if (good.length) setDraft(d => ({ ...d, attachments: [...d.attachments, ...good] }));
+            };
+            const moveAtt = (i, dir) => setDraft(d => {
+                const list = [...d.attachments], j = i + dir;
+                if (j < 0 || j >= list.length) return d;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...d, attachments: list };
+            });
+            const removeAtt = (i) => setDraft(d => ({ ...d, attachments: d.attachments.filter((_, k) => k !== i) }));
+            // Store the new files; files taken off a request stay in storage (kept for records)
+            const storeFiles = async (list) => {
+                const out = [];
+                for (const att of list) {
+                    if (att.file) {
+                        const ref = storage.ref(`jobForms/${jobId}/att_${Date.now()}_${att.name}`);
+                        await ref.put(att.file);
+                        out.push({ name: att.name, type: att.type, url: await ref.getDownloadURL() });
+                    } else out.push({ name: att.name, type: att.type, url: att.url });
+                }
+                return out;
+            };
+
+            // Save this vendor to PO Manager's template list (company-wide). Does not save the request.
+            // The scope wording goes with it, first line included: templates are where estimating starts.
+            const saveTemplate = async () => {
+                const f = {};
+                ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'scope'].forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
+                if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required to save a template.'); return; }
+                if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
+                const key = (t) => (t || '').trim().toLowerCase();
+                const old = (templates || []).find(t => key(t.subName) === key(f.subName) && key(t.category) === key(f.category));
+                if (old && !window.confirm(`A template for ${old.category} | ${old.subName} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
+                setBusy(true);
+                setNote('');
+                try {
+                    const now = new Date();
+                    // An existing template keeps its amount; a new one starts with none (a request's amount belongs to one job)
+                    if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now });
+                    else await db.collection('formLibrary').add({ ...f, userId: me.uid, contractAmount: '', dateCreated: now, dateUpdated: now });
+                    setNote(`Template ${old ? 'updated' : 'saved'}: ${f.category} | ${f.subName}. The request itself is not saved until you click Save request.`);
+                } catch (err) {
+                    setNote('Error saving the template: ' + err.message);
+                }
+                setBusy(false);
+            };
+
+            // Voice to text into the scope box (Chrome or Edge)
+            const toggleVoice = () => {
+                if (listening) { stopVoice(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setNote('Error: voice input is not supported in this browser (use Chrome or Edge).'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US';
+                rec.continuous = true;
+                rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let text = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) text += e.results[i][0].transcript;
+                    const el = scopeRef.current;
+                    if (!text.trim() || !el) return;
+                    const { value, pos } = insertAtCursor(el, text.trim());
+                    setF('scope', value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => setNote('Error: voice input stopped (' + e.error + ').');
+                rec.onend = () => { setListening(false); recRef.current = null; };
+                recRef.current = rec;
+                rec.start();
+                setListening(true);
+            };
+
+            // Does the request on screen take its amount from the worksheet? '' = yes; otherwise why it is typed by hand
+            const whyByHand = () => {
+                const status = draft.id ? ((mine.find(r => r.id === draft.id) || {}).status || 'Pending') : 'Pending';
+                if (status === 'Complete') return 'This PO is Complete, so its amount no longer follows the worksheet.';
+                const part = partOf(line, draft);
+                if (live.some(r => r.id !== draft.id && partOf(line, r) === part)) return `This trade has more than one ${part ? part + ' ' : ''}PO, so their amounts are typed by hand.`;
+                return wsAmount(draft.part) > 0 ? '' : 'The worksheet has no price yet. Once it does, this amount follows it.';
+            };
+            const save = async () => {
+                const f = {};
+                REQ_FIELDS.forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
+                if (!whyByHand()) f.contractAmount = amountText(wsAmount(draft.part));
+                if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required.'); return; }
+                // The first line stays on everything going out for pricing until the handoff; a PO that is not sent has none
+                f.scope = withFirstLine(f.scope, f.kind).trim();
+                stopVoice();
+                setBusy(true);
+                setNote('');
+                try {
+                    const now = new Date();
+                    if (!draft.id) {
+                        f.attachments = await storeFiles(draft.attachments); // files first: if one fails, no PO number is used
+                        // New: take the next PO number from the job's counter (the one PO Manager uses) and save, as one step
+                        const jobRef = db.collection('jobs').doc(jobId);
+                        const ref = reqRef();
+                        const poNumber = await db.runTransaction(async tx => {
+                            const snap = await tx.get(jobRef);
+                            if (!snap.exists) throw new Error('Job not found.');
+                            const next = (snap.data().poCounter || 0) + 1;
+                            const num = `${snap.data().code || jobCode}-${String(next).padStart(3, '0')}`;
+                            tx.update(jobRef, { poCounter: next });
+                            tx.set(ref, {
+                                ...f, lineId: line.id, tradeCode: line.code || '', tradeName: line.name || '', poNumber: num,
+                                status: 'Pending', deleted: false, createdBy: me, createdAt: now, updatedBy: me, updatedAt: now
+                            });
+                            return num;
+                        });
+                        setNote(`Request saved as ${poNumber}.`);
+                    } else {
+                        const old = mine.find(r => r.id === draft.id);
+                        if (!old) throw new Error('This request is no longer on the list.');
+                        const filesChanged = draft.attachments.some(a => a.file) || attKey(draft.attachments) !== attKey(old.attachments);
+                        if (!filesChanged && !REQ_FIELDS.some(k => (old[k] || '') !== f[k])) { setDraft(null); setNote('No changes to save.'); setBusy(false); return; }
+                        f.attachments = await storeFiles(draft.attachments);
+                        // Keep what it said, and what was attached, before this edit
+                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me, attachments: old.attachments || [] };
+                        REQ_FIELDS.forEach(k => { prev[k] = old[k] || ''; });
+                        await reqRef(draft.id).update({ ...f, updatedBy: me, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+                        setNote(`Request ${old.poNumber} saved. The earlier version is kept.`);
+                    }
+                    setDraft(null);
+                } catch (err) {
+                    setNote('Error saving the request: ' + err.message);
+                }
+                setBusy(false);
+            };
+            const sortedTemplates = [...(templates || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
+            const wsNow = draft ? wsAmount(draft.part) : 0;
+            const byHand = draft ? whyByHand() : '';
+            const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
+
+            // Top of the worksheet: the title and the button that starts a request
+            const head = (<>
+                <div className="sub-title" style={{ marginTop: 0 }}>Quote requests</div>
+                {requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{requestsError}</div>}
+                <div className="inline" style={{ fontSize: '13px' }}>
+                    <button className="btn-blue btn-sm" onClick={() => { startNew(); toEditor(); }} disabled={!saved || requests === null || busy || !!draft}>+ New request</button>
+                    {draft && <span style={{ color: '#666' }}>A request is open below, under the Xactimate lines.</span>}
+                    {!draft && !saved && <span style={{ color: '#666' }}>Click Save first. A request can only be added to a trade that is in the saved trade list.</span>}
+                    {!draft && saved && <span style={{ color: '#666' }}>{live.length ? `This trade's ${live.length === 1 ? 'PO is' : live.length + ' POs are'} listed under its row, above this worksheet.` : 'No POs on this trade yet.'}</span>}
+                </div>
+            </>);
+
+            return (<>
+                {headSlot && ReactDOM.createPortal(head, headSlot)}
+                {draft && (
+                    <div className="req" id="req-editor">
+                        <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
+                        {/* Scope first: the box sits right under the Xactimate lines, so they are on screen while the scope is written */}
+                        <div className="form-group">
+                            <label>Scope of Work
+                                <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                            </label>
+                            <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
+                        </div>
+                        <div className="form-group">
+                            <label>Load vendor from a PO Manager template</label>
+                            <select value="" onChange={e => loadTemplate(e.target.value)}>
+                                <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved in PO Manager'}</option>
+                                {sortedTemplates.map(t => <option key={t.id} value={t.id}>{t.category} | {t.subName}</option>)}
+                            </select>
+                        </div>
+                        <div className="req-grid">
+                            <div><label>Subcontractor</label><input value={draft.subName} onChange={e => setF('subName', e.target.value)} /></div>
+                            <div><label>Contact</label><input value={draft.contact} onChange={e => setF('contact', e.target.value)} /></div>
+                            <div><label>Phone</label><input value={draft.phone} onChange={e => setF('phone', e.target.value)} /></div>
+                            <div><label>Email</label><input value={draft.email} onChange={e => setF('email', e.target.value)} /></div>
+                            <div><label>Sub Code</label><input value={draft.subCode} onChange={e => setF('subCode', e.target.value)} /></div>
+                            <div><label>Category</label><input value={draft.category} onChange={e => setF('category', e.target.value)} /></div>
+                        </div>
+                        <div className="inline" style={{ margin: '12px 0 4px' }}>
+                            <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>Kind of request</span>
+                            {KINDS.map(([v, label]) => (
+                                <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.kind === v} onChange={() => pickKind(v)} />{label}</label>
+                            ))}
+                        </div>
+                        {isAllow && (
+                            <div className="inline" style={{ margin: '8px 0 4px' }}>
+                                <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>This request is for</span>
+                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'labor'} onChange={() => pickPart('labor')} />Labor ({money(c.labor)})</label>
+                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'material'} onChange={() => pickPart('material')} />Material ({money(c.material)})</label>
+                            </div>
+                        )}
+                        <div className="inline" style={{ margin: '8px 0 4px' }}>
+                            <label>Amount</label>
+                            {byHand
+                                ? <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
+                                : <input className="num" style={{ width: '130px', background: '#f0f0f0' }} value={amountText(wsNow)} disabled title="From the worksheet" />}
+                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : 'The sub sees this as the Contract Amount.'}</span>
+                            <span style={{ fontSize: '13px', color: '#666' }}>{byHand || 'Follows the worksheet until this PO is marked Complete.'}</span>
+                            {byHand && wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
+                                <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
+                                <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
+                            </>)}
+                        </div>
+                        <div className="form-group">
+                            <div style={{ fontSize: '13px', color: '#555', fontWeight: 500, marginBottom: '5px' }}>Attachments (added as pages after the form)
+                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', marginBottom: 0, cursor: 'pointer', borderRadius: '4px', color: '#333' }}>
+                                    + Add Files
+                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={addFiles} style={{ display: 'none' }} />
+                                </label>
+                            </div>
+                            {draft.attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
+                            {draft.attachments.map((att, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
+                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
+                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}{att.file && <span style={{ color: '#cc6600' }}> (not saved yet)</span>}</span>
+                                    <button type="button" className="btn-secondary btn-sm" onClick={() => moveAtt(i, -1)} disabled={i === 0}>↑</button>
+                                    <button type="button" className="btn-secondary btn-sm" onClick={() => moveAtt(i, 1)} disabled={i === draft.attachments.length - 1}>↓</button>
+                                    <button type="button" className="btn-x" onClick={() => removeAtt(i)}>✕</button>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="inline">
+                            <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
+                            <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={closeDraft} disabled={busy}>Cancel</button>
+                            <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={saveTemplate} disabled={busy || templates === null} title="Add this vendor and scope wording to the template list used here and in PO Manager">Save vendor as template</button>
+                            {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>Saving takes the next PO number on this job.</span>}
+                        </div>
+                    </div>
+                )}
+                {note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
+            </>);
+        }
+
+        // Has a trade been worked on? Stamped when its worksheet is changed; a worksheet saved before the stamp existed
+        // counts when it holds something typed or imported (not just the numbers a new job starts with).
+        const tradeEdited = (l) => {
+            if (!l) return false;
+            if (l.editedAt) return true;
+            const w = l.ws || {};
+            const text = (v) => String(v == null ? '' : v).trim() !== '';
+            return text(w.vendor) || text(w.matVendor) || text(w.quote) || !!w.wo
+                || (w.pad || []).length > 0 || (w.apad || []).length > 0 || (w.xact || []).length > 0
+                || (w.citems || []).some(i => text(i.qty) || text(i.note));
+        };
+        // Where a trade stands, for its tag on the trade list:
+        //   todo = not started, unsaved = worked on but not saved yet, priced = edited and saved with no PO yet,
+        //   pending = has POs and some are not complete, done = all of its POs are complete
+        const tradeStatus = (l, savedLine, reqs) => {
+            if (reqs.length) {
+                const done = reqs.filter(r => r.status === 'Complete').length;
+                return done === reqs.length ? { kind: 'done', text: 'Complete' } : { kind: 'pending', text: `Pending (${done} of ${reqs.length} complete)` };
+            }
+            if (tradeEdited(savedLine)) return { kind: 'priced', text: 'Priced' };
+            if (tradeEdited(l)) return { kind: 'unsaved', text: 'Not saved yet' };
+            return { kind: 'todo', text: 'Not started' };
+        };
+        const STATUS_COLOR = { todo: '#cc6600', unsaved: '#cc6600', priced: '#555', pending: '#0066cc', done: '#388e3c' };
+
         // One trade's pricing worksheet.
         //   Quote:  vendor price, retail needed, Xactimate lines with new unit prices, comparison
         //   Factor: vendor price = Xactimate total x factor (+ scratch pad), Xactimate lines, comparison
         //   Allowance: labor and material vendor prices, Xactimate lines (each goes to labor, material or a split), comparison
         //   Calculator: same as Quote, with a price list (quantity x price each) in place of the typed quote
-        function Worksheet({ line, me, onChange, startItems, onSaveToStart, onSaveSplit }) {
+        function Worksheet({ line, me, onChange, startItems, onSaveToStart, onSaveSplit, po }) {
             const [busy, setBusy] = useState(false);
             const [note, setNote] = useState('');
             const [calcFor, setCalcFor] = useState(null); // scratch pad box the calculator is open for: { list, id, field }
+            const [calcOpen, setCalcOpen] = useState(false); // plain calculator from the worksheet's Calculator button
             const [pick, setPick] = useState(null);       // Work Order just read, waiting for lines to be picked
             const [itemNote, setItemNote] = useState('');  // result of saving the price list to the start list
             const [splitNote, setSplitNote] = useState(''); // result of saving the starting split to the start list
+            const [reqHead, setReqHead] = useState(null);   // spot at the top of the worksheet for the Quote requests title and button
             const ws = { ...blankWs(), ...(line.ws || {}) };
             const isFactor = line.method === 'factor';
             const isAllow = line.method === 'allowance';
@@ -893,15 +1698,18 @@
                             <tr className="sum"><td colSpan="2">Vendor price</td><td className="money">{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                        <button className="btn-blue btn-sm"
+                            onClick={() => set('pad', [...ws.pad, { id: newId(), note: '', amount: '' }])}>+ Add scratch pad line</button>
+                        <button className="btn-secondary btn-sm" onClick={() => setCalcOpen(true)}>Calculator</button>
+                    </div>
             </>);
 
-            const calcBlock = calcFor && (
+            const calcBlock = calcFor ? (
                 <Calculator start={((ws[calcFor.list] || []).find(x => x.id === calcFor.id) || {})[calcFor.field]}
                     onUse={v => { setRow(calcFor.list, calcFor.id, calcFor.field, v); setCalcFor(null); }}
                     onClose={() => setCalcFor(null)} />
-            );
+            ) : calcOpen && <Calculator onClose={() => setCalcOpen(false)} />;
 
             // Send this trade's starting split (factor and labor percent for lines not marked I or M) up to the start list
             const saveSplit = async () => {
@@ -996,19 +1804,15 @@
                             <tr><td colSpan="2" style={{ fontWeight: 700 }}>Labor + material</td><td colSpan="2" className="money" style={{ fontWeight: 700 }}>{money(c.vendorPrice)}</td><td></td><td></td></tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('apad', [...ws.apad, { id: newId(), note: '', retail: '', factor: own(ws.defSf) ? ws.defSf : DEFAULT_SPLIT, labor: own(ws.defSl) ? ws.defSl : DEFAULT_LABOR_PCT }])}>+ Add scratch pad line</button>
-                    {startItems && <button className="btn-secondary btn-sm" style={{ marginTop: '6px', marginLeft: '8px' }} title="Make the Other lines starting numbers the start for this trade on every new job" onClick={saveSplit}>Save starting split to start list</button>}
-                    {splitNote && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: splitNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{splitNote}</div>}
-            </>);
-
-            const retailBlock = (<>
-                    <div className="sub-title">Retail needed</div>
-                    <div className="inline">
-                        <label>Vendor price divided by</label>
-                        <input className="num" style={{ width: '80px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
-                        <span>= <strong>{money(c.retail)}</strong> retail needed in Xactimate</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                        <div>
+                            <button className="btn-blue btn-sm"
+                                onClick={() => set('apad', [...ws.apad, { id: newId(), note: '', retail: '', factor: own(ws.defSf) ? ws.defSf : DEFAULT_SPLIT, labor: own(ws.defSl) ? ws.defSl : DEFAULT_LABOR_PCT }])}>+ Add scratch pad line</button>
+                            {startItems && <button className="btn-secondary btn-sm" style={{ marginLeft: '8px' }} title="Make the Other lines starting numbers the start for this trade on every new job" onClick={saveSplit}>Save starting split to start list</button>}
+                        </div>
+                        <button className="btn-secondary btn-sm" onClick={() => setCalcOpen(true)}>Calculator</button>
                     </div>
+                    {splitNote && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: splitNote.includes('Error') ? '#d32f2f' : '#388e3c' }}>{splitNote}</div>}
             </>);
 
             // Baseboard reminder: finish carpentry baseboard lines that carry labor and material together.
@@ -1052,14 +1856,14 @@
             const xactBlock = (<>
                     <div className="sub-title">Xactimate lines</div>
                     <div className="inline" style={{ marginBottom: '8px', fontSize: '13px' }}>
-                        <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333' }}>
+                        <label className="btn-blue btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#fff' }}>
                             {busy ? 'Reading...' : 'Upload Work Order'}
                             <input type="file" accept="application/pdf" onChange={upload} disabled={busy} style={{ display: 'none' }} />
                         </label>
                         <span style={{ color: '#666' }}>
                             {ws.wo
                                 ? `From the Work Order dated ${ws.wo.date}${ws.wo.estimate ? ' (' + ws.wo.estimate + ')' : ''}, ${(ws.wo.cats || []).join(' + ')}, uploaded by ${ws.wo.uploadedBy ? ws.wo.uploadedBy.name : ''} on ${fmtStamp(ws.wo.uploadedAt)}`
-                                : 'No Work Order uploaded for this trade yet. Upload one, or add lines by hand.'}
+                                : 'No Work Order uploaded for this trade yet.'}
                         </span>
                     </div>
                     {note && <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: note.includes('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
@@ -1111,16 +1915,20 @@
                             </tr>
                         </tbody>
                     </table>
-                    <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }}
-                        onClick={() => set('xact', [...ws.xact, { id: newId(), desc: '', qty: '', unit: '', price: '' }])}>+ Add Xactimate line</button>
             </>);
+
+            // Quote requests for this trade (their own records; the worksheet numbers above are only where they start from)
+            const requestsBlock = po && <Requests line={line} ws={ws} c={c} po={po} headSlot={reqHead} />;
+            const headSlot = po && <div ref={setReqHead} />;
 
             if (isAllow) {
                 return (
                     <div className="ws">
+                        {headSlot}
                         {allowBlock}
                         {calcBlock}
                         {xactBlock}
+                        {requestsBlock}
                         <div className="sub-title">Comparison</div>
                         <table style={{ maxWidth: '520px' }}>
                             <tbody>
@@ -1139,9 +1947,11 @@
             if (isFactor) {
                 return (
                     <div className="ws">
+                        {headSlot}
                         {vendorBlock}
                         {calcBlock}
                         {xactBlock}
+                        {requestsBlock}
                         <div className="sub-title">Comparison</div>
                         <table style={{ maxWidth: '520px' }}>
                             <tbody>
@@ -1156,16 +1966,26 @@
 
             return (
                 <div className="ws">
+                    {headSlot}
                     {itemsBlock}
                     {vendorBlock}
                     {calcBlock}
-                    {retailBlock}
                     {xactBlock}
+                    {requestsBlock}
                     <div className="sub-title">Comparison</div>
                     <table style={{ maxWidth: '520px' }}>
                         <tbody>
                             <tr><td>Vendor price</td><td className="money">{money(c.vendorPrice)}</td></tr>
-                            <tr><td>Retail needed</td><td className="money">{money(c.retail)}</td></tr>
+                            <tr>
+                                <td>
+                                    <div className="inline" style={{ fontSize: '13px' }}>
+                                        <span>Retail needed</span>
+                                        <span style={{ color: '#666' }}>vendor price divided by</span>
+                                        <input className="num" style={{ width: '70px' }} value={ws.factor} onChange={e => set('factor', e.target.value)} />
+                                    </div>
+                                </td>
+                                <td className="money">{money(c.retail)}</td>
+                            </tr>
                             <tr><td>Xactimate total now</td><td className="money">{money(c.xactTotal)}</td></tr>
                             <tr><td>Difference</td><td className="money">{ready ? overShort(c.diff) : '-'}</td></tr>
                             <tr><td>Margin now</td><td className="money">{ready ? (c.margin * 100).toFixed(1) + '%' : '-'}</td></tr>
@@ -1205,9 +2025,12 @@
 
         // Editable list of trades. Used for a job's list and for the start list.
         // worksheets = true on a job (Open button and pricing worksheet); false on the start list
-        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit }) {
+        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
+            // Edit clicked on a PO: open that trade's worksheet
+            const jump = po ? po.jump : null;
+            useEffect(() => { if (jump) setOpenId(jump.lineId); }, [jump]);
             // The start list's price list for a job trade: null = trade is not on the start list, [] = on it with no list yet
             const startItemsFor = (l) => {
                 const hit = findStart(startList, l);
@@ -1215,8 +2038,23 @@
             };
             const [addCode, setAddCode] = useState('');
             const [addName, setAddName] = useState('');
+            const [todoOnly, setTodoOnly] = useState(false); // show only the trades not started
             const live = lines.filter(l => !l.deleted);
             const gone = lines.filter(l => l.deleted);
+            // Status tags (job trade list only): from the saved trade list and the job's requests
+            const tags = worksheets && po;
+            // The job's POs: each trade's go under its row; ones whose trade was taken off the list get their own group
+            const allReqs = tags ? [...(po.requests || [])].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || '')) : [];
+            const liveReqs = allReqs.filter(r => !r.deleted), goneReqs = allReqs.filter(r => r.deleted);
+            const reqsOf = (l) => liveReqs.filter(r => r.lineId === l.id);
+            const statusOf = {};
+            if (tags) live.forEach(l => { statusOf[l.id] = tradeStatus(l, po.savedLines.get(l.id), reqsOf(l)); });
+            const countOf = (kinds) => live.filter(l => statusOf[l.id] && kinds.includes(statusOf[l.id].kind)).length;
+            const orphans = liveReqs.filter(r => !live.some(l => l.id === r.lineId));
+            const doneReqs = liveReqs.filter(r => r.status === 'Complete').length;
+            // With the filter on: trades not started (or not saved yet), plus the one that is open so it never vanishes mid-edit
+            const shown = tags && todoOnly ? live.filter(l => ['todo', 'unsaved'].includes(statusOf[l.id].kind) || l.id === openId) : live;
+            const cols = tags ? 6 : 5;
 
             const edit = (id, k, v) => onChange(lines.map(l => l.id === id ? { ...l, [k]: v } : l));
             // Put the row back in alphabetical order after its code is changed (when you leave the box)
@@ -1245,14 +2083,27 @@
 
             return (
                 <div>
+                    {tags && po.requestsError && <div className="bad" style={{ fontSize: '13px', marginBottom: '8px' }}>{po.requestsError}</div>}
+                    {tags && (
+                        <div className="inline" style={{ fontSize: '13px', marginBottom: '8px' }}>
+                            <span style={{ color: '#666' }}>
+                                {live.length} trade{live.length === 1 ? '' : 's'}:{' '}
+                                <strong style={{ color: countOf(['todo', 'unsaved']) ? STATUS_COLOR.todo : '#666' }}>{countOf(['todo', 'unsaved'])} not started</strong>,{' '}
+                                {countOf(['priced'])} priced, {countOf(['pending'])} pending, {countOf(['done'])} complete
+                                {liveReqs.length > 0 && <span className="po-count"> · {liveReqs.length} PO{liveReqs.length === 1 ? '' : 's'}: {doneReqs} complete, {liveReqs.length - doneReqs} pending</span>}
+                            </span>
+                            <button className="btn-secondary btn-sm" onClick={() => setTodoOnly(!todoOnly)}>{todoOnly ? 'Show all trades' : 'Show only not started'}</button>
+                        </div>
+                    )}
                     <table className="lines">
                         <thead><tr>
                             <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
-                            <th style={{ width: '70px' }}></th>
+                            {tags && <th style={{ width: '170px' }}>Status</th>}
+                            <th style={{ width: tags ? '118px' : '70px' }}></th>
                             <th style={{ width: '40px' }}></th>
                         </tr></thead>
                         <tbody>
-                            {live.map(l => (
+                            {shown.map(l => (
                                 <React.Fragment key={l.id}>
                                     <tr className="line">
                                         <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
@@ -1262,7 +2113,8 @@
                                                 {METHODS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                                             </select>
                                         </td>
-                                        <td>
+                                        {tags && <td className="trade-status" style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', color: STATUS_COLOR[statusOf[l.id].kind] }}>{statusOf[l.id].text}</td>}
+                                        <td style={{ whiteSpace: 'nowrap' }}>
                                             {worksheets && hasWorksheet(l.method) && (
                                                 <button className="btn-secondary btn-sm" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Open'}
@@ -1276,17 +2128,28 @@
                                         </td>
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
+                                    {tags && reqsOf(l).length > 0 && (
+                                        <tr><td colSpan={cols} style={{ padding: 0, borderBottom: 'none' }}><TradePOs rows={reqsOf(l)} po={po} line={l} /></td></tr>
+                                    )}
                                     {worksheets && openId === l.id && hasWorksheet(l.method) && (
-                                        <tr><td colSpan="5"><Worksheet line={l} me={me} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)} onChange={ws => edit(l.id, 'ws', ws)} /></td></tr>
+                                        <tr><td colSpan={cols}><Worksheet line={l} me={me} po={po} startItems={startItemsFor(l)} onSaveToStart={items => onSaveItems(l, items)} onSaveSplit={(sf, sl) => onSaveSplit(l, sf, sl)}
+                                            onChange={ws => onChange(lines.map(x => x.id === l.id ? { ...x, ws, editedBy: me, editedAt: new Date() } : x))} /></td></tr>
                                     )}
                                     {!worksheets && openId === l.id && l.method === 'calculator' && (
-                                        <tr><td colSpan="5"><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
+                                        <tr><td colSpan={cols}><PriceList line={l} onChange={items => edit(l.id, 'items', items)} /></td></tr>
                                     )}
                                 </React.Fragment>
                             ))}
-                            {live.length === 0 && <tr><td colSpan="5" style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                            {live.length === 0 && <tr><td colSpan={cols} style={{ color: '#888', padding: '10px 4px' }}>No trades on this list.</td></tr>}
+                            {live.length > 0 && shown.length === 0 && <tr><td colSpan={cols} style={{ color: '#388e3c', padding: '10px 4px', fontWeight: 600 }}>Every trade on this job has been started.</td></tr>}
+                            {tags && !todoOnly && orphans.length > 0 && (<>
+                                <tr><td colSpan={cols} style={{ padding: '12px 4px 4px', fontWeight: 600, color: '#cc6600' }}>POs on trades that were taken off this list</td></tr>
+                                <tr><td colSpan={cols} style={{ padding: 0, borderBottom: 'none' }}><TradePOs rows={orphans} po={po} line={null} /></td></tr>
+                            </>)}
                         </tbody>
                     </table>
+
+                    {tags && po.isAdmin && goneReqs.length > 0 && <DeletedPOs rows={goneReqs} po={po} />}
 
                     <div className="sub-title">Add a trade</div>
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -1342,9 +2205,22 @@
             const [startEdit, setStartEdit] = useState(null);   // start list on screen while editing
             const [startDirty, setStartDirty] = useState(false);
             const startRef = React.useRef(null);
-            const [showCalc, setShowCalc] = useState(false); // general calculator from the top button
             const [check, setCheck] = useState(null);         // Work Order read for the check report
             const [checkBusy, setCheckBusy] = useState(false);
+            const [supers, setSupers] = useState(null);       // company-wide Supervisor list (the one PO Manager keeps): null = loading
+            const [supersError, setSupersError] = useState('');
+            const [superPick, setSuperPick] = useState(null); // this job's supervisor: { id, name, phone, email } or null
+            const [settle, setSettle] = useState('');          // this job's settlement amount, typed, for the running total
+            const [taxPct, setTaxPct] = useState(DEFAULT_TAX_PCT); // this job's tax and fees percent, for the running total
+            const [showTotal, setShowTotal] = useState(false); // running total pop-up
+            const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
+            const [requestsError, setRequestsError] = useState('');
+            const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
+            const [estimators, setEstimators] = useState(null); // people who can be a job's estimator: null = loading
+            const [estimatorsError, setEstimatorsError] = useState('');
+            const [estPick, setEstPick] = useState(null);     // this job's estimator: { uid, name, email, phone } or null
+            const [jump, setJump] = useState(null);           // Edit on a PO: { lineId, requestId } to open in that trade's worksheet
+            const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1395,17 +2271,76 @@
                 }, e => setMessage('Error loading start list: ' + e.message));
             }, [profile]);
 
+            // Company-wide Supervisor list, read only here. Supervisors are added and removed in PO Manager.
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('supervisors').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => { const d = doc.data(); list.push({ id: doc.id, name: d.name || '', phone: d.phone || '', email: d.email || '' }); });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setSupers(list);
+                    setSupersError('');
+                }, e => { setSupers([]); setSupersError('Error loading the Supervisor list: ' + e.message); });
+            }, [profile]);
+
+            // Who can be a job's estimator: active Owner, Admin and Estimator users, read only here.
+            // Their phone numbers are typed on the Users screen in PO Manager.
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('users').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (d.active === true && ALLOWED.includes(d.role)) list.push({ uid: doc.id, name: d.name || d.email || '', email: d.email || '', phone: d.phone || '' });
+                    });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setEstimators(list);
+                    setEstimatorsError('');
+                }, e => { setEstimators([]); setEstimatorsError('Error loading the estimator list: ' + e.message); });
+            }, [profile]);
+
+            // PO Manager's templates, for filling in a request's vendor
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('formLibrary').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setTemplates(list);
+                }, () => setTemplates([]));
+            }, [profile]);
+
+            // This job's quote requests. They are their own records, so Save on the trade list never touches them.
+            useEffect(() => {
+                setRequests(null);
+                setRequestsError('');
+                if (!profile || !jobId) return;
+                return db.collection('tradesEst').doc(jobId).collection('requests').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setRequests(list);
+                    setRequestsError('');
+                }, e => { setRequests([]); setRequestsError('Error loading quote requests: ' + e.message); });
+            }, [profile, jobId]);
+
             // Load the job's trade list once when a job is picked. No saved list yet = blank copy of the start list.
             const startReady = startLines !== null;
             useEffect(() => {
                 setRecord(null);
                 setLines(null);
                 setDirty(false);
+                setSuperPick(null);
+                setEstPick(null);
+                setSettle('');
+                setTaxPct(DEFAULT_TAX_PCT);
                 if (!profile || !jobId || !startReady) return;
                 db.collection('tradesEst').doc(jobId).get().then(doc => {
                     if (doc.exists) {
                         setRecord(doc.data());
                         setLines(sortLines(doc.data().lines || []));
+                        setSuperPick(doc.data().supervisor || null);
+                        setEstPick(doc.data().estimator || null);
+                        setSettle(moneyBox(doc.data().settlement));
+                        setTaxPct(doc.data().taxPct == null ? DEFAULT_TAX_PCT : String(doc.data().taxPct));
                     } else {
                         setRecord(false);
                         setLines(copyStart(startRef.current || []));
@@ -1424,6 +2359,8 @@
                 }
             };
 
+            // The job's estimator as the Users screen has them now (a phone typed there since the pick shows up here)
+            const estNow = estPick ? ((estimators || []).find(e => e.uid === estPick.uid) || estPick) : null;
             // Save the job's trade list. Every save also keeps a copy in history (versions).
             const save = async () => {
                 const job = jobs.find(j => j.id === jobId);
@@ -1434,16 +2371,24 @@
                     const by = { uid: user.uid, name: profile.name || user.email };
                     const now = new Date();
                     const clean = cleanLines(lines);
-                    const data = { jobCode: job.code || '', lines: clean, updatedBy: by, updatedAt: now };
+                    const totals = { settlement: settle.trim(), taxPct: taxPct.trim() };
+                    const estimator = estNow ? { uid: estNow.uid, name: estNow.name, email: estNow.email, phone: estNow.phone } : null;
+                    const data = { jobCode: job.code || '', lines: clean, supervisor: superPick || null, estimator, ...totals, updatedBy: by, updatedAt: now };
                     const ref = db.collection('tradesEst').doc(jobId);
                     const batch = db.batch();
                     batch.set(ref, data, { merge: true });
-                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, savedBy: by, savedAt: now });
+                    batch.set(ref.collection('versions').doc(), { jobCode: job.code || '', lines: clean, supervisor: superPick || null, estimator, ...totals, savedBy: by, savedAt: now });
+                    // PO amounts follow the worksheet: bring each PO that follows up to the price being saved
+                    let moved = 0;
+                    (requests || []).forEach(r => {
+                        const amount = followAmount(r, clean, requests);
+                        if (amountDiffers(r, amount)) { batch.update(ref.collection('requests').doc(r.id), followUpdate(r, amount, by, now)); moved++; }
+                    });
                     await batch.commit();
                     setRecord({ ...(record || {}), ...data });
                     setLines(clean);
                     setDirty(false);
-                    setMessage('Saved');
+                    setMessage(moved ? `Saved. ${moved} PO amount${moved === 1 ? '' : 's'} updated from the worksheet.` : 'Saved');
                 } catch (e) {
                     setMessage('Error saving: ' + e.message);
                 }
@@ -1542,8 +2487,7 @@
             if (profile === false) {
                 return (
                     <div className="section">
-                        <p>Signed in as {user.email}. No access: Trades-EST is for Owner, Admin and Estimator.</p>
-                        <button className="btn-secondary" style={{ marginTop: '12px' }} onClick={() => auth.signOut()}>Logout</button>
+                        <p>No access. Trades-EST is for Owner, Admin and Estimator. Contact an admin.</p>
                     </div>
                 );
             }
@@ -1552,6 +2496,15 @@
             const canRestore = ADMINS.includes(profile.role);
             const job = jobs.find(j => j.id === jobId);
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
+            // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
+            const po = {
+                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates,
+                savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
+                savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
+                jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
+                draftOpen, setDraftOpen,
+                follow: (r) => followAmount(r, record && record.lines, requests) // amount a PO should have from the saved worksheet, or null
+            };
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
                 : 'Not saved yet. Showing the start list.';
@@ -1559,23 +2512,42 @@
                 ? `Last saved by ${startRec.updatedBy ? startRec.updatedBy.name : ''} on ${fmtStamp(startRec.updatedAt)}`
                 : 'Built-in list. Not changed yet.';
             const msg = message && <div className="msg" style={{ color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</div>;
+            // Save bar, pinned to the bottom of the window: the job's Save, or the start list's Save and Close while it is being edited.
+            // The blank strip above it keeps the end of the page from sitting under the bar.
+            const barFor = editingStart && startEdit ? 'start' : (!editingStart && lines ? 'job' : '');
+            // Running total for the job on screen: follows the worksheets as they are typed, before saving
+            const total = barFor === 'job' ? runningTotal(lines, settle, taxPct) : null;
+            const saveBar = barFor && (<>
+                <div style={{ height: '110px' }}></div>
+                <div className="savebar">
+                    <div className="savebar-in">
+                        <div className="savebar-left">
+                            <span>{barFor === 'start' ? startText : (record === null ? 'Loading...' : savedText)}</span>
+                            {((barFor === 'start' ? startDirty : dirty) || message) && (
+                                <span>
+                                    {(barFor === 'start' ? startDirty : dirty) && <span className="unsaved">Unsaved changes</span>}
+                                    {(barFor === 'start' ? startDirty : dirty) && message && ' | '}
+                                    {message && <span style={{ fontWeight: 600, color: message.includes('Error') ? '#d32f2f' : '#388e3c' }}>{message}</span>}
+                                </span>
+                            )}
+                        </div>
+                        <span className="grow"></span>
+                        {total && totalText(total) && <span style={{ fontWeight: 700, fontSize: '14px', color: total.settle > 0 && total.diff > 0 ? '#cc6600' : '#333' }}>{totalText(total)}</span>}
+                        {total && <button className="btn-secondary btn-sm" onClick={() => setShowTotal(true)}>Breakdown</button>}
+                        {barFor === 'start' && (
+                            <button className="btn-secondary" onClick={closeStart} disabled={saving}>{jobId ? 'Close start list and go back to the job' : 'Close start list'}</button>
+                        )}
+                        <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '10px 28px' }} onClick={barFor === 'start' ? saveStart : save} disabled={saving}>
+                            {saving ? 'Saving...' : barFor === 'start' ? 'Save start list' : 'Save'}
+                        </button>
+                    </div>
+                </div>
+            </>);
 
             return (
                 <div>
-                    <div className="row">
-                        <span style={{ fontSize: '14px' }}>Signed in as {profile.name || user.email} ({profile.role})</span>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                            <button className="btn-secondary" onClick={() => setShowCalc(true)}>Calculator</button>
-                            <button className="btn-secondary" onClick={() => auth.signOut()}>Logout</button>
-                        </div>
-                    </div>
-                    {showCalc && <Calculator onClose={() => setShowCalc(false)} />}
-
                     <div className="section">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                            <div className="section-title">JOB</div>
-                            {!editingStart && <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>}
-                        </div>
+                        <div className="section-title">JOB</div>
                         <div className="form-group">
                             <select value={jobId} disabled={editingStart} onChange={e => {
                                 if (dirty && !window.confirm('You have unsaved changes. Switch jobs anyway?')) return;
@@ -1591,6 +2563,50 @@
                             <input type="checkbox" style={{ width: 'auto' }} checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
                             Show archived jobs
                         </label>
+                        {jobId && lines && !editingStart && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '14px' }}>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label>Supervisor for this job</label>
+                                <select value={superPick ? superPick.id : ''} disabled={supers === null} onChange={e => {
+                                    const s = (supers || []).find(x => x.id === e.target.value);
+                                    setSuperPick(s ? { id: s.id, name: s.name, phone: s.phone, email: s.email } : null);
+                                    setDirty(true); setMessage('');
+                                }}>
+                                    <option value="">{supers === null ? 'Loading...' : '-- No supervisor picked --'}</option>
+                                    {superPick && !(supers || []).some(s => s.id === superPick.id) && <option value={superPick.id}>{superPick.name} (no longer on the list)</option>}
+                                    {(supers || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                                {superPick && <div className="muted" style={{ marginTop: '4px' }}>{[superPick.phone, superPick.email].filter(Boolean).join(' | ') || 'No phone or email on the Supervisor list for this name.'}</div>}
+                                {supersError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{supersError}</div>}
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label>Estimator for this job</label>
+                                <select value={estPick ? estPick.uid : ''} disabled={estimators === null} onChange={e => {
+                                    const p = (estimators || []).find(x => x.uid === e.target.value);
+                                    setEstPick(p ? { uid: p.uid, name: p.name, email: p.email, phone: p.phone } : null);
+                                    setDirty(true); setMessage('');
+                                }}>
+                                    <option value="">{estimators === null ? 'Loading...' : '-- No estimator picked --'}</option>
+                                    {estPick && !(estimators || []).some(p => p.uid === estPick.uid) && <option value={estPick.uid}>{estPick.name} (no longer on the list)</option>}
+                                    {(estimators || []).map(p => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+                                </select>
+                                {estNow && <div className="muted" style={{ marginTop: '4px' }}>{[estNow.phone || 'No phone yet (add it on the Users screen in PO Manager)', estNow.email].filter(Boolean).join(' | ')}</div>}
+                                {estimatorsError && <div className="muted" style={{ marginTop: '4px', color: '#d32f2f', fontWeight: 600 }}>{estimatorsError}</div>}
+                            </div>
+                            </div>
+                        )}
+                        {jobId && lines && !editingStart && (
+                            <div className="inline" style={{ marginTop: '14px', fontSize: '13px' }}>
+                                <label>Settlement amount</label>
+                                <input className="num" style={{ width: '150px' }} value={settle} placeholder="0.00"
+                                    onChange={e => { setSettle(e.target.value); setDirty(true); setMessage(''); }}
+                                    onBlur={() => setSettle(moneyBox(settle))} />
+                                <label style={{ marginLeft: '14px' }}>Tax and fees %</label>
+                                <input className="num" style={{ width: '70px' }} value={taxPct}
+                                    onChange={e => { setTaxPct(e.target.value); setDirty(true); setMessage(''); }} />
+                                <span style={{ color: '#666' }}>For the running total in the bar at the bottom. Saved with the job.</span>
+                            </div>
+                        )}
                         {jobId && <div className="muted">{record === null ? 'Loading...' : savedText}{dirty && <span className="unsaved"> | Unsaved changes</span>}</div>}
                     </div>
 
@@ -1603,11 +2619,6 @@
                             <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>{startText}{startDirty && <span className="unsaved"> | Unsaved changes</span>}</div>
                             <LineTable lines={startEdit} me={me} canRestore={canRestore} worksheets={false}
                                 onChange={next => { setStartEdit(next); setStartDirty(true); setMessage(''); }} />
-                            <button className="btn-primary" onClick={saveStart} disabled={saving}>{saving ? 'Saving...' : 'Save start list'}</button>
-                            <button className="btn-secondary" style={{ width: '100%', marginTop: '8px' }} onClick={closeStart} disabled={saving}>
-                                {jobId ? 'Close start list and go back to the job' : 'Close start list'}
-                            </button>
-                            {msg}
                         </div>
                     )}
 
@@ -1615,21 +2626,24 @@
                         <div className="section">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                 <div className="section-title">TRADES{job ? ` - ${job.code}` : ''}</div>
-                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
-                                    {checkBusy ? 'Reading...' : 'Check Work Order'}
-                                    <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
-                                </label>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <label className="btn-secondary btn-sm" style={{ display: 'block', textAlign: 'center', borderRadius: '4px', cursor: 'pointer', color: '#333', margin: 0 }} title="Compare a Work Order with what the trades have imported. Changes nothing.">
+                                        {checkBusy ? 'Reading...' : 'Check Work Order'}
+                                        <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
+                                    </label>
+                                    <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>
+                                </div>
                             </div>
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
-                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
+                            <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
                             <datalist id="units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
-                            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                            {msg}
                         </div>
                     )}
 
                     {!editingStart && !lines && msg}
+                    {saveBar}
+                    {showTotal && total && <Breakdown t={total} onClose={() => setShowTotal(false)} />}
                 </div>
             );
         }
