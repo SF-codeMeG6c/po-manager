@@ -60,6 +60,7 @@
         button.tool.alert.expired { border-color: #d93025; background: #fdecea; }
         button.tool.alert.expired svg, button.tool.alert.expired small { color: #a3261c; }
         .admin-users { margin-top: 20px; }
+        .users .jobroles label { display: block; white-space: nowrap; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -135,6 +136,9 @@
             { key: 'wip',     name: 'WIP',                 url: null }
         ];
 
+        // Job roles a person can be given (separate from their access level). Saved on users/{uid}.jobRoles.
+        const JOB_ROLES = [['sales', 'Salesperson'], ['claims', 'Claim Coordinator'], ['estimator', 'Estimator'], ['super', 'Super']];
+
         function ToolTile({ tool, href }) {
             if (href) {
                 return <a className="tool" href={href}><Icon d={ICONS[tool.key]} />{tool.name}</a>;
@@ -148,7 +152,7 @@
             const [authError, setAuthError] = useState('');
             const [showUsers, setShowUsers] = useState(false);   // Users screen (Owner/Admin)
             const [usersList, setUsersList] = useState([]);
-            const [userEdits, setUserEdits] = useState({});      // uid -> { role, active, phone } not yet saved
+            const [userEdits, setUserEdits] = useState({});      // uid -> { role, active, phone, jobRoles } not yet saved
             const [usersMsg, setUsersMsg] = useState(null);      // { text, ok } in the Admin section
             const [copyMsg, setCopyMsg] = useState(null);        // { text, ok } in the secret warning
             const [secretExpires, setSecretExpires] = useState(''); // Microsoft sign-in secret expiry, 'YYYY-MM-DD'
@@ -217,9 +221,10 @@
                 const role = edit.role !== undefined ? edit.role : u.role;
                 const active = edit.active !== undefined ? edit.active : u.active === true;
                 const phone = edit.phone !== undefined ? edit.phone.trim() : (u.phone || '');
+                const jobRoles = edit.jobRoles !== undefined ? edit.jobRoles : (u.jobRoles || []);
                 try {
                     const now = new Date();
-                    const data = { role, active, phone, updatedAt: now };
+                    const data = { role, active, phone, jobRoles, updatedAt: now };
                     // A phone number being replaced is kept in the record
                     if (u.phone && phone !== u.phone) {
                         data.phoneHistory = firebase.firestore.FieldValue.arrayUnion({ phone: u.phone, replacedAt: now, replacedBy: { uid: user.uid, name: (profile && profile.name) || user.email } });
@@ -328,6 +333,13 @@ I prefer plain, brief instructions, one step at a time.`;
                         <button className="btn-secondary" onClick={handleLogout}>Logout</button>
                     </div>
 
+                    {role === 'notools' && (
+                        <div className="section">
+                            <p>No tools yet. Contact an admin.</p>
+                        </div>
+                    )}
+
+                    {role !== 'notools' && (
                     <div className="section">
                         <div className="section-title">Job tools</div>
                         <div className="tools">
@@ -335,8 +347,9 @@ I prefer plain, brief instructions, one step at a time.`;
                             {soonTools.map(t => <ToolTile key={t.key} tool={t} />)}
                         </div>
                     </div>
+                    )}
 
-                    {role !== 'super' && (
+                    {role !== 'super' && role !== 'notools' && (
                         <div className="section">
                             <div className="section-title">All jobs</div>
                             <div className="tools">
@@ -388,6 +401,7 @@ I prefer plain, brief instructions, one step at a time.`;
                                                     <th>Email</th>
                                                     <th>Phone</th>
                                                     <th>Role</th>
+                                                    <th>Job roles</th>
                                                     <th>Active</th>
                                                     <th></th>
                                                 </tr>
@@ -399,7 +413,8 @@ I prefer plain, brief instructions, one step at a time.`;
                                                     const uRole = edit.role !== undefined ? edit.role : u.role;
                                                     const active = edit.active !== undefined ? edit.active : u.active === true;
                                                     const phone = edit.phone !== undefined ? edit.phone : (u.phone || '');
-                                                    const changed = edit.role !== undefined || edit.active !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
+                                                    const jobRoles = edit.jobRoles !== undefined ? edit.jobRoles : (u.jobRoles || []);
+                                                    const changed = edit.role !== undefined || edit.active !== undefined || edit.jobRoles !== undefined || (edit.phone !== undefined && edit.phone.trim() !== (u.phone || ''));
                                                     return (
                                                         <tr key={u.id} className={u.role === 'pending' ? 'waiting' : ''}>
                                                             <td>
@@ -420,7 +435,19 @@ I prefer plain, brief instructions, one step at a time.`;
                                                                     <option value="estimator">Estimator</option>
                                                                     <option value="super">Super</option>
                                                                     <option value="office">Office</option>
+                                                                    <option value="notools">No tools</option>
                                                                 </select>
+                                                            </td>
+                                                            <td className="jobroles">
+                                                                {JOB_ROLES.map(([key, label]) => (
+                                                                    <label key={key}>
+                                                                        <input type="checkbox" checked={jobRoles.includes(key)} aria-label={label + ' for ' + (u.name || u.email)}
+                                                                            onChange={e => {
+                                                                                const next = e.target.checked ? [...jobRoles, key] : jobRoles.filter(k => k !== key);
+                                                                                setUserEdits(prev => ({ ...prev, [u.id]: { ...prev[u.id], jobRoles: JOB_ROLES.map(([k]) => k).filter(k => next.includes(k)) } }));
+                                                                            }} /> {label}
+                                                                    </label>
+                                                                ))}
                                                             </td>
                                                             <td>
                                                                 <input type="checkbox" checked={active} disabled={isMe} aria-label={'Active for ' + (u.name || u.email)}
