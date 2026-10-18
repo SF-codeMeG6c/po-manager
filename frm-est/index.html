@@ -120,6 +120,7 @@
         const RIDGE_SIZES = ['2x8', '2x10', '2x12', '2x14'];
         const PURLIN_SIZES = ['2x4', '2x6', '4x4', '4x6'];
         const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, gables: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
+        const RUN_TIP = 'The run is the horizontal distance a rafter covers—from the outside wall to the center of the roof ridge. You measure it level, not along the sloped rafter.';
         const ROOF_SHEATH = { '1/2': '4 x 8 x 1/2" CDX', '7/16': '4 x 8 x 7/16" OSB' };
         const BOARD_SHEATH = { '1x6solid': { name: 'solid', oc: 5.5 }, '1x6spaced': { name: 'spaced', oc: 9.5 } };
         const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
@@ -367,7 +368,7 @@
             const rafters = sides * (length * (SPACING[r.spacing] || 0.55) + 1);
             const gables = r.gables === undefined ? 2 : n(r.gables);
             return {
-                slope, buyLen, sides, rafters, collars: r.collar !== false ? rafters * 0.5 : 0,
+                slope, buyLen, sides, rafters, collars: sides === 2 && r.collar !== false ? rafters * 0.5 : 0, // no collar ties on a shed
                 sheathSF: sloped * length * sides,   // overhang gets starter board instead
                 eave: length * sides,
                 barge: gables * sides * slope        // barge = rafter length with overhang
@@ -1218,8 +1219,8 @@
                             <div className="section-title">ROOF - CONVENTIONAL</div>
                             {rf.rows.map((r, i) => {
                                 const calc = roofRow(r);
-                                const fld = (label, k) => (
-                                    <div><label>{label}</label>
+                                const fld = (label, k, tip) => (
+                                    <div title={tip}><label style={tip ? { cursor: 'help' } : undefined}>{label}{tip && <span style={{ color: '#0066cc', marginLeft: '4px' }}>&#9432;</span>}</label>
                                         <input type="number" style={{ width: '90px' }} value={r[k]} onChange={e => setRoofRow(i, k, e.target.value)} /></div>
                                 );
                                 return (
@@ -1237,13 +1238,13 @@
                                                 </select></div>
                                             <div><label>Sides</label>
                                                 <select value={r.sides} onChange={e => setRoofRow(i, 'sides', parseInt(e.target.value))}>
-                                                    <option value={2}>2 (gable)</option><option value={1}>1 (shed)</option>
+                                                    <option value={2}>2 sides (ridge)</option><option value={1}>1 side (shed)</option>
                                                 </select></div>
                                             <button className="btn-x" onClick={() => setRoof('rows', rf.rows.filter((_, j) => j !== i))}>✕</button>
                                         </div>
                                         <div className="inline" style={{ alignItems: 'flex-end', marginTop: '8px' }}>
                                             {fld('Pitch (/12)', 'pitch')}
-                                            {fld('Run (ft)', 'run')}
+                                            {fld('Run (ft)', 'run', RUN_TIP)}
                                             {fld('Overhang (ft)', 'overhang')}
                                             {fld('Length (LF)', 'length')}
                                             {r.sides === 2 && (<>
@@ -1255,11 +1256,13 @@
                                                     <input type="checkbox" style={{ width: 'auto' }} checked={r.doubleRidge} onChange={e => setRoofRow(i, 'doubleRidge', e.target.checked)} /> Double ridge
                                                 </label>
                                             </>)}
-                                            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'normal' }}>
-                                                <input type="checkbox" style={{ width: 'auto' }} checked={r.collar !== false} onChange={e => setRoofRow(i, 'collar', e.target.checked)} /> Collar ties
-                                            </label>
+                                            {r.sides === 2 && (
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'normal' }}>
+                                                    <input type="checkbox" style={{ width: 'auto' }} checked={r.collar !== false} onChange={e => setRoofRow(i, 'collar', e.target.checked)} /> Collar ties
+                                                </label>
+                                            )}
                                         </div>
-                                        {calc && <div className="muted">Rafter {calc.slope.toFixed(1)}' → buy {calc.buyLen}' · {Math.ceil(calc.rafters)} rafters before waste{r.collar !== false ? ` · ${Math.ceil(calc.collars)} collar ties` : ''}</div>}
+                                        {calc && <div className="muted">Rafter {calc.slope.toFixed(1)}' → buy {calc.buyLen}' · {Math.ceil(calc.rafters)} rafters before waste{calc.collars ? ` · ${Math.ceil(calc.collars)} collar ties` : ''}</div>}
                                     </div>
                                 );
                             })}
