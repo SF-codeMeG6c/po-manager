@@ -159,7 +159,9 @@
             roof: {
                 rows: [newRoof()],
                 hips: [],
+                calFillRidge: [],
                 calFill: [],
+                purlinLF: [],
                 purlins: [],
                 frmHours: newHours(),
                 dmoHours: newHours()
@@ -379,7 +381,7 @@
         function calcRoof(rf, waste) {
             const sw = 1 + n(waste.supplier) / 100;
             const xw = 1 + n(waste.xact) / 100;
-            const rafters = {}, xLF = {}, ridgeLF = {}, blkLF = {}, hipLF = {}, calLF = {};
+            const rafters = {}, xLF = {}, ridgeLF = {}, blkLF = {}, hipLF = {}, calLF = {}, calRidgeLF = {}, purlinLF = {};
             let collars = 0;
             const addTo = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
 
@@ -400,7 +402,9 @@
                 collars += c.collars;
             });
             (rf.hips || []).forEach(p => { if (n(p.lf)) { addTo(hipLF, p.size, n(p.lf)); addTo(xLF, p.size + ' hip / valley', n(p.lf)); } });
-            (rf.calFill || []).forEach(p => { if (n(p.lf)) { addTo(calLF, p.size, n(p.lf)); addTo(xLF, p.size + ' California fill', n(p.lf)); } });
+            (rf.calFillRidge || []).forEach(p => { if (n(p.lf)) { addTo(calRidgeLF, p.size, n(p.lf)); addTo(xLF, p.size + ' California fill ridge', n(p.lf)); } });
+            (rf.calFill || []).forEach(p => { if (n(p.lf)) { addTo(calLF, p.size, n(p.lf)); addTo(xLF, p.size + ' California fill rafters', n(p.lf)); } });
+            (rf.purlinLF || []).forEach(p => { if (n(p.lf)) { addTo(purlinLF, p.size, n(p.lf)); addTo(xLF, p.size + ' purlin', n(p.lf)); } });
 
             const supplier = [];
             Object.keys(rafters).sort().forEach(k => {
@@ -412,7 +416,9 @@
             by16(ridgeLF, 'ridge');
             by16(blkLF, 'blocking');
             by16(hipLF, 'hip / valley');
-            by16(calLF, 'California fill');
+            by16(calRidgeLF, 'California fill ridge');
+            by16(calLF, 'California fill rafters');
+            by16(purlinLF, 'purlin');
             // Collar ties: 50% of rafters, 2x4x8 each
             if (collars) {
                 supplier.push(`${Math.ceil(collars * sw)} - 2 x 4 x 8   (collar ties)`);
@@ -420,8 +426,8 @@
             }
             (rf.purlins || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
-                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (purlin / kicker)`);
-                addTo(xLF, p.size.trim() + ' purlin / kicker', n(p.qty) * n(p.length));
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (purlin kicker)`);
+                addTo(xLF, p.size.trim() + ' purlin kicker', n(p.qty) * n(p.length));
             });
 
             const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
@@ -1269,8 +1275,10 @@
                             <button className="btn-secondary btn-sm" onClick={() => setRoof('rows', [...rf.rows, newRoof()])}>+ Add roof area</button>
 
                             <LFTable title="Hips / valleys" sizes={RIDGE_SIZES} list={rf.hips} onChange={v => setRoof('hips', v)} />
-                            <LFTable title="California fill" sizes={['2x4', '2x6']} list={rf.calFill} onChange={v => setRoof('calFill', v)} />
-                            <PieceTable title="Purlins / kickers" sizes={PURLIN_SIZES} list={rf.purlins} onChange={v => setRoof('purlins', v)} />
+                            <LFTable title="California fill ridge" sizes={['2x8', '2x6', '2x10']} list={rf.calFillRidge || []} onChange={v => setRoof('calFillRidge', v)} />
+                            <LFTable title="California fill rafters" sizes={['2x4', '2x6']} list={rf.calFill} onChange={v => setRoof('calFill', v)} />
+                            <LFTable title="Purlin" sizes={['2x6', '2x8']} list={rf.purlinLF || []} onChange={v => setRoof('purlinLF', v)} />
+                            <PieceTable title="Purlin kickers" sizes={PURLIN_SIZES} list={rf.purlins} onChange={v => setRoof('purlins', v)} />
 
                             <div className="sub-title">Hours</div>
                             <table><tbody>
