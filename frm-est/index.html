@@ -206,6 +206,7 @@
                 demoRate: 69.87,
                 priceList: '',
                 dumpsterPrice: 977,
+                framingDumpsters: '',
                 interiorDumpsters: '',
                 contentsDumpsters: '',
                 rooms: [{ name: '', interior: '', contents: '' }]
@@ -677,10 +678,12 @@
                             <td>Total</td><td className="money">{T.sum('fh')}</td><td className="money">{money(T.sum('f$'))}</td>
                             <td className="money">{T.sum('dh')}</td><td className="money">{money(T.sum('d$'))}</td>
                         </tr>
-                        <tr><td colSpan={4}>Framing retail</td><td className="money">{money(T.sum('f$'))}</td></tr>
-                        <tr><td colSpan={4}>Framing wholesale (75%)</td><td className="money">{money(T.sum('f$') * 0.75)}</td></tr>
-                        <tr><td colSpan={4}>Demo retail</td><td className="money">{money(T.sum('d$'))}</td></tr>
-                        <tr><td colSpan={4}>Demo wholesale (75%)</td><td className="money">{money(T.sum('d$') * 0.75)}</td></tr>
+                        <tr><td colSpan={4}>Framing labor retail</td><td className="money">{money(T.sum('f$'))}</td></tr>
+                        <tr><td colSpan={4}>Framing labor wholesale (75%)</td><td className="money">{money(T.sum('f$') * 0.75)}</td></tr>
+                        <tr><td colSpan={4}>Demo labor retail</td><td className="money">{money(T.sum('d$'))}</td></tr>
+                        <tr><td colSpan={4}>Demo labor wholesale (75%)</td><td className="money">{money(T.sum('d$') * 0.75)}</td></tr>
+                        <tr><td colSpan={4}>Framing dumpsters retail ({T.frmDump.count} × {money(T.frmDump.price)})</td><td className="money">{money(T.frmDump.retail)}</td></tr>
+                        <tr><td colSpan={4}>Framing dumpsters wholesale (60%)</td><td className="money">{money(T.frmDump.wholesale)}</td></tr>
                     </tbody>
                 </table>
             );
@@ -1054,9 +1057,11 @@
                 }).filter(r => r.fh || r.dh);
                 const sum = (k) => hourRows.reduce((t, r) => t + r[k], 0);
                 const rooms = tot.rooms || [];
+                const fdN = n(tot.framingDumpsters), fdRetail = fdN * n(tot.dumpsterPrice);
+                const frmDump = { count: fdN, price: n(tot.dumpsterPrice), retail: fdRetail, wholesale: fdRetail * 0.6 };
                 const interior = demoBlock(rooms.reduce((t, r) => t + n(r.interior), 0), dr, n(tot.interiorDumpsters), n(tot.dumpsterPrice));
                 const contents = demoBlock(rooms.reduce((t, r) => t + n(r.contents), 0), dr, n(tot.contentsDumpsters), n(tot.dumpsterPrice));
-                T = { job, header, sections, supplierText, xactText, hourRows, sum, interior, contents, fr, dr };
+                T = { job, header, sections, supplierText, xactText, hourRows, sum, frmDump, interior, contents, fr, dr };
             }
 
             return (
@@ -1501,6 +1506,11 @@
                             <button className="btn-secondary btn-sm" onClick={() => copyText(T.xactText, 'Xactimate list')}>Copy Xactimate list</button>
 
                             <div className="sub-title">Framing and demo hours</div>
+                            <div className="inline" style={{ marginBottom: '8px' }}>
+                                <label>Framing dumpsters</label>
+                                <input className="num" type="number" value={est.totals.framingDumpsters} onChange={e => setTot('framingDumpsters', e.target.value)} />
+                                <span className="muted" style={{ marginTop: 0 }}>Priced at the dumpster price below</span>
+                            </div>
                             <HoursTable T={T} />
 
                             <div className="sub-title">Interior demo and contents demo (hours per room)</div>
