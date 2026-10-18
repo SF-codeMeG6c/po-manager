@@ -214,6 +214,9 @@
         const hoursOf = (h) => n(h && h.crew) * n(h && h.days) * 8;
         const sp = (size) => /^\d+x\d+$/.test(size) ? size.replace('x', ' x ') : size.trim(); // '2x4' -> '2 x 4'; typed sizes stay as typed
 
+        // A piece's label with its description, if one is typed: "header - Garage door"
+        const withDesc = (label, p) => label + (String(p.desc || '').trim() ? ' - ' + String(p.desc).trim() : '');
+
         // Walls math -> { supplier: [text lines], xact: [[label, amount, unit]] }
         function calcWalls(w, waste) {
             const sw = 1 + n(waste.supplier) / 100;
@@ -251,13 +254,13 @@
             // Headers and posts: bought as listed, no supplier waste
             (w.headers || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
-                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (header)`);
-                addTo(xLF, p.size.trim() + ' header', n(p.qty) * n(p.length));
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${withDesc('header', p)})`);
+                addTo(xLF, p.size.trim() + ' ' + withDesc('header', p), n(p.qty) * n(p.length));
             });
             (w.posts || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
-                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (post)`);
-                addTo(xLF, p.size.trim() + ' post', n(p.qty) * n(p.length));
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${withDesc('post', p)})`);
+                addTo(xLF, p.size.trim() + ' ' + withDesc('post', p), n(p.qty) * n(p.length));
             });
 
             // Temp bracing: LF / 16 -> 2x4x16
@@ -304,8 +307,8 @@
             Object.keys(blkLF).sort().forEach(k => supplier.push(`${Math.ceil((blkLF[k] / 16) * sw)} - ${sp(k)} x 16   (blocking)`));
             (f.beams || []).forEach(p => {
                 if (!n(p.qty) || !n(p.length)) return;
-                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (beam)`);
-                addTo(xLF, p.size.trim() + ' beam', n(p.qty) * n(p.length));
+                supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${withDesc('beam', p)})`);
+                addTo(xLF, p.size.trim() + ' ' + withDesc('beam', p), n(p.qty) * n(p.length));
             });
 
             const xact = Object.keys(xLF).sort().map(k => [k, Math.ceil(xLF[k] * xw), 'LF']);
@@ -343,8 +346,8 @@
             [['beams', 'beam / purlin'], ['posts', 'post']].forEach(([key, label]) => {
                 (c[key] || []).forEach(p => {
                     if (!n(p.qty) || !n(p.length)) return;
-                    supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${label})`);
-                    addTo(xLF, p.size.trim() + ' ' + label, n(p.qty) * n(p.length));
+                    supplier.push(`${n(p.qty)} - ${sp(p.size)} x ${n(p.length)}   (${withDesc(label, p)})`);
+                    addTo(xLF, p.size.trim() + ' ' + withDesc(label, p), n(p.qty) * n(p.length));
                 });
             });
 
@@ -608,7 +611,7 @@
             );
         }
 
-        function PieceTable({ title, sizes, list, onChange }) {
+        function PieceTable({ title, sizes, list, onChange, desc }) {
             const listId = 'sizes-' + sizes.join('-');
             const update = (i, k, v) => onChange(list.map((p, j) => j === i ? { ...p, [k]: v } : p));
             return (
@@ -616,11 +619,12 @@
                     <div className="sub-title">{title}</div>
                     {list.length > 0 && (
                         <table>
-                            <thead><tr><th>Size</th><th>Qty</th><th>Length (ft)</th><th></th></tr></thead>
+                            <thead><tr><th>Size</th>{desc && <th>Description</th>}<th>Qty</th><th>Length (ft)</th><th></th></tr></thead>
                             <tbody>
                                 {list.map((p, i) => (
                                     <tr key={i}>
                                         <td><input list={listId} value={p.size} onChange={e => update(i, 'size', e.target.value)} placeholder="pick or type" /></td>
+                                        {desc && <td><input value={p.desc || ''} onChange={e => update(i, 'desc', e.target.value)} placeholder="e.g. Garage door" /></td>}
                                         <td><input className="num" type="number" value={p.qty} onChange={e => update(i, 'qty', e.target.value)} /></td>
                                         <td><input className="num" type="number" value={p.length} onChange={e => update(i, 'length', e.target.value)} /></td>
                                         <td><button className="btn-x" onClick={() => onChange(list.filter((_, j) => j !== i))}>✕</button></td>
@@ -1096,8 +1100,8 @@
                             </table>
                             <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setWalls('rows', [...w.rows, newWall()])}>+ Add wall</button>
 
-                            <PieceTable title="Headers" sizes={HEADER_SIZES} list={w.headers} onChange={v => setWalls('headers', v)} />
-                            <PieceTable title="Posts" sizes={POST_SIZES} list={w.posts} onChange={v => setWalls('posts', v)} />
+                            <PieceTable title="Headers" desc sizes={HEADER_SIZES} list={w.headers} onChange={v => setWalls('headers', v)} />
+                            <PieceTable title="Posts" desc sizes={POST_SIZES} list={w.posts} onChange={v => setWalls('posts', v)} />
 
                             <div className="sub-title">Other</div>
                             <div className="inline">
@@ -1144,7 +1148,7 @@
 
                             <LFTable title="Rim / band board" sizes={JOIST_SIZES} list={f.rims} onChange={v => setFloor('rims', v)} />
                             <LFTable title="Blocking" sizes={JOIST_SIZES} list={f.blocking} onChange={v => setFloor('blocking', v)} />
-                            <PieceTable title="Beams" sizes={BEAM_SIZES} list={f.beams} onChange={v => setFloor('beams', v)} />
+                            <PieceTable title="Beams" desc sizes={BEAM_SIZES} list={f.beams} onChange={v => setFloor('beams', v)} />
 
                             <div className="sub-title">Floor sheathing</div>
                             <div className="inline">
@@ -1190,8 +1194,8 @@
                             </table>
                             <button className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => setCeil('rows', [...c.rows, { ...newJoist(), size: '2x6' }])}>+ Add joists</button>
 
-                            <PieceTable title="Beams / drop purlins" sizes={BEAM_SIZES} list={c.beams} onChange={v => setCeil('beams', v)} />
-                            <PieceTable title="Posts" sizes={POST_SIZES} list={c.posts} onChange={v => setCeil('posts', v)} />
+                            <PieceTable title="Beams / drop purlins" desc sizes={BEAM_SIZES} list={c.beams} onChange={v => setCeil('beams', v)} />
+                            <PieceTable title="Posts" desc sizes={POST_SIZES} list={c.posts} onChange={v => setCeil('posts', v)} />
                             <LFTable title="Ledgers" sizes={JOIST_SIZES} list={c.ledgers} onChange={v => setCeil('ledgers', v)} />
 
                             <div className="sub-title">Hours</div>
