@@ -144,6 +144,7 @@
                 bracingLF: '',
                 shearSF: '',
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             floor: {
@@ -154,6 +155,7 @@
                 sheathSF: '',
                 sheathType: '3/4',
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             roof: {
@@ -164,6 +166,7 @@
                 purlinLF: [],
                 purlins: [],
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             trusses: {
@@ -171,6 +174,7 @@
                 bracing: [],
                 blocking: [],
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             roofSheath: {
@@ -186,6 +190,7 @@
                 starter: [],
                 lookouts: [],
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             hardware: {
@@ -193,6 +198,7 @@
                 autoA35: true,
                 rows: [],
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             },
             totals: {
@@ -210,6 +216,7 @@
                 posts: [],
                 ledgers: [],
                 frmHours: newHours(),
+                fdmHours: newHours(), // framer demo: demo done by the framers, at the framing rate
                 dmoHours: newHours()
             }
         });
@@ -1038,9 +1045,10 @@
                     .map(([name, o]) => [name.toUpperCase(), ...o.xact.map(([k, v, u]) => k.padEnd(xactWidth) + `${v.toLocaleString()} ${u}`), ''])).join('\n').trim();
                 const fr = n(tot.framingRate), dr = n(tot.demoRate);
                 const hourRows = sections.map(([name, , d]) => {
-                    const fh = hoursOf(d.frmHours), dh = hoursOf(d.dmoHours);
-                    const notes = [d.frmHours && d.frmHours.note, d.dmoHours && d.dmoHours.note && 'Demo: ' + d.dmoHours.note].filter(Boolean).join(' · ');
-                    return { name, fh, dh, f$: fh * fr, d$: dh * dr, notes };
+                    const fh = hoursOf(d.frmHours), dmh = hoursOf(d.dmoHours), fdh = hoursOf(d.fdmHours);
+                    const notes = [d.frmHours && d.frmHours.note, d.fdmHours && d.fdmHours.note && 'Framer demo: ' + d.fdmHours.note,
+                        d.dmoHours && d.dmoHours.note && 'Demo: ' + d.dmoHours.note].filter(Boolean).join(' · ');
+                    return { name, fh, dh: dmh + fdh, f$: fh * fr, d$: dmh * dr + fdh * fr, notes };
                 }).filter(r => r.fh || r.dh);
                 const sum = (k) => hourRows.reduce((t, r) => t + r[k], 0);
                 const frmRetail = sum('f$') + sum('d$');
@@ -1128,6 +1136,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Wall framing" value={w.frmHours} onChange={v => setWalls('frmHours', v)} />
+                                <HoursRow label="Wall framer demo" value={w.fdmHours} onChange={v => setWalls('fdmHours', v)} />
                                 <HoursRow label="Wall demo" value={w.dmoHours} onChange={v => setWalls('dmoHours', v)} />
                             </tbody></table>
 
@@ -1176,6 +1185,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Floor framing" value={f.frmHours} onChange={v => setFloor('frmHours', v)} />
+                                <HoursRow label="Floor framer demo" value={f.fdmHours} onChange={v => setFloor('fdmHours', v)} />
                                 <HoursRow label="Floor demo" value={f.dmoHours} onChange={v => setFloor('dmoHours', v)} />
                             </tbody></table>
 
@@ -1215,6 +1225,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Ceiling framing" value={c.frmHours} onChange={v => setCeil('frmHours', v)} />
+                                <HoursRow label="Ceiling framer demo" value={c.fdmHours} onChange={v => setCeil('fdmHours', v)} />
                                 <HoursRow label="Ceiling demo" value={c.dmoHours} onChange={v => setCeil('dmoHours', v)} />
                             </tbody></table>
 
@@ -1283,6 +1294,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Roof framing" value={rf.frmHours} onChange={v => setRoof('frmHours', v)} />
+                                <HoursRow label="Roof framer demo" value={rf.fdmHours} onChange={v => setRoof('fdmHours', v)} />
                                 <HoursRow label="Roof demo" value={rf.dmoHours} onChange={v => setRoof('dmoHours', v)} />
                             </tbody></table>
 
@@ -1322,6 +1334,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Truss framing" value={tr.frmHours} onChange={v => setTruss('frmHours', v)} />
+                                <HoursRow label="Truss framer demo" value={tr.fdmHours} onChange={v => setTruss('fdmHours', v)} />
                                 <HoursRow label="Truss demo" value={tr.dmoHours} onChange={v => setTruss('dmoHours', v)} />
                             </tbody></table>
 
@@ -1403,6 +1416,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Sheathing / fascia framing" value={rs.frmHours} onChange={v => setRS('frmHours', v)} />
+                                <HoursRow label="Sheathing / fascia framer demo" value={rs.fdmHours} onChange={v => setRS('fdmHours', v)} />
                                 <HoursRow label="Sheathing / fascia demo" value={rs.dmoHours} onChange={v => setRS('dmoHours', v)} />
                             </tbody></table>
 
@@ -1459,6 +1473,7 @@
                             <div className="sub-title">Hours</div>
                             <table><tbody>
                                 <HoursRow label="Hardware install" value={hw.frmHours} onChange={v => setHW('frmHours', v)} />
+                                <HoursRow label="Hardware framer demo" value={hw.fdmHours} onChange={v => setHW('fdmHours', v)} />
                                 <HoursRow label="Hardware demo" value={hw.dmoHours} onChange={v => setHW('dmoHours', v)} />
                             </tbody></table>
 
