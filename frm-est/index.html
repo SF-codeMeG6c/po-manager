@@ -677,8 +677,10 @@
                             <td>Total</td><td className="money">{T.sum('fh')}</td><td className="money">{money(T.sum('f$'))}</td>
                             <td className="money">{T.sum('dh')}</td><td className="money">{money(T.sum('d$'))}</td>
                         </tr>
-                        <tr><td colSpan={4}>Retail (framing + demo)</td><td className="money">{money(T.frmRetail)}</td></tr>
-                        <tr><td colSpan={4}>Wholesale (75%)</td><td className="money">{money(T.frmRetail * 0.75)}</td></tr>
+                        <tr><td colSpan={4}>Framing retail</td><td className="money">{money(T.sum('f$'))}</td></tr>
+                        <tr><td colSpan={4}>Framing wholesale (75%)</td><td className="money">{money(T.sum('f$') * 0.75)}</td></tr>
+                        <tr><td colSpan={4}>Demo retail</td><td className="money">{money(T.sum('d$'))}</td></tr>
+                        <tr><td colSpan={4}>Demo wholesale (75%)</td><td className="money">{money(T.sum('d$') * 0.75)}</td></tr>
                     </tbody>
                 </table>
             );
@@ -1051,11 +1053,10 @@
                     return { name, fh, dh: dmh + fdh, f$: fh * fr, d$: dmh * dr + fdh * fr, notes };
                 }).filter(r => r.fh || r.dh);
                 const sum = (k) => hourRows.reduce((t, r) => t + r[k], 0);
-                const frmRetail = sum('f$') + sum('d$');
                 const rooms = tot.rooms || [];
                 const interior = demoBlock(rooms.reduce((t, r) => t + n(r.interior), 0), dr, n(tot.interiorDumpsters), n(tot.dumpsterPrice));
                 const contents = demoBlock(rooms.reduce((t, r) => t + n(r.contents), 0), dr, n(tot.contentsDumpsters), n(tot.dumpsterPrice));
-                T = { job, header, sections, supplierText, xactText, hourRows, sum, frmRetail, interior, contents, fr, dr };
+                T = { job, header, sections, supplierText, xactText, hourRows, sum, interior, contents, fr, dr };
             }
 
             return (
