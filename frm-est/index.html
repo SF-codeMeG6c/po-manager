@@ -121,6 +121,7 @@
         const PURLIN_SIZES = ['2x4', '2x6', '4x4', '4x6'];
         const newRoof = () => ({ name: '', size: '2x6', spacing: '24', pitch: '', run: '', overhang: '', length: '', sides: 2, gables: 2, ridgeSize: '2x8', doubleRidge: false, collar: true });
         const ROOF_SHEATH = { '1/2': '4 x 8 x 1/2" CDX', '7/16': '4 x 8 x 7/16" OSB' };
+        const BOARD_SHEATH = { '1x6solid': { name: 'solid', oc: 5.5 }, '1x6spaced': { name: 'spaced', oc: 9.5 } };
         const newTruss = () => ({ name: '', span: '', pitch: '', overhang: '', length: '', gables: 2 });
         const HARDWARE = ['Simpson H2.5A', 'Simpson A35', 'Simpson L50', 'Simpson LUS26', 'Simpson LUS28', 'Simpson LUS210',
             'Simpson LSU26', 'Simpson LSU210', 'Simpson HDU2', 'Simpson HDU4', 'Simpson MSTA24', 'Simpson MSTA36',
@@ -495,7 +496,13 @@
             const sw = 1 + n(waste.supplier) / 100;
             const xw = 1 + n(waste.xact) / 100;
             const supplier = [], xact = [];
-            if (n(r.sf)) {
+            const bd = BOARD_SHEATH[r.type];
+            if (n(r.sf) && bd) {
+                // Boards: SF x 12 / inches on center = LF, bought as 1x6x16
+                const lf = n(r.sf) * 12 / bd.oc;
+                supplier.push(`${Math.ceil(Math.round((lf / 16) * sw * 1e6) / 1e6)} - 1 x 6 x 16   (${bd.name} roof sheathing)`);
+                xact.push([`1x6 ${bd.name} roof sheathing`, Math.ceil(n(r.sf) * xw), 'SF']);
+            } else if (n(r.sf)) {
                 const t = ROOF_SHEATH[r.type] || ROOF_SHEATH['1/2'];
                 supplier.push(`${Math.ceil((n(r.sf) / 32) * sw)} - ${t}   (roof sheathing)`);
                 xact.push([t.replace('4 x 8 x ', '') + ' roof sheathing', Math.ceil(n(r.sf) * xw), 'SF']);
@@ -1318,6 +1325,7 @@
                                 <input className="num" type="number" value={rs.sf} onChange={e => setRS('sf', e.target.value)} />
                                 <select style={{ width: 'auto' }} value={rs.type} onChange={e => setRS('type', e.target.value)}>
                                     <option value="1/2">1/2" CDX</option><option value="7/16">7/16" OSB</option>
+                                    <option value="1x6solid">1x6 solid sheathing</option><option value="1x6spaced">1x6 spaced sheathing (4" gap)</option>
                                 </select>
                                 <span className="muted" style={{ marginTop: 0 }}>Calculated: {rt.sf.toLocaleString()} SF (no overhang)</span>
                                 <button className="btn-secondary btn-sm" disabled={!rt.sf} onClick={() => setRS('sf', String(rt.sf))}>Use calculated</button>
