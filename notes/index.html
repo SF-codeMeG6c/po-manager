@@ -82,6 +82,9 @@
         }
         .job-link { font-weight: 600; color: #0066cc; }
         input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        .contact-edit { border: 1px solid #eee; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
+        .extra-row { justify-content: flex-start; margin-top: 6px; }
+        .extra-row input { flex: 1; min-width: 0; width: auto; }
     </style>
 </head>
 <body>
@@ -289,12 +292,20 @@
         }
 
         // Contact card fields (all optional). Lock box is the job's own lockBox field, shared with PO Manager.
+        // Every box can also have extra items: a list of { label, value } the user adds (e.g. Gate code: 4471).
         const EMPTY_CARD = {
-            homeowners: [{ name: '', phone: '', email: '' }, { name: '', phone: '', email: '' }],
-            insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
-            publicAdjusting: { company: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '' },
-            mortgage: { company: '', phone: '' }
+            homeowners: [{ name: '', phone: '', email: '', extras: [] }, { name: '', phone: '', email: '', extras: [] }],
+            contacts: [],
+            insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
+            publicAdjusting: { company: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
+            mortgage: { company: '', phone: '', extras: [] }
         };
+        // Other contacts: each has a title the user types or picks (Tenant, Attorney...), plus the fields below
+        const EMPTY_CONTACT = { title: '', name: '', company: '', phone: '', email: '', extras: [] };
+        const CONTACT_FIELDS = [['name', 'Name'], ['company', 'Company'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
+        const TITLE_SUGGESTIONS = ['Tenant', 'Property manager', 'Spouse', 'Son', 'Daughter', 'Attorney', 'HOA', 'Real estate agent', 'Contractor'];
+        const MAX_CONTACTS = 10;
+        const MAX_EXTRAS = 15;
         const CARD_SECTIONS = [
             { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
             { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
@@ -306,27 +317,64 @@
         const fullCard = (d) => {
             const c = JSON.parse(JSON.stringify(EMPTY_CARD));
             if (!d) return c;
-            (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h }; });
-            ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}) }; });
+            (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h, extras: [...(h.extras || [])] }; });
+            ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}), extras: [...((d[k] && d[k].extras) || [])] }; });
+            c.contacts = (d.contacts || []).map(x => ({ ...EMPTY_CONTACT, ...x, extras: [...(x.extras || [])] }));
             return c;
         };
-        // Trim every field; drop homeowners with nothing filled in
+        // Trim every field; drop empty extra items, and homeowners or contacts with nothing filled in
         const cleanCard = (c) => {
-            const t = (o) => { const r = {}; Object.keys(o).forEach(k => { r[k] = (o[k] || '').trim(); }); return r; };
+            const s = (v) => (typeof v === 'string' ? v : '').trim();
+            const cleanExtras = (list) => (list || []).map(x => ({ label: s(x.label), value: s(x.value) })).filter(x => x.label || x.value);
+            const t = (o) => { const r = {}; Object.keys(o).forEach(k => { if (k !== 'extras') r[k] = s(o[k]); }); r.extras = cleanExtras(o.extras); return r; };
+            const hasAny = (o) => Object.keys(o).some(k => (k === 'extras' ? o.extras.length > 0 : o[k]));
             return {
-                homeowners: c.homeowners.map(t).filter(h => h.name || h.phone || h.email),
+                homeowners: c.homeowners.map(t).filter(hasAny),
+                contacts: c.contacts.map(t).filter(hasAny).slice(0, MAX_CONTACTS),
                 insurance: t(c.insurance),
                 publicAdjusting: t(c.publicAdjusting),
                 mortgage: t(c.mortgage)
             };
         };
         const telHref = (p) => 'tel:' + (p || '').replace(/[^\d+]/g, '');
+        // Extra items become tap-to-email or tap-to-call when they look like an email or a phone number (10+ digits)
+        const itemKind = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || '') ? 'email'
+            : (/^[\d\s().+-]+$/.test(v || '') && (v || '').replace(/\D/g, '').length >= 10 ? 'tel' : '');
+
+        // Extra items while editing: an item name and its value, a × to remove, and + Add item
+        function ExtraItems({ items, onChange }) {
+            const set = (i, k, v) => onChange(items.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+            return (
+                <div style={{ marginTop: '6px' }}>
+                    {items.map((x, i) => (
+                        <div key={i} className="row extra-row">
+                            <input type="text" placeholder="Item (e.g. Gate code)" value={x.label} onChange={e => set(i, 'label', e.target.value)} />
+                            <input type="text" placeholder="Value" value={x.value} onChange={e => set(i, 'value', e.target.value)} />
+                            <button type="button" className="btn-secondary btn-sm" onClick={() => onChange(items.filter((_, j) => j !== i))} aria-label="Remove item">&times;</button>
+                        </div>
+                    ))}
+                    {items.length < MAX_EXTRAS && (
+                        <button type="button" className="btn-secondary btn-sm" style={{ marginTop: '6px' }} onClick={() => onChange([...items, { label: '', value: '' }])}>+ Add item</button>
+                    )}
+                </div>
+            );
+        }
 
         // A phone or email as a tap-to-call or tap-to-email link
         function CardValue({ value, kind }) {
             if (kind === 'tel') return <a href={telHref(value)}>{value}</a>;
             if (kind === 'email') return <a href={'mailto:' + value}>{value}</a>;
             return <span>{value}</span>;
+        }
+
+        // Extra items on the card: "Item  value" lines
+        function ExtraLines({ items }) {
+            return (items || []).filter(x => x.label || x.value).map((x, i) => (
+                <div key={'x' + i} className="card-line">
+                    {x.label && <span className="card-label">{x.label}</span>}
+                    <CardValue value={x.value} kind={itemKind(x.value)} />
+                </div>
+            ));
         }
 
         // Customer contact card: view, then one Edit button for the whole card
@@ -358,6 +406,11 @@
                 const homeowners = prev.homeowners.map((h, j) => (j === i ? { ...h, [field]: value } : h));
                 return { ...prev, homeowners };
             });
+            const setContact = (i, field, value) => setEditing(prev => ({
+                ...prev, contacts: prev.contacts.map((x, j) => (j === i ? { ...x, [field]: value } : x))
+            }));
+            const addContact = () => setEditing(prev => ({ ...prev, contacts: [...prev.contacts, { ...EMPTY_CONTACT, extras: [] }] }));
+            const removeContact = (i) => setEditing(prev => ({ ...prev, contacts: prev.contacts.filter((_, j) => j !== i) }));
 
             // Save: copy the card as it was (with the lock box) to history first, all in one save
             const save = async () => {
@@ -399,12 +452,33 @@
                             <div key={i} className="card-group">
                                 <div className="card-group-title">Homeowner {i + 1}</div>
                                 <div className="card-grid">{HOMEOWNER_FIELDS.map(([f, label, kind]) => input(h[f], v => setHomeowner(i, f, v), label, kind))}</div>
+                                <ExtraItems items={h.extras} onChange={list => setHomeowner(i, 'extras', list)} />
                             </div>
                         ))}
+                        <div className="card-group">
+                            <div className="card-group-title">Other contacts</div>
+                            {editing.contacts.length === 0 && <p className="muted">None yet. Add a tenant, property manager, family member and so on.</p>}
+                            {editing.contacts.map((ct, i) => (
+                                <div key={i} className="contact-edit">
+                                    <div className="row" style={{ alignItems: 'flex-end' }}>
+                                        <div className="card-field" style={{ flex: 1 }}>
+                                            <label>Title</label>
+                                            <input type="text" list="contact-titles" placeholder="Type or pick, e.g. Tenant" value={ct.title} onChange={e => setContact(i, 'title', e.target.value)} />
+                                        </div>
+                                        <button type="button" className="btn-secondary btn-sm" onClick={() => removeContact(i)}>Remove contact</button>
+                                    </div>
+                                    <div className="card-grid" style={{ marginTop: '6px' }}>{CONTACT_FIELDS.map(([f, label, kind]) => input(ct[f], v => setContact(i, f, v), label, kind))}</div>
+                                    <ExtraItems items={ct.extras} onChange={list => setContact(i, 'extras', list)} />
+                                </div>
+                            ))}
+                            {editing.contacts.length < MAX_CONTACTS && <button type="button" className="btn-secondary btn-sm" onClick={addContact}>+ Add contact</button>}
+                            <datalist id="contact-titles">{TITLE_SUGGESTIONS.map(t => <option key={t} value={t} />)}</datalist>
+                        </div>
                         {CARD_SECTIONS.map(s => (
                             <div key={s.key} className="card-group">
                                 <div className="card-group-title">{s.title}</div>
                                 <div className="card-grid">{s.fields.map(([f, label, kind]) => input(editing[s.key][f], v => setField(s.key, f, v), label, kind))}</div>
+                                <ExtraItems items={editing[s.key].extras} onChange={list => setField(s.key, 'extras', list)} />
                             </div>
                         ))}
                         <div className="card-group">
@@ -421,9 +495,10 @@
             }
 
             const c = fullCard(card);
-            const owners = c.homeowners.filter(h => h.name || h.phone || h.email);
-            const filled = (s) => s.fields.some(([f]) => c[s.key][f]);
-            const nothing = owners.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
+            const owners = c.homeowners.filter(h => h.name || h.phone || h.email || h.extras.length > 0);
+            const contacts = c.contacts;
+            const filled = (s) => s.fields.some(([f]) => c[s.key][f]) || c[s.key].extras.length > 0;
+            const nothing = owners.length === 0 && contacts.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
             return (
                 <div className="section">
                     <div className="row">
@@ -438,6 +513,16 @@
                                 {HOMEOWNER_FIELDS.filter(([f]) => h[f]).map(([f, label, kind]) => (
                                     <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={h[f]} kind={kind} /></div>
                                 ))}
+                                <ExtraLines items={h.extras} />
+                            </div>
+                        ))}
+                        {contacts.map((ct, i) => (
+                            <div key={'c' + i} className="card-group">
+                                <div className="card-group-title">{ct.title || 'Contact'}</div>
+                                {CONTACT_FIELDS.filter(([f]) => ct[f]).map(([f, label, kind]) => (
+                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={ct[f]} kind={kind} /></div>
+                                ))}
+                                <ExtraLines items={ct.extras} />
                             </div>
                         ))}
                         {CARD_SECTIONS.filter(filled).map(s => (
@@ -446,6 +531,7 @@
                                 {s.fields.filter(([f]) => c[s.key][f]).map(([f, label, kind]) => (
                                     <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={c[s.key][f]} kind={kind} /></div>
                                 ))}
+                                <ExtraLines items={c[s.key].extras} />
                             </div>
                         ))}
                         {lockBox && (
@@ -1042,4 +1128,3 @@
     </script>
 </body>
 </html>
-
