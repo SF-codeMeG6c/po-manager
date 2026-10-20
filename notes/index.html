@@ -370,6 +370,43 @@
         };
         const boxKey = (name) => (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+        // Egnyte folder set for a new job (from Folder Set Up 10-17-26). All folders are empty.
+        const EGNYTE_FOLDERS = ['Billing/', 'Estimating/', 'Estimating/Rough/', 'Estimating/Supplements/', 'Estimating/Working/', 'Owner/',
+            'Production/', 'Production/Bid-Stamped/', 'Production/Calendars/', 'Production/Rough/', 'Production/Working/'];
+        // A zip file holding only empty folders (no files, so nothing to compress)
+        const folderZip = (paths) => {
+            const enc = new TextEncoder();
+            const parts = [], central = [];
+            let offset = 0;
+            const u16 = (v) => [v & 255, (v >> 8) & 255];
+            const u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255];
+            const d = new Date();
+            const time = (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2);
+            const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+            paths.forEach(p => {
+                const name = enc.encode(p);
+                const local = [...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(time), ...u16(date),
+                    ...u32(0), ...u32(0), ...u32(0), ...u16(name.length), ...u16(0)];
+                parts.push(new Uint8Array(local), name);
+                central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(time), ...u16(date),
+                    ...u32(0), ...u32(0), ...u32(0), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0x10), ...u32(offset)]), name);
+                offset += local.length + name.length;
+            });
+            const centralSize = central.reduce((n, a) => n + a.length, 0);
+            const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(paths.length), ...u16(paths.length),
+                ...u32(centralSize), ...u32(offset), ...u16(0)]);
+            return new Blob([...parts, ...central, end], { type: 'application/zip' });
+        };
+        const folderName = (code) => (code || 'New job').replace(/[\\/:*?"<>|]+/g, '-').trim();
+        const downloadEgnyteFolders = (code) => {
+            const top = folderName(code);
+            const url = URL.createObjectURL(folderZip([top + '/', ...EGNYTE_FOLDERS.map(f => top + '/' + f)]));
+            const a = document.createElement('a');
+            a.href = url; a.download = top + '.zip';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+
         // pdf-lib (reads the form's boxes) is loaded only the first time someone imports
         let pdfLibLoading = null;
         const loadPdfLib = () => {
@@ -1341,6 +1378,10 @@
                             <div className="job-head">
                                 <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
                                 <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
+                                <div className="no-print" style={{ marginTop: '8px' }}>
+                                    <button type="button" className="btn-secondary btn-sm" onClick={() => downloadEgnyteFolders(job.code)}>Download Egnyte folders (zip)</button>
+                                    <span className="muted" style={{ marginLeft: '8px' }}>Unzip it, then drag the {folderName(job.code)} folder into Current-Customer in Egnyte.</span>
+                                </div>
                             </div>
                             <ContactCard job={job} profile={profile} />
                             <JobNotes job={job} profile={profile} />
