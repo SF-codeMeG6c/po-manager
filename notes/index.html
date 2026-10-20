@@ -471,28 +471,21 @@
 
         function IguidePage({ job, profile }) {
             const [card, setCard] = useState(undefined);
-            const [saved, setSaved] = useState(undefined);      // notesInfo/iguide: the link and lines used last time
             const [form, setForm] = useState(null);              // { names, street, city, link }
             const [photo, setPhoto] = useState(null);            // the chosen photo file
             const [photoUrl, setPhotoUrl] = useState('');
             const [busy, setBusy] = useState(false);
             const [msg, setMsg] = useState(null);
             const photoRef = useRef(null);
-            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
-            const infoRef = db.collection('jobs').doc(job.id).collection('notesInfo');
+            // Nothing is saved for the iGuide page (Spencer, Oct 20): the link is pasted and the photo picked each time
+            const cardRef = db.collection('jobs').doc(job.id).collection('notesInfo').doc('contactCard');
 
-            useEffect(() => infoRef.doc('contactCard').onSnapshot(d => setCard(d.exists ? d.data() : null), () => setCard(null)), [job.id]);
-            useEffect(() => infoRef.doc('iguide').onSnapshot(d => setSaved(d.exists ? d.data() : null), () => setSaved(null)), [job.id]);
+            useEffect(() => cardRef.onSnapshot(d => setCard(d.exists ? d.data() : null), () => setCard(null)), [job.id]);
             useEffect(() => () => { if (photoUrl) URL.revokeObjectURL(photoUrl); }, [photoUrl]);
 
             const open = () => {
                 setMsg(null);
-                setForm({
-                    names: (saved && saved.names) || iguideNames(card),
-                    street: (saved && saved.street) || job.address || '',
-                    city: (saved && saved.city) || job.cityStateZip || '',
-                    link: (saved && saved.link) || ''
-                });
+                setForm({ names: iguideNames(card), street: job.address || '', city: job.cityStateZip || '', link: '' });
             };
             const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
             const pickPhoto = (file) => {
@@ -521,16 +514,6 @@
                     a.href = url; a.download = name;
                     document.body.appendChild(a); a.click(); a.remove();
                     setTimeout(() => URL.revokeObjectURL(url), 2000);
-                    // Remember the link and lines for this job (old version kept in history), so other tools can use the link
-                    const now = firebase.firestore.FieldValue.serverTimestamp();
-                    const next = { link, names: form.names.trim(), street: form.street.trim(), city: form.city.trim() };
-                    const same = saved && ['link', 'names', 'street', 'city'].every(k => (saved[k] || '') === next[k]);
-                    if (!same) {
-                        const batch = db.batch();
-                        if (saved) batch.set(infoRef.doc('iguide').collection('history').doc(), { ...saved, savedAt: now, savedBy: me });
-                        batch.set(infoRef.doc('iguide'), { ...next, lastFileName: name, updatedAt: now, updatedBy: me });
-                        await batch.commit();
-                    }
                     setMsg({ text: `Downloaded ${name}. Save it to the job's Owner folder in Egnyte.`, ok: true });
                 } catch (error) {
                     setMsg({ text: 'Could not make the PDF: ' + error.message, ok: false });
@@ -538,19 +521,13 @@
                 setBusy(false);
             };
 
-            if (card === undefined || saved === undefined) return null;
+            if (card === undefined) return null;
             return (
                 <div className="section no-print">
                     <div className="row">
                         <div className="section-title" style={{ marginBottom: 0 }}>iGuide link page</div>
                         {!form && <button className="btn-secondary btn-sm" onClick={open}>Make iGuide link page</button>}
                     </div>
-                    {!form && saved && saved.link && (
-                        <div className="card-line" style={{ marginTop: '6px' }}>
-                            <span className="card-label">360 tour</span><a href={saved.link} target="_blank" rel="noopener">{saved.link}</a>
-                            <div className="note-meta">Last made by {saved.updatedBy ? saved.updatedBy.name : ''} · {fmtTime(saved.updatedAt)}</div>
-                        </div>
-                    )}
                     {form && (
                         <div style={{ marginTop: '8px' }}>
                             <div className="card-grid">
@@ -577,7 +554,7 @@
                                 <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={make} disabled={busy}>{busy ? 'Making PDF...' : 'Make PDF and download'}</button>
                                 <button className="btn-secondary btn-sm" onClick={() => { setForm(null); setMsg(null); }} disabled={busy}>Close</button>
                             </div>
-                            <p className="muted" style={{ marginTop: '6px' }}>The estimator block is Dave Chavez. The PDF downloads to your computer; it isn't saved here yet.</p>
+                            <p className="muted" style={{ marginTop: '6px' }}>The estimator block is Dave Chavez. Nothing is saved here: the PDF downloads to your computer.</p>
                         </div>
                     )}
                     {msg && <div className={msg.ok ? 'ok-msg' : 'error'} style={{ marginTop: '6px' }}>{msg.text}</div>}
