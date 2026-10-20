@@ -85,6 +85,7 @@
         .contact-edit { border: 1px solid #eee; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
         .extra-row { justify-content: flex-start; margin-top: 6px; }
         .extra-row input { flex: 1; min-width: 0; width: auto; }
+        .ok-msg { color: #388e3c; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -295,11 +296,13 @@
         // Every box can also have extra items: a list of { label, value } the user adds (e.g. Gate code: 4471).
         const EMPTY_CARD = {
             team: {},
-            homeowners: [{ name: '', phone: '', email: '', extras: [] }, { name: '', phone: '', email: '', extras: [] }],
+            details: { insured: '', lossAddress: '', homeAddress: '', dateOfLoss: '', extras: [] },
+            homeowners: [{ name: '', who: '', phone: '', email: '', extras: [] }, { name: '', who: '', phone: '', email: '', extras: [] }],
             contacts: [],
             insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
-            publicAdjusting: { company: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
-            mortgage: { company: '', phone: '', extras: [] }
+            publicAdjusting: { company: '', percent: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
+            mortgage: { hasMortgage: '', company: '', phone: '', extras: [] },
+            settlement: { settlementAmount: '', commissionDave: '', emsVendors: '', emsFixedPrice: '', emsAsIncurred: '', extras: [] }
         };
         // Other contacts: each has a title the user types or picks (Tenant, Attorney...), plus the fields below
         const EMPTY_CONTACT = { title: '', name: '', company: '', phone: '', email: '', extras: [] };
@@ -311,19 +314,23 @@
         const TEAM_ROLES = [['sales', 'Sales person'], ['claims', 'Claim coordinator'], ['super', 'Super'], ['estimator', 'Estimator']];
         const teamPerson = (u) => ({ uid: u.id || u.uid, name: u.name || u.email || '', email: u.email || '', phone: u.phone || '' });
         const MAX_EXTRAS = 15;
+        // top: true sections show above the homeowners
         const CARD_SECTIONS = [
+            { key: 'details', top: true, title: 'Job details', fields: [['insured', 'Insured'], ['lossAddress', 'Loss address'], ['homeAddress', 'Home (mailing) address'], ['dateOfLoss', 'Date of loss']] },
             { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
-            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
-            { key: 'mortgage', title: 'Mortgage company', fields: [['company', 'Company'], ['phone', 'Contact phone', 'tel']] }
+            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['percent', 'Public adjuster %'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
+            { key: 'mortgage', title: 'Mortgage company', fields: [['hasMortgage', 'Mortgage? (Yes / No)'], ['company', 'Company'], ['phone', 'Contact phone', 'tel']] },
+            { key: 'settlement', title: 'Settlement & EMS', fields: [['settlementAmount', 'Settlement amount'], ['commissionDave', 'Com Dave %'], ['emsVendors', 'EMS vendors & description'], ['emsFixedPrice', 'EMS fixed price amount'], ['emsAsIncurred', 'EMS as incurred']] }
         ];
-        const HOMEOWNER_FIELDS = [['name', 'Name'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
+        const SECTION_KEYS = CARD_SECTIONS.map(s => s.key);
+        const HOMEOWNER_FIELDS = [['name', 'Name'], ['who', 'Who'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
 
         // Fill in any missing fields so the form always has every box
         const fullCard = (d) => {
             const c = JSON.parse(JSON.stringify(EMPTY_CARD));
             if (!d) return c;
             (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h, extras: [...(h.extras || [])] }; });
-            ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}), extras: [...((d[k] && d[k].extras) || [])] }; });
+            SECTION_KEYS.forEach(k => { c[k] = { ...c[k], ...(d[k] || {}), extras: [...((d[k] && d[k].extras) || [])] }; });
             c.contacts = (d.contacts || []).map(x => ({ ...EMPTY_CONTACT, ...x, extras: [...(x.extras || [])] }));
             c.team = { ...(d.team || {}) };
             return c;
@@ -343,10 +350,73 @@
                 team,
                 homeowners: c.homeowners.map(t).filter(hasAny),
                 contacts: c.contacts.map(t).filter(hasAny).slice(0, MAX_CONTACTS),
-                insurance: t(c.insurance),
-                publicAdjusting: t(c.publicAdjusting),
-                mortgage: t(c.mortgage)
+                ...Object.fromEntries(SECTION_KEYS.map(k => [k, t(c[k])]))
             };
+        };
+
+        // Customer Intake PDF (fillable form): box name on the form -> where it goes on the card.
+        // Box names are matched ignoring case, spaces and symbols, so "Yes  No" matches "yesno".
+        const INTAKE_MAP = {
+            insured: ['details', 'insured'], lossaddress: ['details', 'lossAddress'], homeaddress: ['details', 'homeAddress'], dateofloss: ['details', 'dateOfLoss'],
+            primarycontact: ['h0', 'name'], who: ['h0', 'who'], email: ['h0', 'email'], phone: ['h0', 'phone'],
+            secondarycontact: ['h1', 'name'], who2: ['h1', 'who'], email2: ['h1', 'email'], phone2: ['h1', 'phone'],
+            insuranceco: ['insurance', 'company'], adjuster: ['insurance', 'adjusterName'], email3: ['insurance', 'adjusterEmail'], phone3: ['insurance', 'adjusterPhone'], claim: ['insurance', 'claimNumber'],
+            lockboxcode: ['lockBox'],
+            publicadjustingco: ['publicAdjusting', 'company'], publicadjuster: ['publicAdjusting', 'percent'], email4: ['publicAdjusting', 'adjusterEmail'], phone4: ['publicAdjusting', 'adjusterPhone'],
+            pasalesperson: ['publicAdjusting', 'salesName'], phone5: ['publicAdjusting', 'salesPhone'],
+            settlementamount: ['settlement', 'settlementAmount'], comdave: ['settlement', 'commissionDave'],
+            yesno: ['mortgage', 'hasMortgage'], mortgagecompany: ['mortgage', 'company'],
+            emsvendorsdescription: ['settlement', 'emsVendors'], emsfixedpriceamount: ['settlement', 'emsFixedPrice'], emsasincurred: ['settlement', 'emsAsIncurred']
+        };
+        const boxKey = (name) => (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        // pdf-lib (reads the form's boxes) is loaded only the first time someone imports
+        let pdfLibLoading = null;
+        const loadPdfLib = () => {
+            if (window.PDFLib) return Promise.resolve(window.PDFLib);
+            if (!pdfLibLoading) pdfLibLoading = new Promise((resolve, reject) => {
+                const el = document.createElement('script');
+                el.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+                el.onload = () => resolve(window.PDFLib);
+                el.onerror = () => { pdfLibLoading = null; reject(new Error('Could not load the PDF reader. Check the internet connection and try again.')); };
+                document.head.appendChild(el);
+            });
+            return pdfLibLoading;
+        };
+        // Read the typed-in values from the form's boxes: { boxKey: value }
+        const readIntakePdf = async (file) => {
+            const PDFLib = await loadPdfLib();
+            const doc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+            const values = {};
+            let boxes = 0;
+            doc.getForm().getFields().forEach(f => {
+                boxes++;
+                let v = '';
+                if (f instanceof PDFLib.PDFTextField) v = f.getText() || '';
+                else if (f instanceof PDFLib.PDFCheckBox) v = f.isChecked() ? 'Yes' : '';
+                else if (f instanceof PDFLib.PDFDropdown || f instanceof PDFLib.PDFOptionList) v = (f.getSelected() || []).join(', ');
+                else if (f instanceof PDFLib.PDFRadioGroup) v = f.getSelected() || '';
+                values[boxKey(f.getName())] = String(v).replace(/\s+/g, ' ').trim();
+            });
+            return { values, boxes };
+        };
+        // Put the form's values into the card being edited. Empty boxes on the form leave the card as it is.
+        const applyIntake = (base, values) => {
+            const next = { ...base, homeowners: base.homeowners.map(h => ({ ...h })) };
+            SECTION_KEYS.forEach(k => { next[k] = { ...base[k] }; });
+            let filled = 0, replaced = 0;
+            Object.keys(INTAKE_MAP).forEach(key => {
+                const v = values[key];
+                if (!v) return;
+                const [where, field] = INTAKE_MAP[key];
+                const target = where === 'lockBox' ? null : where === 'h0' ? next.homeowners[0] : where === 'h1' ? next.homeowners[1] : next[where];
+                const old = target ? (target[field] || '') : (next.lockBox || '');
+                if (old.trim() === v) return;
+                if (old.trim()) replaced++;
+                filled++;
+                if (target) target[field] = v; else next.lockBox = v;
+            });
+            return { next, filled, replaced };
         };
         const telHref = (p) => 'tel:' + (p || '').replace(/[^\d+]/g, '');
         // Extra items become tap-to-email or tap-to-call when they look like an email or a phone number (10+ digits)
@@ -397,6 +467,9 @@
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
             const [users, setUsers] = useState(null);          // active users, for the job team pickers (Owner/Admin only)
+            const [importMsg, setImportMsg] = useState(null);  // { text, ok } after importing an intake form
+            const [importing, setImporting] = useState(false);
+            const fileRef = useRef(null);
             const isAdmin = ADMINS.includes(profile.role);
             const me = { uid: profile.uid, name: profile.name || profile.email || '' };
             const jobRef = db.collection('jobs').doc(job.id);
@@ -414,11 +487,9 @@
             // Tell the job drop down when the card is open for editing
             useEffect(() => { UNSAVED.card = !!editing; return () => { UNSAVED.card = false; }; }, [editing]);
 
-            const startEdit = () => {
-                setMessage('');
-                setEditing({ ...fullCard(card), lockBox });
-                // Only Owner and Admin can read the users list, so only they load it
-                if (isAdmin) {
+            // Only Owner and Admin can read the users list, so only they load it
+            const loadUsers = (fresh) => {
+                if (isAdmin && (fresh || users === null)) {
                     db.collection('users').get().then(snap => {
                         const list = [];
                         snap.forEach(doc => { const d = doc.data(); if (d.active === true) list.push({ id: doc.id, ...d }); });
@@ -427,6 +498,52 @@
                     }).catch(error => { setUsers([]); setMessage('Error loading users for the job team: ' + error.message); });
                 }
             };
+            const startEdit = () => {
+                setMessage('');
+                setImportMsg(null);
+                setEditing({ ...fullCard(card), lockBox });
+                loadUsers(true);
+            };
+            const cancelEdit = () => { setEditing(null); setMessage(''); setImportMsg(null); };
+
+            // Import a filled-in Customer Intake PDF: its boxes fill the card for review; nothing saves until Save
+            const importIntake = async (file) => {
+                if (!file) return;
+                setImportMsg(null);
+                setImporting(true);
+                try {
+                    const { values, boxes } = await readIntakePdf(file);
+                    if (boxes === 0) {
+                        setImportMsg({ text: 'This PDF has no fill-in boxes (it may be scanned or printed). Type the info in by hand.', ok: false });
+                    } else {
+                        const base = editing || { ...fullCard(card), lockBox };
+                        const { next, filled, replaced } = applyIntake(base, values);
+                        if (filled === 0) {
+                            setImportMsg({ text: Object.values(values).some(Boolean) ? 'Everything on this form is already on the card.' : 'The form\'s boxes are empty. Fill it in on the computer, save it, then import it.', ok: false });
+                            if (!editing) setEditing(base);
+                        } else {
+                            setEditing({ ...next, _import: file.name });
+                            setImportMsg({ text: `Filled ${filled} box${filled === 1 ? '' : 'es'} from ${file.name}`
+                                + (replaced ? ` (${replaced} replaced what was there before)` : '')
+                                + '. Check them, then click Save contact card. Cancel undoes the import.', ok: true });
+                        }
+                        loadUsers();
+                    }
+                } catch (error) {
+                    setImportMsg({ text: 'Could not read that PDF: ' + error.message, ok: false });
+                }
+                setImporting(false);
+                if (fileRef.current) fileRef.current.value = '';
+            };
+            const importButton = (
+                <span>
+                    <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={e => importIntake(e.target.files[0])} />
+                    <button type="button" className="btn-secondary btn-sm" disabled={importing} onClick={() => fileRef.current && fileRef.current.click()}>
+                        {importing ? 'Reading PDF...' : 'Import intake form (PDF)'}
+                    </button>
+                </span>
+            );
+            const importLine = importMsg && <div className={importMsg.ok ? 'ok-msg' : 'error'} style={{ marginBottom: '10px' }}>{importMsg.text}</div>;
             const userById = (uid) => (users || []).find(u => u.id === uid);
             const setTeam = (key, uid) => setEditing(prev => {
                 const team = { ...prev.team };
@@ -463,10 +580,13 @@
                         const old = card ? { ...card } : {};
                         batch.set(cardRef.collection('history').doc(), { ...old, lockBox: lockBox || '', savedAt: now, savedBy: me });
                     }
-                    batch.set(cardRef, { ...clean, updatedAt: now, updatedBy: me });
+                    const imported = editing._import ? { lastImport: { fileName: editing._import, importedAt: now, importedBy: me } }
+                        : (card && card.lastImport ? { lastImport: card.lastImport } : {});
+                    batch.set(cardRef, { ...clean, ...imported, updatedAt: now, updatedBy: me });
                     if (lockChanged) batch.update(jobRef, { lockBox: newLock, lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
                     await batch.commit();
                     setEditing(null);
+                    setImportMsg(null);
                 } catch (error) {
                     setMessage('Error saving contact card: ' + error.message);
                 }
@@ -482,9 +602,20 @@
                         <input type={kind === 'tel' ? 'tel' : kind === 'email' ? 'email' : 'text'} value={value} onChange={e => onChange(e.target.value)} />
                     </div>
                 );
+                const sectionEditor = (s) => (
+                    <div key={s.key} className="card-group">
+                        <div className="card-group-title">{s.title}</div>
+                        <div className="card-grid">{s.fields.map(([f, label, kind]) => input(editing[s.key][f], v => setField(s.key, f, v), label, kind))}</div>
+                        <ExtraItems items={editing[s.key].extras} onChange={list => setField(s.key, 'extras', list)} />
+                    </div>
+                );
                 return (
                     <div className="section">
-                        <div className="section-title">Contact card</div>
+                        <div className="row">
+                            <div className="section-title" style={{ marginBottom: 0 }}>Contact card</div>
+                            {importButton}
+                        </div>
+                        {importLine}
                         <div className="card-group">
                             <div className="card-group-title">Job team</div>
                             {isAdmin ? (
@@ -520,6 +651,7 @@
                                 </div>
                             )}
                         </div>
+                        {CARD_SECTIONS.filter(s => s.top).map(sectionEditor)}
                         {editing.homeowners.map((h, i) => (
                             <div key={i} className="card-group">
                                 <div className="card-group-title">Homeowner {i + 1}</div>
@@ -546,20 +678,14 @@
                             {editing.contacts.length < MAX_CONTACTS && <button type="button" className="btn-secondary btn-sm" onClick={addContact}>+ Add contact</button>}
                             <datalist id="contact-titles">{TITLE_SUGGESTIONS.map(t => <option key={t} value={t} />)}</datalist>
                         </div>
-                        {CARD_SECTIONS.map(s => (
-                            <div key={s.key} className="card-group">
-                                <div className="card-group-title">{s.title}</div>
-                                <div className="card-grid">{s.fields.map(([f, label, kind]) => input(editing[s.key][f], v => setField(s.key, f, v), label, kind))}</div>
-                                <ExtraItems items={editing[s.key].extras} onChange={list => setField(s.key, 'extras', list)} />
-                            </div>
-                        ))}
+                        {CARD_SECTIONS.filter(s => !s.top).map(sectionEditor)}
                         <div className="card-group">
                             <div className="card-group-title">Lock box</div>
                             <div className="card-grid">{input(editing.lockBox, v => setEditing(prev => ({ ...prev, lockBox: v })), 'Lock box code (also shows in PO Manager)')}</div>
                         </div>
                         <div className="note-actions">
                             <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save contact card'}</button>
-                            <button className="btn-secondary btn-sm" onClick={() => { setEditing(null); setMessage(''); }} disabled={saving}>Cancel</button>
+                            <button className="btn-secondary btn-sm" onClick={cancelEdit} disabled={saving}>Cancel</button>
                         </div>
                         {message && <div className="error">{message}</div>}
                     </div>
@@ -571,13 +697,26 @@
             const contacts = c.contacts;
             const filled = (s) => s.fields.some(([f]) => c[s.key][f]) || c[s.key].extras.length > 0;
             const teamPicked = TEAM_ROLES.filter(([k]) => c.team[k]);
+            const sectionView = (s) => (
+                <div key={s.key} className="card-group">
+                    <div className="card-group-title">{s.title}</div>
+                    {s.fields.filter(([f]) => c[s.key][f]).map(([f, label, kind]) => (
+                        <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={c[s.key][f]} kind={kind} /></div>
+                    ))}
+                    <ExtraLines items={c[s.key].extras} />
+                </div>
+            );
             const nothing = teamPicked.length === 0 && owners.length === 0 && contacts.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
             return (
                 <div className="section">
                     <div className="row">
                         <div className="section-title" style={{ marginBottom: 0 }}>Contact card</div>
-                        <button className="btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+                        <span className="note-actions no-print">
+                            {importButton}
+                            <button className="btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+                        </span>
                     </div>
+                    {importLine}
                     {nothing && <p className="muted" style={{ marginTop: '8px' }}>No contact info yet. Click Edit to add it.</p>}
                     <div className="card-view">
                         {teamPicked.length > 0 && (
@@ -600,6 +739,7 @@
                                 })}
                             </div>
                         )}
+                        {CARD_SECTIONS.filter(s => s.top && filled(s)).map(sectionView)}
                         {owners.map((h, i) => (
                             <div key={i} className="card-group">
                                 <div className="card-group-title">Homeowner{owners.length > 1 ? ' ' + (i + 1) : ''}</div>
@@ -618,15 +758,7 @@
                                 <ExtraLines items={ct.extras} />
                             </div>
                         ))}
-                        {CARD_SECTIONS.filter(filled).map(s => (
-                            <div key={s.key} className="card-group">
-                                <div className="card-group-title">{s.title}</div>
-                                {s.fields.filter(([f]) => c[s.key][f]).map(([f, label, kind]) => (
-                                    <div key={f} className="card-line"><span className="card-label">{label}</span><CardValue value={c[s.key][f]} kind={kind} /></div>
-                                ))}
-                                <ExtraLines items={c[s.key].extras} />
-                            </div>
-                        ))}
+                        {CARD_SECTIONS.filter(s => !s.top && filled(s)).map(sectionView)}
                         {lockBox && (
                             <div className="card-group">
                                 <div className="card-group-title">Lock box</div>
@@ -635,6 +767,7 @@
                         )}
                     </div>
                     {card && card.updatedBy && <div className="note-meta" style={{ marginTop: '6px' }}>Last updated by {card.updatedBy.name} · {fmtTime(card.updatedAt)}</div>}
+                    {card && card.lastImport && <div className="note-meta">Intake form imported: {card.lastImport.fileName} · {card.lastImport.importedBy ? card.lastImport.importedBy.name : ''} · {fmtTime(card.lastImport.importedAt)}</div>}
                     {message && <div className="error">{message}</div>}
                 </div>
             );
