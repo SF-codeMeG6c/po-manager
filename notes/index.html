@@ -294,6 +294,7 @@
         // Contact card fields (all optional). Lock box is the job's own lockBox field, shared with PO Manager.
         // Every box can also have extra items: a list of { label, value } the user adds (e.g. Gate code: 4471).
         const EMPTY_CARD = {
+            team: {},
             homeowners: [{ name: '', phone: '', email: '', extras: [] }, { name: '', phone: '', email: '', extras: [] }],
             contacts: [],
             insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
@@ -305,6 +306,10 @@
         const CONTACT_FIELDS = [['name', 'Name'], ['company', 'Company'], ['phone', 'Phone', 'tel'], ['email', 'Email', 'email']];
         const TITLE_SUGGESTIONS = ['Tenant', 'Property manager', 'Spouse', 'Son', 'Daughter', 'Attorney', 'HOA', 'Real estate agent', 'Contractor'];
         const MAX_CONTACTS = 10;
+        // Job team: picked by Owner/Admin from the Users list (job roles set on the Dashboard's Users screen, users/{uid}.jobRoles).
+        // Name, email and phone are copied onto the card so everyone (and other tools) can read them.
+        const TEAM_ROLES = [['sales', 'Sales person'], ['claims', 'Claim coordinator'], ['super', 'Super'], ['estimator', 'Estimator']];
+        const teamPerson = (u) => ({ uid: u.id || u.uid, name: u.name || u.email || '', email: u.email || '', phone: u.phone || '' });
         const MAX_EXTRAS = 15;
         const CARD_SECTIONS = [
             { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
@@ -320,6 +325,7 @@
             (d.homeowners || []).slice(0, 2).forEach((h, i) => { c.homeowners[i] = { ...c.homeowners[i], ...h, extras: [...(h.extras || [])] }; });
             ['insurance', 'publicAdjusting', 'mortgage'].forEach(k => { c[k] = { ...c[k], ...(d[k] || {}), extras: [...((d[k] && d[k].extras) || [])] }; });
             c.contacts = (d.contacts || []).map(x => ({ ...EMPTY_CONTACT, ...x, extras: [...(x.extras || [])] }));
+            c.team = { ...(d.team || {}) };
             return c;
         };
         // Trim every field; drop empty extra items, and homeowners or contacts with nothing filled in
@@ -328,7 +334,13 @@
             const cleanExtras = (list) => (list || []).map(x => ({ label: s(x.label), value: s(x.value) })).filter(x => x.label || x.value);
             const t = (o) => { const r = {}; Object.keys(o).forEach(k => { if (k !== 'extras') r[k] = s(o[k]); }); r.extras = cleanExtras(o.extras); return r; };
             const hasAny = (o) => Object.keys(o).some(k => (k === 'extras' ? o.extras.length > 0 : o[k]));
+            const team = {};
+            TEAM_ROLES.forEach(([k]) => {
+                const p = (c.team || {})[k];
+                if (p && p.uid) team[k] = { uid: s(p.uid), name: s(p.name), email: s(p.email), phone: s(p.phone) };
+            });
             return {
+                team,
                 homeowners: c.homeowners.map(t).filter(hasAny),
                 contacts: c.contacts.map(t).filter(hasAny).slice(0, MAX_CONTACTS),
                 insurance: t(c.insurance),
@@ -384,6 +396,8 @@
             const [editing, setEditing] = useState(null);      // the form while editing
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
+            const [users, setUsers] = useState(null);          // active users, for the job team pickers (Owner/Admin only)
+            const isAdmin = ADMINS.includes(profile.role);
             const me = { uid: profile.uid, name: profile.name || profile.email || '' };
             const jobRef = db.collection('jobs').doc(job.id);
             const cardRef = jobRef.collection('notesInfo').doc('contactCard');
@@ -400,7 +414,26 @@
             // Tell the job drop down when the card is open for editing
             useEffect(() => { UNSAVED.card = !!editing; return () => { UNSAVED.card = false; }; }, [editing]);
 
-            const startEdit = () => { setMessage(''); setEditing({ ...fullCard(card), lockBox }); };
+            const startEdit = () => {
+                setMessage('');
+                setEditing({ ...fullCard(card), lockBox });
+                // Only Owner and Admin can read the users list, so only they load it
+                if (isAdmin) {
+                    db.collection('users').get().then(snap => {
+                        const list = [];
+                        snap.forEach(doc => { const d = doc.data(); if (d.active === true) list.push({ id: doc.id, ...d }); });
+                        list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                        setUsers(list);
+                    }).catch(error => { setUsers([]); setMessage('Error loading users for the job team: ' + error.message); });
+                }
+            };
+            const userById = (uid) => (users || []).find(u => u.id === uid);
+            const setTeam = (key, uid) => setEditing(prev => {
+                const team = { ...prev.team };
+                const u = userById(uid);
+                if (u) team[key] = teamPerson(u); else delete team[key];
+                return { ...prev, team };
+            });
             const setField = (section, field, value) => setEditing(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
             const setHomeowner = (i, field, value) => setEditing(prev => {
                 const homeowners = prev.homeowners.map((h, j) => (j === i ? { ...h, [field]: value } : h));
@@ -416,6 +449,10 @@
             const save = async () => {
                 setMessage('');
                 const clean = cleanCard(editing);
+                // Owner/Admin: refresh each team member's name, email and phone from the Users list
+                if (isAdmin && users) Object.keys(clean.team).forEach(k => { const u = userById(clean.team[k].uid); if (u) clean.team[k] = teamPerson(u); });
+                // Everyone else can't change the team, so it is saved exactly as it was
+                if (!isAdmin) clean.team = card && card.team ? card.team : {};
                 const newLock = (editing.lockBox || '').trim();
                 const lockChanged = newLock !== (lockBox || '');
                 const now = firebase.firestore.FieldValue.serverTimestamp();
@@ -448,6 +485,41 @@
                 return (
                     <div className="section">
                         <div className="section-title">Contact card</div>
+                        <div className="card-group">
+                            <div className="card-group-title">Job team</div>
+                            {isAdmin ? (
+                                <div>
+                                    <div className="card-grid">
+                                        {TEAM_ROLES.map(([k, label]) => {
+                                            const picked = editing.team[k];
+                                            const choices = (users || []).filter(u => (u.jobRoles || []).includes(k));
+                                            const pickedListed = picked && choices.some(u => u.id === picked.uid);
+                                            const now = picked && userById(picked.uid);
+                                            const changed = now && (now.phone || '') !== (picked.phone || '');
+                                            return (
+                                                <div className="card-field" key={k}>
+                                                    <label htmlFor={'team-' + k}>{label}</label>
+                                                    <select id={'team-' + k} value={picked ? picked.uid : ''} disabled={users === null} onChange={e => setTeam(k, e.target.value)}>
+                                                        <option value="">{users === null ? 'Loading...' : '-- None --'}</option>
+                                                        {picked && !pickedListed && <option value={picked.uid}>{picked.name} (not marked {label} on Users screen)</option>}
+                                                        {choices.map(u => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+                                                    </select>
+                                                    {changed && <div className="note-meta" style={{ marginTop: '3px' }}>Phone changed on the Users screen. Saving updates it here.</div>}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="muted" style={{ marginTop: '6px' }}>Lists people by their job roles on the Dashboard's Users screen. Picking a Super here doesn't change who can see the job.</p>
+                                </div>
+                            ) : (
+                                <div>
+                                    {TEAM_ROLES.filter(([k]) => editing.team[k]).map(([k, label]) => (
+                                        <div key={k} className="card-line"><span className="card-label">{label}</span>{editing.team[k].name}</div>
+                                    ))}
+                                    <p className="muted" style={{ marginTop: '4px' }}>Only Owner or Admin can change the job team.</p>
+                                </div>
+                            )}
+                        </div>
                         {editing.homeowners.map((h, i) => (
                             <div key={i} className="card-group">
                                 <div className="card-group-title">Homeowner {i + 1}</div>
@@ -498,7 +570,8 @@
             const owners = c.homeowners.filter(h => h.name || h.phone || h.email || h.extras.length > 0);
             const contacts = c.contacts;
             const filled = (s) => s.fields.some(([f]) => c[s.key][f]) || c[s.key].extras.length > 0;
-            const nothing = owners.length === 0 && contacts.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
+            const teamPicked = TEAM_ROLES.filter(([k]) => c.team[k]);
+            const nothing = teamPicked.length === 0 && owners.length === 0 && contacts.length === 0 && !CARD_SECTIONS.some(filled) && !lockBox;
             return (
                 <div className="section">
                     <div className="row">
@@ -507,6 +580,26 @@
                     </div>
                     {nothing && <p className="muted" style={{ marginTop: '8px' }}>No contact info yet. Click Edit to add it.</p>}
                     <div className="card-view">
+                        {teamPicked.length > 0 && (
+                            <div className="card-group">
+                                <div className="card-group-title">Job team</div>
+                                {teamPicked.map(([k, label]) => {
+                                    const p = c.team[k];
+                                    return (
+                                        <div key={k} style={{ marginBottom: '5px' }}>
+                                            <div className="card-line" style={{ marginBottom: 0 }}><span className="card-label">{label}</span>{p.name}</div>
+                                            {(p.phone || p.email) && (
+                                                <div className="card-line" style={{ fontSize: '12px' }}>
+                                                    {p.phone && <CardValue value={p.phone} kind="tel" />}
+                                                    {p.phone && p.email && ' · '}
+                                                    {p.email && <CardValue value={p.email} kind="email" />}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                         {owners.map((h, i) => (
                             <div key={i} className="card-group">
                                 <div className="card-group-title">Homeowner{owners.length > 1 ? ' ' + (i + 1) : ''}</div>
