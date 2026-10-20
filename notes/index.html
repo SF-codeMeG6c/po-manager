@@ -1390,6 +1390,176 @@
             );
         }
 
+        // ---- New job with an automatic job code (step 7) ----
+        // Code: first 5 letters of the last name (spaces/symbols dropped), first letter of the first name,
+        // 2-digit year, then the job's number in that year from jobCounters/{year}.last. Example: Freem.S.2601
+        const JOB_CREATORS = ['owner', 'admin', 'office'];
+        const lettersOnly = (t) => (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z]/g, '');
+        const codeLast = (last) => { const l = lettersOnly(last).slice(0, 5); return l ? l[0].toUpperCase() + l.slice(1).toLowerCase() : ''; };
+        const makeJobCode = (first, last, year, n) => `${codeLast(last)}.${lettersOnly(first).slice(0, 1).toUpperCase()}.${String(year).slice(-2)}${String(n).padStart(2, '0')}`;
+        // "26602 Aracena Drive, Mission Viejo, CA 92691" -> street + city/state/zip
+        const splitAddress = (a) => { const t = (a || '').trim(); const i = t.indexOf(','); return i < 0 ? { street: t, city: '' } : { street: t.slice(0, i).trim(), city: t.slice(i + 1).trim() }; };
+        const splitName = (n) => { const p = (n || '').trim().split(/\s+/).filter(Boolean); return p.length < 2 ? { first: p[0] || '', last: '' } : { first: p[0], last: p[p.length - 1] }; };
+        const codeTaken = async (code) => !(await db.collection('jobs').where('code', '==', code).limit(1).get()).empty;
+
+        function NewJob({ profile, onClose }) {
+            const [f, setF] = useState({ first: '', last: '', street: '', city: '' });
+            const [intake, setIntake] = useState(null);       // { values, fileName } when filled from the intake PDF
+            const [counter, setCounter] = useState(undefined); // last number used this year (null = no counter yet)
+            const [start, setStart] = useState('');
+            const [busy, setBusy] = useState(false);
+            const [msg, setMsg] = useState(null);
+            const fileRef = useRef(null);
+            const year = new Date().getFullYear();
+            const counterRef = db.collection('jobCounters').doc(String(year));
+            const isAdmin = ADMINS.includes(profile.role);
+            const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+
+            useEffect(() => counterRef.onSnapshot(d => setCounter(d.exists ? (d.data().last || 0) : null),
+                error => { setCounter(null); setMsg({ text: 'Error loading the job counter: ' + error.message, ok: false }); }), []);
+
+            const set = (k, v) => setF(prev => ({ ...prev, [k]: v }));
+            const next = counter === null || counter === undefined ? null : counter + 1;
+            const preview = next && f.first.trim() && codeLast(f.last) ? makeJobCode(f.first, f.last, year, next) : '';
+
+            const fromIntake = async (file) => {
+                if (!file) return;
+                setMsg(null);
+                try {
+                    const { values, boxes } = await readIntakePdf(file);
+                    if (!boxes) { setMsg({ text: 'This PDF has no fill-in boxes (it may be scanned or printed). Type the info in by hand.', ok: false }); return; }
+                    const nm = splitName(values.primarycontact || values.insured);
+                    const ad = splitAddress(values.lossaddress);
+                    setF({ first: nm.first, last: nm.last, street: ad.street, city: ad.city });
+                    setIntake({ values, fileName: file.name });
+                    setMsg({ text: `Filled from ${file.name}. Check the name and address. The rest of the form goes onto the new job's contact card.`, ok: true });
+                } catch (error) {
+                    setMsg({ text: 'Could not read that PDF: ' + error.message, ok: false });
+                }
+                if (fileRef.current) fileRef.current.value = '';
+            };
+
+            // Owner/Admin: start this year's counter with the last number already used
+            const startCounter = async () => {
+                const n = parseInt(start, 10);
+                if (!(n >= 0)) { setMsg({ text: 'Type the last job number used this year (0 if none).', ok: false }); return; }
+                try {
+                    await counterRef.set({ last: n, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: me });
+                    setMsg(null);
+                } catch (error) { setMsg({ text: 'Could not start the counter: ' + error.message, ok: false }); }
+            };
+
+            const create = async () => {
+                setMsg(null);
+                if (!f.first.trim() || !codeLast(f.last)) { setMsg({ text: 'Type the main customer\'s first and last name.', ok: false }); return; }
+                if (!f.street.trim()) { setMsg({ text: 'Type the street address.', ok: false }); return; }
+                setBusy(true);
+                try {
+                    const now = firebase.firestore.FieldValue.serverTimestamp();
+                    const jobRef = db.collection('jobs').doc();
+                    let code = '';
+                    // The counter goes up by 1 and the job is created in the same save
+                    await db.runTransaction(async (tx) => {
+                        const c = await tx.get(counterRef);
+                        if (!c.exists) throw new Error(`There is no ${year} job counter yet.`);
+                        const n = (c.data().last || 0) + 1;
+                        code = makeJobCode(f.first, f.last, year, n);
+                        if (await codeTaken(code)) throw new Error(`Job code ${code} is already used. Nothing was saved.`);
+                        tx.update(counterRef, { last: n, updatedAt: now, updatedBy: me });
+                        tx.set(jobRef, { code, address: f.street.trim(), cityStateZip: f.city.trim(), archived: false, assignedSupers: [], createdAt: now, createdBy: me });
+                    });
+                    // Then the rest of the intake form goes onto the new job's contact card (and its lock box onto the job)
+                    if (intake) {
+                        try {
+                            const { next: filled } = applyIntake({ ...fullCard(null), lockBox: '' }, intake.values);
+                            const batch = db.batch();
+                            batch.set(jobRef.collection('notesInfo').doc('contactCard'), { ...cleanCard(filled),
+                                lastImport: { fileName: intake.fileName, importedAt: now, importedBy: me }, updatedAt: now, updatedBy: me });
+                            if ((filled.lockBox || '').trim()) batch.update(jobRef, { lockBox: filled.lockBox.trim(), lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
+                            await batch.commit();
+                        } catch (error) {
+                            window.alert(`Job ${code} was created, but the intake form couldn't be added to its contact card (${error.message}). Open the job and use Import intake form.`);
+                        }
+                    }
+                    window.location.href = '/notes/?job=' + encodeURIComponent(jobRef.id);
+                } catch (error) {
+                    setMsg({ text: 'Could not create the job: ' + error.message, ok: false });
+                    setBusy(false);
+                }
+            };
+
+            return (
+                <div className="section no-print">
+                    <div className="row">
+                        <div className="section-title" style={{ marginBottom: 0 }}>New job</div>
+                        <span>
+                            <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={e => fromIntake(e.target.files[0])} />
+                            <button type="button" className="btn-secondary btn-sm" onClick={() => fileRef.current && fileRef.current.click()}>Fill from intake form (PDF)</button>
+                        </span>
+                    </div>
+                    {counter === null && (
+                        <div className="notice" style={{ margin: '8px 0' }}>
+                            {isAdmin ? (
+                                <div>
+                                    <div style={{ marginBottom: '6px' }}>The {year} job counter isn't set up yet. Type the last job number already used in {year} (for example 6 if the last job was …{String(year).slice(-2)}06).</div>
+                                    <div className="row" style={{ justifyContent: 'flex-start' }}>
+                                        <input type="text" inputMode="numeric" value={start} onChange={e => setStart(e.target.value.replace(/\D/g, ''))} style={{ width: '90px' }} />
+                                        <button type="button" className="btn-secondary btn-sm" onClick={startCounter}>Start {year} counter</button>
+                                    </div>
+                                </div>
+                            ) : `The ${year} job counter isn't set up yet. Ask an Owner or Admin to start it.`}
+                        </div>
+                    )}
+                    <div className="card-grid" style={{ marginTop: '8px' }}>
+                        <div className="card-field"><label htmlFor="nj-first">Main customer first name</label><input id="nj-first" type="text" value={f.first} onChange={e => set('first', e.target.value)} /></div>
+                        <div className="card-field"><label htmlFor="nj-last">Last name</label><input id="nj-last" type="text" value={f.last} onChange={e => set('last', e.target.value)} /></div>
+                        <div className="card-field"><label htmlFor="nj-street">Street</label><input id="nj-street" type="text" value={f.street} onChange={e => set('street', e.target.value)} /></div>
+                        <div className="card-field"><label htmlFor="nj-city">City, state, zip</label><input id="nj-city" type="text" value={f.city} onChange={e => set('city', e.target.value)} /></div>
+                    </div>
+                    <div style={{ marginTop: '10px', fontSize: '14px' }}>
+                        Job code: <strong id="nj-code">{preview || '—'}</strong>
+                        {next && <span className="muted"> (job {next} of {year}; the final number is checked when you click Create)</span>}
+                    </div>
+                    <div className="note-actions" style={{ marginTop: '10px' }}>
+                        <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={create} disabled={busy || !next}>{busy ? 'Creating...' : 'Create job'}</button>
+                        <button className="btn-secondary btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+                    </div>
+                    <p className="muted" style={{ marginTop: '6px' }}>Create the job when it's signed. The number can't be given back, so check the name first.</p>
+                    {msg && <div className={msg.ok ? 'ok-msg' : 'error'} style={{ marginTop: '6px' }}>{msg.text}</div>}
+                </div>
+            );
+        }
+
+        // Owner/Admin: fix a job code by hand (no history kept, per Spencer)
+        function JobCodeFix({ job, onDone }) {
+            const [code, setCode] = useState(job.code);
+            const [msg, setMsg] = useState('');
+            const [busy, setBusy] = useState(false);
+            const save = async () => {
+                const c = code.trim();
+                setMsg('');
+                if (!c) { setMsg('Type a code.'); return; }
+                if (c === job.code) { onDone(); return; }
+                setBusy(true);
+                try {
+                    if (await codeTaken(c)) { setMsg(`${c} is already used by another job.`); setBusy(false); return; }
+                    await db.collection('jobs').doc(job.id).update({ code: c });
+                    window.location.reload();
+                } catch (error) { setMsg('Could not change the code: ' + error.message); setBusy(false); }
+            };
+            return (
+                <div style={{ marginTop: '6px' }}>
+                    <div className="row" style={{ justifyContent: 'flex-start' }}>
+                        <input type="text" value={code} onChange={e => setCode(e.target.value)} style={{ maxWidth: '220px' }} aria-label="Job code" />
+                        <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={save} disabled={busy}>Save code</button>
+                        <button className="btn-secondary btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
+                    </div>
+                    <div className="note-meta">Notes already written keep the old code in exports. The Egnyte folder name doesn't change by itself.</div>
+                    {msg && <div className="error">{msg}</div>}
+                </div>
+            );
+        }
+
         function NotesApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = no access, object = active user
@@ -1398,6 +1568,8 @@
             const [jobs, setJobs] = useState(null);       // job list for the drop down (null = loading)
             const [showArchived, setShowArchived] = useState(false);
             const [jobsError, setJobsError] = useState('');
+            const [newJob, setNewJob] = useState(false);
+            const [fixCode, setFixCode] = useState(false);
 
             // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
             useEffect(() => {
@@ -1497,8 +1669,11 @@
             return (
                 <div>
                     <div className="topbar">
+                        {JOB_CREATORS.includes(profile.role) && !newJob && <button className="btn-secondary btn-sm" onClick={() => { if (!hasUnsaved() || window.confirm('You have unsaved changes. Start a new job anyway?')) setNewJob(true); }}>+ New job</button>}
                         <a href="/notes/">Search all jobs</a>
                     </div>
+
+                    {newJob && <NewJob profile={profile} onClose={() => setNewJob(false)} />}
 
                     <div className="section no-print">
                         <div className="section-title">Job</div>
@@ -1531,7 +1706,11 @@
                     {URL_JOB_ID && job && (
                         <div>
                             <div className="job-head">
-                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
+                                <div className="job-code">
+                                    {job.code}{job.archived ? ' (archived)' : ''}
+                                    {ADMINS.includes(profile.role) && !fixCode && <button className="btn-secondary btn-sm no-print" style={{ marginLeft: '8px', verticalAlign: 'middle' }} onClick={() => setFixCode(true)}>Change code</button>}
+                                </div>
+                                {fixCode && <JobCodeFix job={job} onDone={() => setFixCode(false)} />}
                                 <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
                                 <div className="no-print" style={{ marginTop: '8px' }}>
                                     <button type="button" className="btn-secondary btn-sm" onClick={() => downloadEgnyteFolders(job.code)}>Download Egnyte folders (zip)</button>
@@ -1551,3 +1730,4 @@
     </script>
 </body>
 </html>
+
