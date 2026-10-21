@@ -308,7 +308,7 @@
             homeowners: [{ name: '', who: '', phone: '', email: '', extras: [] }, { name: '', who: '', phone: '', email: '', extras: [] }],
             contacts: [],
             insurance: { company: '', claimNumber: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
-            publicAdjusting: { company: '', percent: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
+            publicAdjusting: { company: '', companyPhone: '', companyEmail: '', percent: '', salesName: '', salesPhone: '', salesEmail: '', adjusterName: '', adjusterPhone: '', adjusterEmail: '', extras: [] },
             mortgage: { hasMortgage: '', company: '', phone: '', extras: [] },
             settlement: { settlementAmount: '', commissionDave: '', emsVendors: '', emsFixedPrice: '', emsAsIncurred: '', extras: [] }
         };
@@ -326,7 +326,7 @@
         const CARD_SECTIONS = [
             { key: 'details', top: true, title: 'Job details', fields: [['insured', 'Insured'], ['lossAddress', 'Loss address'], ['homeAddress', 'Home (mailing) address'], ['dateOfLoss', 'Date of loss']] },
             { key: 'insurance', title: 'Insurance company', fields: [['company', 'Company'], ['claimNumber', 'Claim number'], ['adjusterName', 'Adjuster name'], ['adjusterPhone', 'Adjuster phone', 'tel'], ['adjusterEmail', 'Adjuster email', 'email']] },
-            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['percent', 'Public adjuster %'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
+            { key: 'publicAdjusting', title: 'Public adjusting company', fields: [['company', 'Company'], ['companyPhone', 'Company phone', 'tel'], ['companyEmail', 'Company email', 'email'], ['percent', 'Public adjuster %'], ['salesName', 'Salesperson name'], ['salesPhone', 'Salesperson phone', 'tel'], ['salesEmail', 'Salesperson email', 'email'], ['adjusterName', 'PA adjuster name'], ['adjusterPhone', 'PA adjuster phone', 'tel'], ['adjusterEmail', 'PA adjuster email', 'email']] },
             { key: 'mortgage', title: 'Mortgage company', fields: [['hasMortgage', 'Mortgage? (Yes / No)'], ['company', 'Company'], ['phone', 'Contact phone', 'tel']] },
             { key: 'settlement', title: 'Settlement & EMS', fields: [['settlementAmount', 'Settlement amount'], ['commissionDave', 'Com Dave %'], ['emsVendors', 'EMS vendors & description'], ['emsFixedPrice', 'EMS fixed price amount'], ['emsAsIncurred', 'EMS as incurred']] }
         ];
@@ -370,7 +370,7 @@
             secondarycontact: ['h1', 'name'], who2: ['h1', 'who'], email2: ['h1', 'email'], phone2: ['h1', 'phone'],
             insuranceco: ['insurance', 'company'], adjuster: ['insurance', 'adjusterName'], email3: ['insurance', 'adjusterEmail'], phone3: ['insurance', 'adjusterPhone'], claim: ['insurance', 'claimNumber'],
             lockboxcode: ['lockBox'],
-            publicadjustingco: ['publicAdjusting', 'company'], publicadjuster: ['publicAdjusting', 'percent'], email4: ['publicAdjusting', 'adjusterEmail'], phone4: ['publicAdjusting', 'adjusterPhone'],
+            publicadjustingco: ['publicAdjusting', 'company'], publicadjuster: ['publicAdjusting', 'percent'], email4: ['publicAdjusting', 'companyEmail'], phone4: ['publicAdjusting', 'companyPhone'],   // the PA company's own email and phone (handoff Oct 17)
             pasalesperson: ['publicAdjusting', 'salesName'], phone5: ['publicAdjusting', 'salesPhone'],
             settlementamount: ['settlement', 'settlementAmount'], comdave: ['settlement', 'commissionDave'],
             yesno: ['mortgage', 'hasMortgage'], mortgagecompany: ['mortgage', 'company'],
