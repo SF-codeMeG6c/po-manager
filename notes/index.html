@@ -250,7 +250,7 @@
             return copy;
         };
 
-        // Tags: pick from the company list, remove with ×, or add a new tag to the list
+        // Tags: pick from the company list, remove with ×, or add a new tag to the list (Owner/Admin only: onNewTag is null for everyone else)
         function TagPicker({ id, tagList, value, onChange, onNewTag }) {
             const [adding, setAdding] = useState(false);
             const [newTag, setNewTag] = useState('');
@@ -278,7 +278,7 @@
                             <option value="">{tagList === null ? 'Loading tags...' : '-- Add a tag --'}</option>
                             {(tagList || []).filter(t => !value.includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
                         </select>
-                        {!adding && <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setAdding(true)}>+ New tag</button>}
+                        {!adding && onNewTag && <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setAdding(true)}>+ New tag</button>}
                     </div>
                     {adding && (
                         <div className="row" style={{ marginTop: '8px', marginBottom: 0 }}>
@@ -1016,7 +1016,7 @@
                 return () => { UNSAVED.note = false; UNSAVED.edit = false; };
             }, [text, editing]);
 
-            // Add a new tag to the company list. Tags can be added here but never removed.
+            // Add a new tag to the company list (Owner/Admin only, Spencer's answer 14). Tags can be added here but never removed.
             const addNewTag = (name) => db.collection('notesSettings').doc('tags')
                 .update({ list: firebase.firestore.FieldValue.arrayUnion(name) });
 
@@ -1164,7 +1164,7 @@
                         <div className="section-title">Add a note</div>
                         <div className="form-group">
                             <label htmlFor="tag-pick">Tags</label>
-                            <TagPicker id="tag-pick" tagList={tagList} value={pickTags} onChange={setPickTags} onNewTag={addNewTag} />
+                            <TagPicker id="tag-pick" tagList={tagList} value={pickTags} onChange={setPickTags} onNewTag={isAdmin ? addNewTag : null} />
                         </div>
                         <div className="form-group">
                             <div className="row">
@@ -1234,7 +1234,7 @@
                                         <div style={{ marginTop: '8px' }}>
                                             <div className="form-group">
                                                 <TagPicker id={'edit-tags-' + n.id} tagList={tagList} value={editing.tags}
-                                                    onChange={tags => setEditing({ ...editing, tags })} onNewTag={addNewTag} />
+                                                    onChange={tags => setEditing({ ...editing, tags })} onNewTag={isAdmin ? addNewTag : null} />
                                             </div>
                                             <div className="form-group">
                                                 <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: capLines(e.target.value) })} />
@@ -1774,4 +1774,3 @@
     </script>
 </body>
 </html>
-
