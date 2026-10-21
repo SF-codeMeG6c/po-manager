@@ -86,6 +86,11 @@
         .extra-row { justify-content: flex-start; margin-top: 6px; }
         .extra-row input { flex: 1; min-width: 0; width: auto; }
         .ok-msg { color: #388e3c; font-size: 13px; }
+        .tip { position: relative; display: inline-block; margin-left: 6px; width: 18px; height: 18px; line-height: 18px; text-align: center;
+               border-radius: 50%; background: #e8f1fb; color: #0052a3; font-size: 12px; font-weight: 600; cursor: help; }
+        .tip .tip-text { display: none; position: absolute; left: 0; top: 24px; z-index: 10; width: 290px; max-width: 80vw; padding: 10px 12px;
+               background: #333; color: #fff; border-radius: 6px; font-size: 12px; font-weight: 400; line-height: 1.5; text-align: left; }
+        .tip:hover .tip-text, .tip:focus .tip-text { display: block; }
     </style>
 </head>
 <body>
@@ -1400,6 +1405,19 @@
         // "26602 Aracena Drive, Mission Viejo, CA 92691" -> street + city/state/zip
         const splitAddress = (a) => { const t = (a || '').trim(); const i = t.indexOf(','); return i < 0 ? { street: t, city: '' } : { street: t.slice(0, i).trim(), city: t.slice(i + 1).trim() }; };
         const splitName = (n) => { const p = (n || '').trim().split(/\s+/).filter(Boolean); return p.length < 2 ? { first: p[0] || '', last: '' } : { first: p[0], last: p[p.length - 1] }; };
+        // A code like Freem.S.2601 (1-5 letters, a capital letter, then 4 or more digits)
+        const CODE_PATTERN = /^[A-Z][a-z]{0,4}\.[A-Z]\.\d{4,}$/;
+        const codeTip = (
+            <span className="tip" tabIndex={0} aria-label="How job codes are made">?
+                <span className="tip-text">
+                    <strong>How job codes are made</strong><br />
+                    First 5 letters of the main customer's last name, a dot, the first letter of their first name, a dot,
+                    the 2-digit year, then the job's number that year.<br />
+                    Spencer Freeman, 1st job of 2026: <strong>Freem.S.2601</strong><br />
+                    Spaces and symbols are dropped (De La Cruz: Delac). Short names stay as they are (Le.K.2603).
+                </span>
+            </span>
+        );
         const codeTaken = async (code) => !(await db.collection('jobs').where('code', '==', code).limit(1).get()).empty;
 
         function NewJob({ profile, onClose }) {
@@ -1407,6 +1425,8 @@
             const [intake, setIntake] = useState(null);       // { values, fileName } when filled from the intake PDF
             const [counter, setCounter] = useState(undefined); // last number used this year (null = no counter yet)
             const [start, setStart] = useState('');
+            const [typed, setTyped] = useState(false);        // type the code by hand (re-entering an existing job), skipping the counter
+            const [typedCode, setTypedCode] = useState('');
             const [busy, setBusy] = useState(false);
             const [msg, setMsg] = useState(null);
             const fileRef = useRef(null);
@@ -1453,11 +1473,20 @@
                 setMsg(null);
                 if (!f.first.trim() || !codeLast(f.last)) { setMsg({ text: 'Type the main customer\'s first and last name.', ok: false }); return; }
                 if (!f.street.trim()) { setMsg({ text: 'Type the street address.', ok: false }); return; }
+                const handCode = typedCode.trim();
+                if (typed && !handCode) { setMsg({ text: 'Type the job code.', ok: false }); return; }
                 setBusy(true);
                 try {
                     const now = firebase.firestore.FieldValue.serverTimestamp();
                     const jobRef = db.collection('jobs').doc();
                     let code = '';
+                    const newJobData = (c) => ({ code: c, address: f.street.trim(), cityStateZip: f.city.trim(), archived: false, assignedSupers: [], createdAt: now, createdBy: me });
+                    if (typed) {
+                        // Typed code: the counter isn't used or changed
+                        code = handCode;
+                        if (await codeTaken(code)) throw new Error(`Job code ${code} is already used. Nothing was saved.`);
+                        await jobRef.set(newJobData(code));
+                    } else
                     // The counter goes up by 1 and the job is created in the same save
                     await db.runTransaction(async (tx) => {
                         const c = await tx.get(counterRef);
@@ -1466,7 +1495,7 @@
                         code = makeJobCode(f.first, f.last, year, n);
                         if (await codeTaken(code)) throw new Error(`Job code ${code} is already used. Nothing was saved.`);
                         tx.update(counterRef, { last: n, updatedAt: now, updatedBy: me });
-                        tx.set(jobRef, { code, address: f.street.trim(), cityStateZip: f.city.trim(), archived: false, assignedSupers: [], createdAt: now, createdBy: me });
+                        tx.set(jobRef, newJobData(code));
                     });
                     // Then the rest of the intake form goes onto the new job's contact card (and its lock box onto the job)
                     if (intake) {
@@ -1497,7 +1526,7 @@
                             <button type="button" className="btn-secondary btn-sm" onClick={() => fileRef.current && fileRef.current.click()}>Fill from intake form (PDF)</button>
                         </span>
                     </div>
-                    {counter === null && (
+                    {counter === null && !typed && (
                         <div className="notice" style={{ margin: '8px 0' }}>
                             {isAdmin ? (
                                 <div>
@@ -1517,14 +1546,29 @@
                         <div className="card-field"><label htmlFor="nj-city">City, state, zip</label><input id="nj-city" type="text" value={f.city} onChange={e => set('city', e.target.value)} /></div>
                     </div>
                     <div style={{ marginTop: '10px', fontSize: '14px' }}>
-                        Job code: <strong id="nj-code">{preview || '—'}</strong>
-                        {next && <span className="muted"> (job {next} of {year}; the final number is checked when you click Create)</span>}
+                        <label className="check" style={{ marginBottom: '6px' }}>
+                            <input type="checkbox" checked={typed} onChange={e => { setTyped(e.target.checked); if (e.target.checked && !typedCode) setTypedCode(preview); }} />
+                            Type the code myself (re-entering an existing job; the {year} counter isn't used)
+                        </label>
+                        {typed ? (
+                            <div className="row" style={{ justifyContent: 'flex-start' }}>
+                                <label htmlFor="nj-typed" style={{ marginBottom: 0 }}>Job code</label>
+                                <input id="nj-typed" type="text" value={typedCode} onChange={e => setTypedCode(e.target.value)} placeholder="e.g. Badgw.G.2606" style={{ maxWidth: '200px' }} />
+                                {codeTip}
+                            </div>
+                        ) : (
+                            <div>
+                                Job code: <strong id="nj-code">{preview || '—'}</strong>{codeTip}
+                                {next && <span className="muted"> (job {next} of {year}; the final number is checked when you click Create)</span>}
+                            </div>
+                        )}
+                        {typed && typedCode.trim() && !CODE_PATTERN.test(typedCode.trim()) && <div className="note-meta" style={{ marginTop: '3px' }}>This doesn't follow the usual pattern. That's OK for older codes; check it before you create the job.</div>}
                     </div>
                     <div className="note-actions" style={{ marginTop: '10px' }}>
-                        <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={create} disabled={busy || !next}>{busy ? 'Creating...' : 'Create job'}</button>
+                        <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={create} disabled={busy || (!typed && !next)}>{busy ? 'Creating...' : 'Create job'}</button>
                         <button className="btn-secondary btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
                     </div>
-                    <p className="muted" style={{ marginTop: '6px' }}>Create the job when it's signed. The number can't be given back, so check the name first.</p>
+                    <p className="muted" style={{ marginTop: '6px' }}>{typed ? 'The code is used exactly as typed.' : 'Create the job when it\'s signed. The number can\'t be given back, so check the name first.'}</p>
                     {msg && <div className={msg.ok ? 'ok-msg' : 'error'} style={{ marginTop: '6px' }}>{msg.text}</div>}
                 </div>
             );
