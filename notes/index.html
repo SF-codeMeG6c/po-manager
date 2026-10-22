@@ -12,6 +12,8 @@
         .back-link:hover { text-decoration: underline; }
         h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
         .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+        .title-row h1 { flex: 1 1 320px; }
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
@@ -96,7 +98,10 @@
 <body>
     <div class="container">
         <a href="/" class="back-link no-print">&larr; Dashboard</a>
-        <h1>Customer Information &amp; Contact Notes</h1>
+        <div class="title-row">
+            <h1>Customer Information &amp; Contact Notes</h1>
+            <div id="title-actions" class="no-print"></div>
+        </div>
         <p class="subtitle">Job details, contacts, and customer calls, requests and decisions</p>
         <div id="app"></div>
     </div>
@@ -1427,6 +1432,8 @@
             const [start, setStart] = useState('');
             const [typed, setTyped] = useState(false);        // type the code by hand (re-entering an existing job), skipping the counter
             const [typedCode, setTypedCode] = useState('');
+            const [team, setTeam] = useState({});             // role picks (Owner/Admin only): { sales, claims, super, estimator }
+            const [users, setUsers] = useState(null);
             const [busy, setBusy] = useState(false);
             const [msg, setMsg] = useState(null);
             const fileRef = useRef(null);
@@ -1434,6 +1441,23 @@
             const counterRef = db.collection('jobCounters').doc(String(year));
             const isAdmin = ADMINS.includes(profile.role);
             const me = { uid: profile.uid, name: profile.name || profile.email || '' };
+
+            // Only Owner and Admin can read the users list, so only they get the role picks
+            useEffect(() => {
+                if (!isAdmin) return;
+                db.collection('users').get().then(snap => {
+                    const list = [];
+                    snap.forEach(doc => { const d = doc.data(); if (d.active === true) list.push({ id: doc.id, ...d }); });
+                    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                    setUsers(list);
+                }).catch(error => { setUsers([]); setMsg({ text: 'Error loading users for the role picks: ' + error.message, ok: false }); });
+            }, []);
+            const pickRole = (key, uid) => setTeam(prev => {
+                const nextTeam = { ...prev };
+                const u = (users || []).find(x => x.id === uid);
+                if (u) nextTeam[key] = teamPerson(u); else delete nextTeam[key];
+                return nextTeam;
+            });
 
             useEffect(() => counterRef.onSnapshot(d => setCounter(d.exists ? (d.data().last || 0) : null),
                 error => { setCounter(null); setMsg({ text: 'Error loading the job counter: ' + error.message, ok: false }); }), []);
@@ -1497,17 +1521,20 @@
                         tx.update(counterRef, { last: n, updatedAt: now, updatedBy: me });
                         tx.set(jobRef, newJobData(code));
                     });
-                    // Then the rest of the intake form goes onto the new job's contact card (and its lock box onto the job)
-                    if (intake) {
+                    // Then the role picks and the rest of the intake form go onto the new job's contact card (and the lock box onto the job)
+                    const picked = isAdmin ? team : {};
+                    if (intake || Object.keys(picked).length) {
                         try {
-                            const { next: filled } = applyIntake({ ...fullCard(null), lockBox: '' }, intake.values);
+                            const base = { ...fullCard(null), lockBox: '' };
+                            const filled = intake ? applyIntake(base, intake.values).next : base;
+                            filled.team = picked;
                             const batch = db.batch();
                             batch.set(jobRef.collection('notesInfo').doc('contactCard'), { ...cleanCard(filled),
-                                lastImport: { fileName: intake.fileName, importedAt: now, importedBy: me }, updatedAt: now, updatedBy: me });
+                                ...(intake ? { lastImport: { fileName: intake.fileName, importedAt: now, importedBy: me } } : {}), updatedAt: now, updatedBy: me });
                             if ((filled.lockBox || '').trim()) batch.update(jobRef, { lockBox: filled.lockBox.trim(), lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
                             await batch.commit();
                         } catch (error) {
-                            window.alert(`Job ${code} was created, but the intake form couldn't be added to its contact card (${error.message}). Open the job and use Import intake form.`);
+                            window.alert(`Job ${code} was created, but its contact card couldn't be filled in (${error.message}). Open the job, then use Import intake form and pick the team on the contact card.`);
                         }
                     }
                     window.location.href = '/notes/?job=' + encodeURIComponent(jobRef.id);
@@ -1520,7 +1547,7 @@
             return (
                 <div className="section no-print">
                     <div className="row">
-                        <div className="section-title" style={{ marginBottom: 0 }}>New job</div>
+                        <div className="section-title" style={{ marginBottom: 0 }}>Add job and roles</div>
                         <span>
                             <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={e => fromIntake(e.target.files[0])} />
                             <button type="button" className="btn-secondary btn-sm" onClick={() => fileRef.current && fileRef.current.click()}>Fill from intake form (PDF)</button>
@@ -1544,6 +1571,24 @@
                         <div className="card-field"><label htmlFor="nj-last">Last name</label><input id="nj-last" type="text" value={f.last} onChange={e => set('last', e.target.value)} /></div>
                         <div className="card-field"><label htmlFor="nj-street">Street</label><input id="nj-street" type="text" value={f.street} onChange={e => set('street', e.target.value)} /></div>
                         <div className="card-field"><label htmlFor="nj-city">City, state, zip</label><input id="nj-city" type="text" value={f.city} onChange={e => set('city', e.target.value)} /></div>
+                    </div>
+                    <div className="card-group" style={{ marginTop: '12px', marginBottom: 0 }}>
+                        <div className="card-group-title">Job roles</div>
+                        {isAdmin ? (
+                            <div className="card-grid">
+                                {TEAM_ROLES.map(([k, label]) => (
+                                    <div className="card-field" key={k}>
+                                        <label htmlFor={'nj-team-' + k}>{label}</label>
+                                        <select id={'nj-team-' + k} value={team[k] ? team[k].uid : ''} disabled={users === null} onChange={e => pickRole(k, e.target.value)}>
+                                            <option value="">{users === null ? 'Loading...' : '-- None --'}</option>
+                                            {(users || []).filter(u => (u.jobRoles || []).includes(k)).map(u => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+                                        </select>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="muted">An Owner or Admin picks the job's team on its contact card after the job is created.</p>
+                        )}
                     </div>
                     <div style={{ marginTop: '10px', fontSize: '14px' }}>
                         <label className="check" style={{ marginBottom: '6px' }}>
@@ -1713,7 +1758,9 @@
             return (
                 <div>
                     <div className="topbar">
-                        {JOB_CREATORS.includes(profile.role) && !newJob && <button className="btn-secondary btn-sm" onClick={() => { if (!hasUnsaved() || window.confirm('You have unsaved changes. Start a new job anyway?')) setNewJob(true); }}>+ New job</button>}
+                        {JOB_CREATORS.includes(profile.role) && !newJob && document.getElementById('title-actions') && ReactDOM.createPortal(
+                            <button className="btn-primary btn-sm" style={{ width: 'auto', marginTop: '2px' }} onClick={() => { if (!hasUnsaved() || window.confirm('You have unsaved changes. Start a new job anyway?')) setNewJob(true); }}>Add job and roles</button>,
+                            document.getElementById('title-actions'))}
                         <a href="/notes/">Search all jobs</a>
                     </div>
 
@@ -1774,3 +1821,4 @@
     </script>
 </body>
 </html>
+
