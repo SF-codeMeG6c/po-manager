@@ -319,8 +319,8 @@
 };
 
           const handleGeneratePDF = async () => {
-    // Editing a PO that has its own saved header: use it, no job/super selection needed
-    const header = (editingPO && editingPO.header) ? editingPO.header : {
+    // New PO or edited PO: always today's job (job record) and Super (Customer Information card). An edit keeps the old ones in history.
+    const header = {
         jobCode, jobAddress, cityStateZip, lockBox, superName, superEmail, superPhone
     };
     if (!currentJobId || !header.jobCode) {
@@ -451,6 +451,7 @@
                 contractAmount: editingPO.contractAmount || '',
                 scope: editingPO.scope || '',
                 attachments: editingPO.attachments || [],
+                header: editingPO.header || null,
                 savedAt: editingPO.pdfUpdatedAt || editingPO.dateCreated || null,
                 savedBy: editingPO.editedBy || editingPO.createdBy || null,
                 replacedAt: new Date(),
