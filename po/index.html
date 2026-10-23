@@ -102,9 +102,8 @@
             const [currentPO, setCurrentPO] = useState('');
             const [message, setMessage] = useState('');
             const [jobLibrary, setJobLibrary] = useState([]);
-            const [supervisorLibrary, setSupervisorLibrary] = useState([]);
             const [selectedJobIndex, setSelectedJobIndex] = useState('');
-            const [selectedSupervisorIndex, setSelectedSupervisorIndex] = useState('');
+            const [teamError, setTeamError] = useState(''); // error reading the Super from Customer Information
 
             const [uploadLoading, setUploadLoading] = useState(false);
             const [jobForms, setJobForms] = useState([]);
@@ -132,7 +131,6 @@
             const [showDeleted, setShowDeleted] = useState(false); // Owner/Admin: show hidden (deleted) POs
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
-            const [supersList, setSupersList] = useState([]); // active users with the Super role
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -144,8 +142,6 @@
                         if (snap.exists && snap.data().active === true) {
                             setProfile({ uid: currentUser.uid, ...snap.data() });
                             loadJobs(currentUser.uid, snap.data().role);
-                            loadSupervisors();
-                            if (['owner', 'admin', 'estimator'].includes(snap.data().role)) loadSupers();
                             loadFormLibraryData(currentUser.uid);
                         } else if (!snap.exists) {
                             // New person: create their own record as pending (no access until approved)
@@ -196,25 +192,24 @@
                 }, error => console.error('Job list error:', error));
             };
 
-            // Users with the Super role (for assigning to jobs)
-            const loadSupers = () => {
-                db.collection('users').where('role', '==', 'super').onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => { if (doc.data().active === true) list.push({ id: doc.id, name: doc.data().name || doc.data().email }); });
-                    list.sort((a, b) => a.name.localeCompare(b.name));
-                    setSupersList(list);
-                }, error => console.error('Supers list error:', error));
-            };
+            // The loaded job's code, address and lock box follow the job record (changed only on Customer Information)
+            useEffect(() => {
+                const j = jobLibrary.find(x => x.id === currentJobId);
+                if (!j) return;
+                setJobCode(j.code); setJobAddress(j.address); setCityStateZip(j.cityStateZip); setLockBox(j.lockBox);
+            }, [jobLibrary, currentJobId]);
 
-            // Company-wide Supervisor list, sorted by name
-            const loadSupervisors = () => {
-                db.collection('supervisors').onSnapshot(snapshot => {
-                    const list = [];
-                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
-                    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                    setSupervisorLibrary(list);
-                }, error => console.error('Supervisor list error:', error));
-            };
+            // The loaded job's Super, read live from the Customer Information card (team.super). Picked only on Customer Information.
+            useEffect(() => {
+                setSuperName(''); setSuperPhone(''); setSuperEmail(''); setTeamError('');
+                if (!user || !currentJobId) return;
+                return db.collection('jobs').doc(currentJobId).collection('notesInfo').doc('contactCard').onSnapshot(doc => {
+                    const t = doc.exists ? (doc.data().team || {}) : {};
+                    const s = t.super && t.super.uid ? t.super : {};
+                    setSuperName(s.name || s.email || ''); setSuperPhone(s.phone || ''); setSuperEmail(s.email || '');
+                    setTeamError('');
+                }, error => setTeamError('Error loading the Super from Customer Information: ' + error.message));
+            }, [user, currentJobId]);
 
             const loadJobForms = (jobId) => {
                 if (!user) return;
@@ -241,18 +236,6 @@
             const isAdminUser = !!profile && ['owner', 'admin'].includes(profile.role);
             const canEditJobs = !!profile && ['owner', 'admin', 'estimator'].includes(profile.role);
 
-            const handleToggleSuper = async (superId, checked) => {
-                if (!currentJobId) return;
-                const FV = firebase.firestore.FieldValue;
-                try {
-                    await db.collection('jobs').doc(currentJobId).update({
-                        assignedSupers: checked ? FV.arrayUnion(superId) : FV.arrayRemove(superId)
-                    });
-                } catch (error) {
-                    setMessage('Error assigning Super: ' + error.message);
-                }
-            };
-
             // Clear the page when the person is signed out. Logout is on the Dashboard.
             const clearSignedOutState = () => {
                 setJobCode('');
@@ -265,35 +248,8 @@
                 setCurrentPO('');
                 setCurrentJobId('');
                 setJobLibrary([]);
-                setSupervisorLibrary([]);
                 setSelectedJobIndex('');
-                setSelectedSupervisorIndex('');
                 setJobForms([]);
-            };
-
-            const handleSaveJob = async () => {
-                if (!user || !jobCode) {
-                    setMessage('Job Code required');
-                    return;
-                }
-                try {
-                    const jobDocRef = await db.collection('jobs').add({
-                        userId: user.uid,
-                        code: jobCode,
-                        address: jobAddress,
-                        cityStateZip,
-                        lockBox,
-                        dateCreated: new Date()
-                    });
-                    
-                    setMessage('Job saved');
-                    setJobCode('');
-                    setJobAddress('');
-                    setCityStateZip('');
-                    setLockBox('');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
             };
 
             const handleSelectJob = (job) => {
@@ -339,57 +295,6 @@
                 handleSelectJob(jobLibrary[idx]);
             }, [jobLibrary, user]);
 
-            const handleDeleteJob = async (index) => {
-                const job = jobLibrary[index];
-                if (!job || !job.id) return;
-                if (!window.confirm(`Archive job ${job.code}? It will be hidden from the list. Its POs and files are kept.`)) return;
-                try {
-                    await db.collection('jobs').doc(job.id).update({ archived: true });
-                    setMessage('Job archived');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-            const handleSaveSupervisor = async () => {
-                if (!user || !superName) {
-                    setMessage('Supervisor name required');
-                    return;
-                }
-                try {
-                    await db.collection('supervisors').add({
-                        name: superName.trim(),
-                        phone: superPhone.trim(),
-                        email: superEmail.trim(),
-                        dateCreated: new Date()
-                    });
-                    setMessage('Supervisor saved');
-                    setSuperName('');
-                    setSuperPhone('');
-                    setSuperEmail('');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
-            const handleSelectSupervisor = (supervisor) => {
-                setSuperName(supervisor.name);
-                setSuperPhone(supervisor.phone);
-                setSuperEmail(supervisor.email);
-            };
-
-            const handleDeleteSupervisor = async (index) => {
-                const sup = supervisorLibrary[index];
-                if (!sup || !sup.id) return;
-                if (!window.confirm(`Remove ${sup.name} from the Supervisor list?`)) return;
-                try {
-                    await db.collection('supervisors').doc(sup.id).delete();
-                    setMessage('Supervisor deleted');
-                } catch (error) {
-                    setMessage('Error: ' + error.message);
-                }
-            };
-
           const getNextPONumber = async () => {
     if (!user || !currentJobId) {
         setMessage('Error: Job not selected');
@@ -418,8 +323,12 @@
     const header = (editingPO && editingPO.header) ? editingPO.header : {
         jobCode, jobAddress, cityStateZip, lockBox, superName, superEmail, superPhone
     };
-    if (!currentJobId || !header.jobCode || !header.superName) {
-        setMessage('Select job and supervisor first');
+    if (!currentJobId || !header.jobCode) {
+        setMessage('Load a job first');
+        return;
+    }
+    if (!header.superName) {
+        setMessage('This job has no Super. Set it on Customer Information.');
         return;
     }
     if (!formMetadata.subName || !formMetadata.category) {
@@ -844,24 +753,6 @@
                     <div className="section">
                         <div className="section-title">JOB DETAILS</div>
 
-                        {canEditJobs && (<>
-                        <div className="form-group">
-                            <label>Job Code</label>
-                            <input value={jobCode} onChange={e => setJobCode(e.target.value)} placeholder="Stark W 2602" />
-                        </div>
-                        <div className="form-group">
-                            <label>Job Address</label>
-                            <input value={jobAddress} onChange={e => setJobAddress(e.target.value)} placeholder="Street address" />
-                        </div>
-                        <div className="form-group">
-                            <label>City / State / Zip</label>
-                            <input value={cityStateZip} onChange={e => setCityStateZip(e.target.value)} placeholder="City, State ZIP" />
-                        </div>
-                        <div className="form-group">
-                            <label>Lock Box</label>
-                            <input value={lockBox} onChange={e => setLockBox(e.target.value)} placeholder="Lock box #" />
-                        </div>
-                        </>)}
 
                         {jobLibrary.length > 0 && (
                             <div className="form-group">
@@ -887,105 +778,35 @@
                                     >
                                         (Load)
                                     </button>
-                                    {canEditJobs && <button 
-                                        className="btn-secondary" 
-                                        onClick={() => {
-                                            if (selectedJobIndex !== '') {
-                                                handleDeleteJob(parseInt(selectedJobIndex));
-                                                setSelectedJobIndex('');
-                                            }
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedJobIndex === ''}
-                                    >
-                                        (Archive)
-                                    </button>}
                                 </div>
                             </div>
                         )}
 
-                        {canEditJobs && currentJobId && (() => {
-                            const job = jobLibrary.find(j => j.id === currentJobId);
-                            if (!job) return null;
-                            return (
-                                <div className="form-group">
-                                    <label>Assigned Supers ({job.code})</label>
-                                    {supersList.length === 0
-                                        ? <div style={{ fontSize: '13px', color: '#888' }}>No active Supers yet. Set someone's role to Super in Users.</div>
-                                        : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-                                            {supersList.map(sup => (
-                                                <label key={sup.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal' }}>
-                                                    <input type="checkbox" checked={job.assignedSupers.includes(sup.id)}
-                                                        onChange={e => handleToggleSuper(sup.id, e.target.checked)} />
-                                                    {sup.name}
-                                                </label>
-                                            ))}
-                                          </div>}
-                                </div>
-                            );
-                        })()}
-
-                        {canEditJobs && <button className="btn-primary" onClick={handleSaveJob}>Save New Job</button>}
+                        {currentJobId ? (
+                            <div className="form-group" style={{ fontSize: '14px', lineHeight: 1.6 }}>
+                                <div><strong>{jobCode}</strong></div>
+                                <div>{[jobAddress, cityStateZip].filter(Boolean).join(', ') || 'No address on Customer Information.'}</div>
+                                <div>Lock box: {lockBox || '(none)'}</div>
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: '13px', color: '#666' }}>Pick a job and click Load. Jobs are added and changed on Customer Information.</div>
+                        )}
                     </div>
 
                     <div className="section">
                         <div className="section-title">SUPERVISOR</div>
 
-                        {supervisorLibrary.length > 0 && (
-                            <div className="form-group">
-                                <label>Load Supervisor</label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <select 
-                                        value={selectedSupervisorIndex}
-                                        onChange={e => setSelectedSupervisorIndex(e.target.value)}
-                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
-                                    >
-                                        <option value="">-- Pick a supervisor --</option>
-                                        {supervisorLibrary.map((sup, idx) => (
-                                            <option key={idx} value={idx}>{sup.name}</option>
-                                        ))}
-                                    </select>
-                                    <button 
-                                        className="btn-primary" 
-                                        onClick={() => {
-                                            if (selectedSupervisorIndex !== '') handleSelectSupervisor(supervisorLibrary[parseInt(selectedSupervisorIndex)]);
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedSupervisorIndex === ''}
-                                    >
-                                        (Load)
-                                    </button>
-                                    {canEditJobs && <button 
-                                        className="btn-secondary" 
-                                        onClick={() => {
-                                            if (selectedSupervisorIndex !== '') {
-                                                handleDeleteSupervisor(parseInt(selectedSupervisorIndex));
-                                                setSelectedSupervisorIndex('');
-                                            }
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedSupervisorIndex === ''}
-                                    >
-                                        (Delete)
-                                    </button>}
-                                </div>
+                        {!currentJobId ? (
+                            <div style={{ fontSize: '13px', color: '#666' }}>Load a job to see its Super.</div>
+                        ) : superName ? (
+                            <div className="form-group" style={{ fontSize: '14px', lineHeight: 1.6 }}>
+                                <div><strong>{superName}</strong></div>
+                                <div style={{ fontSize: '13px', color: '#666' }}>{[superPhone, superEmail].filter(Boolean).join(' | ') || 'No phone or email on Customer Information.'}</div>
                             </div>
+                        ) : (
+                            <div style={{ fontSize: '13px', color: '#666' }}>Not picked. Set it on Customer Information.</div>
                         )}
-
-                        <div className="form-group">
-                            <label>Super Name</label>
-                            <input value={superName} onChange={e => setSuperName(e.target.value)} placeholder="Supervisor name" />
-                        </div>
-                        <div className="form-group">
-                            <label>Super Phone</label>
-                            <input value={superPhone} onChange={e => setSuperPhone(e.target.value)} placeholder="Phone" />
-                        </div>
-                        <div className="form-group">
-                            <label>Super Email</label>
-                            <input value={superEmail} onChange={e => setSuperEmail(e.target.value)} placeholder="Email" />
-                        </div>
-
-                        {canEditJobs && <button className="btn-primary" onClick={handleSaveSupervisor}>Save New Supervisor</button>}
+                        {teamError && <div className="error">{teamError}</div>}
                     </div>
 
                     <div className="section" id="generate-po-section">
