@@ -785,7 +785,10 @@
                     const imported = editing._import ? { lastImport: { fileName: editing._import, importedAt: now, importedBy: me } }
                         : (card && card.lastImport ? { lastImport: card.lastImport } : {});
                     batch.set(cardRef, { ...clean, ...imported, updatedAt: now, updatedBy: me });
-                    if (lockChanged) batch.update(jobRef, { lockBox: newLock, lockBoxUpdatedBy: me, lockBoxUpdatedAt: now });
+                    const jobUpdate = lockChanged ? { lockBox: newLock, lockBoxUpdatedBy: me, lockBoxUpdatedAt: now } : {};
+                    // Owner/Admin: the job's Super is the only Super who can see the job (one Super per job; none = no Super access)
+                    if (isAdmin) jobUpdate.assignedSupers = clean.team.super && clean.team.super.uid ? [clean.team.super.uid] : [];
+                    if (Object.keys(jobUpdate).length) batch.update(jobRef, jobUpdate);
                     await batch.commit();
                     setEditing(null);
                     setImportMsg(null);
@@ -1504,7 +1507,9 @@
                     const now = firebase.firestore.FieldValue.serverTimestamp();
                     const jobRef = db.collection('jobs').doc();
                     let code = '';
-                    const newJobData = (c) => ({ code: c, address: f.street.trim(), cityStateZip: f.city.trim(), archived: false, assignedSupers: [], createdAt: now, createdBy: me });
+                    // A Super picked here (Owner/Admin) can see the new job right away
+                    const superAccess = isAdmin && team.super && team.super.uid ? [team.super.uid] : [];
+                    const newJobData = (c) => ({ code: c, address: f.street.trim(), cityStateZip: f.city.trim(), archived: false, assignedSupers: superAccess, createdAt: now, createdBy: me });
                     if (typed) {
                         // Typed code: the counter isn't used or changed
                         code = handCode;
