@@ -1664,6 +1664,21 @@
             const [jobsError, setJobsError] = useState('');
             const [newJob, setNewJob] = useState(false);
             const [fixCode, setFixCode] = useState(false);
+            const [archMsg, setArchMsg] = useState('');
+
+            // Archive / Un-archive (Owner, Admin, Estimator). Archived jobs drop out of job lists unless "Show archived jobs" is ticked.
+            const setArchived = async (archived) => {
+                const ask = archived
+                    ? `Archive ${job.code}? It drops out of the job lists in every tool (tick "Show archived jobs" to see it). Nothing is deleted.`
+                    : `Un-archive ${job.code}? It shows in the job lists again.`;
+                if (!window.confirm(ask)) return;
+                setArchMsg('');
+                try {
+                    await db.collection('jobs').doc(job.id).update({ archived, archivedChangedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        archivedChangedBy: { uid: profile.uid, name: profile.name || profile.email || '' } });
+                    setJob(prev => ({ ...prev, archived }));
+                } catch (error) { setArchMsg('Could not ' + (archived ? 'archive' : 'un-archive') + ' the job: ' + error.message); }
+            };
 
             // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
             useEffect(() => {
@@ -1805,8 +1820,10 @@
                                 <div className="job-code">
                                     {job.code}{job.archived ? ' (archived)' : ''}
                                     {ADMINS.includes(profile.role) && !fixCode && <button className="btn-secondary btn-sm no-print" style={{ marginLeft: '8px', verticalAlign: 'middle' }} onClick={() => setFixCode(true)}>Change code</button>}
+                                    {['owner', 'admin', 'estimator'].includes(profile.role) && !fixCode && <button className="btn-secondary btn-sm no-print" style={{ marginLeft: '8px', verticalAlign: 'middle' }} onClick={() => setArchived(!job.archived)}>{job.archived ? 'Un-archive job' : 'Archive job'}</button>}
                                 </div>
                                 {fixCode && <JobCodeFix job={job} onDone={() => setFixCode(false)} />}
+                                {archMsg && <div className="error no-print">{archMsg}</div>}
                                 <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ')}</div>
                                 <div className="no-print" style={{ marginTop: '8px' }}>
                                     <button type="button" className="btn-secondary btn-sm" onClick={() => downloadEgnyteFolders(job.code)}>Download Egnyte folders (zip)</button>
