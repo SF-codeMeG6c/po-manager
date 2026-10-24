@@ -379,7 +379,8 @@
             const [lastSaved, setLastSaved] = useState(null); // { name, at }
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
-            const [pos, setPos] = useState([]);              // this job's POs from PO Manager (read-only)
+            const [pos, setPos] = useState([]);              // this job's POs (read-only): from Trades-EST until handed off, then from PO Manager
+            const [handoff, setHandoff] = useState(null);    // the job's Trades-EST handoff: undefined = never handed off, null = loading
             const [excludedPoIds, setExcludedPoIds] = useState([]);
             const [notesEdit, setNotesEdit] = useState(null); // one-off edits to the notes (not saved); null = use generated
             const [layout, setLayout] = useState(DEFAULT_LAYOUT);   // company-wide notes layout
@@ -469,10 +470,39 @@
                 }
             };
 
-            // Live, read-only list of the picked job's POs
+            // Has the job been handed off from Trades-EST (and is it still locked)? Live.
+            useEffect(() => {
+                setHandoff(null);
+                if (!jobId) return;
+                const unsub = db.collection('tradesEst').doc(jobId).onSnapshot(doc => {
+                    setHandoff((doc.exists && doc.data().handoff) || undefined);
+                }, () => setHandoff(undefined));
+                return () => unsub();
+            }, [jobId]);
+            const fromPOManager = !!(handoff && handoff.locked);
+
+            // Live, read-only list of the picked job's POs.
+            // Before the handoff (or while unlocked for changes): every Trades-EST request on the job that has an amount, Pending and Complete.
+            // After the handoff: PO Manager's POs, so the Super's changes show.
             useEffect(() => {
                 setPos([]);
-                if (!jobId) return;
+                if (!jobId || handoff === null) return;
+                if (!fromPOManager) {
+                    const unsubReq = db.collection('tradesEst').doc(jobId).collection('requests').onSnapshot(snapshot => {
+                        const list = [];
+                        snapshot.forEach(doc => {
+                            const d = doc.data();
+                            if (d.deleted === true) return; // skip requests deleted in Trades-EST
+                            const amount = toNumber(d.contractAmount);
+                            if (!(amount > 0)) return;      // only requests with an amount
+                            list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                                        status: d.status || 'Pending', amount });
+                        });
+                        list.sort((a, b) => a.category.localeCompare(b.category) || a.poNumber.localeCompare(b.poNumber));
+                        setPos(list);
+                    }, error => setMessage('Error loading POs from Trades-EST: ' + error.message));
+                    return () => unsubReq();
+                }
                 const unsub = db.collection('jobs').doc(jobId).collection('forms').onSnapshot(snapshot => {
                     const list = [];
                     snapshot.forEach(doc => {
@@ -485,7 +515,7 @@
                     setPos(list);
                 }, error => setMessage('Error loading POs: ' + error.message));
                 return () => unsub();
-            }, [jobId]);
+            }, [jobId, handoff === null, fromPOManager]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -705,6 +735,13 @@
 
                         <div className="section">
                             <div className="section-title">POs ({pos.length})</div>
+                            {handoff !== null && (
+                                <div style={{ fontSize: '13px', color: '#555', marginTop: '-8px', marginBottom: '10px' }}>
+                                    {fromPOManager ? 'POs from PO Manager (handed off from Trades-EST).'
+                                        : handoff ? 'POs from Trades-EST (unlocked for changes). Requests with an amount, Pending and Complete.'
+                                        : 'POs from Trades-EST (not handed off yet). Requests with an amount, Pending and Complete.'}
+                                </div>
+                            )}
                             {pos.length === 0
                                 ? <p style={{ color: '#888' }}>No POs on this job yet.</p>
                                 : <div style={{ overflowX: 'auto' }}>
