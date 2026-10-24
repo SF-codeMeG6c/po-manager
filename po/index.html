@@ -881,11 +881,11 @@
                                 <div style={{ fontSize: '12px', color: '#666', margin: '4px 0 12px' }}>Super: {superName || '(none on Customer Information)'}{editingPO ? '' : ' · Starts as New'}</div>
                                 {showTemplates && !editingPO && (
                                     <div style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '8px', marginBottom: '12px', background: '#fafafa', maxHeight: '300px', overflowY: 'auto' }}>
-                                        {formLibraryData.length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates yet. Templates are saved from Trades-EST.</div> : (
+                                        {formLibraryData.filter(t => !t.deleted).length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates yet. Templates are saved from Trades-EST.</div> : (
                                             <table style={{ marginTop: 0 }}>
                                                 <thead><tr><th>Category</th><th>Subcontractor</th><th>Amount</th><th></th></tr></thead>
                                                 <tbody>
-                                                    {[...formLibraryData]
+                                                    {formLibraryData.filter(t => !t.deleted) // templates deleted (hidden) in Trades-EST are skipped
                                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
                                                         .map(t => (
                                                             <tr key={t.id}>
