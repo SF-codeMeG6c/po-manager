@@ -481,7 +481,7 @@
             setEditingPO(null);
             setMessage(`PO updated: ${fileName}`);
         } else {
-            await formsRef.add({ ...poData, notes: '', status: 'Pending', dateCreated: new Date(), createdBy: byMe });
+            await formsRef.add({ ...poData, notes: '', status: 'New', dateCreated: new Date(), createdBy: byMe });
             setMessage(`PO created and saved to job: ${fileName}`);
         }
 
@@ -901,8 +901,10 @@
                                         .filter(form => form.deleted !== true || (showDeleted && isAdminUser))
                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
                                         .map(form => {
-                                            const status = (form.status === 'Complete' || form.status === 'Completed') ? 'Complete'
-                                                : form.status === 'Revised' ? 'Revised' : 'Pending';
+                                            // New = made in PO Manager, CES = from the Trades-EST handoff (or set by hand), Revised = changed by the Super.
+                                            // Older records: Complete shows as CES, Pending (or none) as New.
+                                            const status = ['CES', 'Complete', 'Completed'].includes(form.status) ? 'CES'
+                                                : form.status === 'Revised' ? 'Revised' : 'New';
                                             return (
                                                 <tr key={form.id} style={form.deleted ? { background: '#fdecea', opacity: 0.8 } : undefined}>
                                                     <td>
@@ -947,21 +949,13 @@
                                                         </button>
                                                     </td>
                                                     <td>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Pending'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Pending' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Pending
-                                                        </label>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Complete'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Complete' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Complete
-                                                        </label>
-                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
-                                                            <input type="radio" name={'status-' + form.id} checked={status === 'Revised'}
-                                                                onChange={() => handleUpdateForm(form.id, { status: 'Revised' })} style={{ width: 'auto', margin: 0 }} />
-                                                            Revised
-                                                        </label>
+                                                        {['New', 'CES', 'Revised'].map(st => (
+                                                            <label key={st} style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
+                                                                <input type="radio" name={'status-' + form.id} checked={status === st}
+                                                                    onChange={() => handleUpdateForm(form.id, { status: st })} style={{ width: 'auto', margin: 0 }} />
+                                                                {st}
+                                                            </label>
+                                                        ))}
                                                     </td>
                                                     <td>
                                                         <div className="button-group" style={{ gap: '4px' }}>
