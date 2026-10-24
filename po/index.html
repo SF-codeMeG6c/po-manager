@@ -102,7 +102,6 @@
             const [currentPO, setCurrentPO] = useState('');
             const [message, setMessage] = useState('');
             const [jobLibrary, setJobLibrary] = useState([]);
-            const [selectedJobIndex, setSelectedJobIndex] = useState('');
             const [teamError, setTeamError] = useState(''); // error reading the Super from Customer Information
 
             const [uploadLoading, setUploadLoading] = useState(false);
@@ -211,9 +210,13 @@
                 }, error => setTeamError('Error loading the Super from Customer Information: ' + error.message));
             }, [user, currentJobId]);
 
+            // The loaded job's POs. Switching jobs stops listening to the old job, so its POs can't show up on the new one.
+            const formsUnsub = React.useRef(null);
+            const stopJobForms = () => { if (formsUnsub.current) { formsUnsub.current(); formsUnsub.current = null; } };
             const loadJobForms = (jobId) => {
                 if (!user) return;
-                db.collection('jobs').doc(jobId).collection('forms').orderBy('dateCreated', 'desc').onSnapshot(snapshot => {
+                stopJobForms();
+                formsUnsub.current = db.collection('jobs').doc(jobId).collection('forms').orderBy('dateCreated', 'desc').onSnapshot(snapshot => {
                     const forms = [];
                     snapshot.forEach(doc => {
                         forms.push({ id: doc.id, ...doc.data() });
@@ -248,8 +251,23 @@
                 setCurrentPO('');
                 setCurrentJobId('');
                 setJobLibrary([]);
-                setSelectedJobIndex('');
+                stopJobForms();
                 setJobForms([]);
+            };
+
+            // Picking a job in the drop-down loads it right away; the blank line clears the page.
+            // A PO open in Edit PO is dropped only after asking (it belongs to the job being left).
+            const pickJob = (id) => {
+                if (id === currentJobId) return;
+                if (editingPO) {
+                    if (!window.confirm(`You are editing PO ${editingPO.poNumber}. Switch jobs and drop the changes?`)) return;
+                    handleCancelEditPO();
+                }
+                const job = jobLibrary.find(j => j.id === id);
+                if (job) { handleSelectJob(job); return; }
+                stopJobForms();
+                setCurrentJobId(''); setJobCode(''); setJobAddress(''); setCityStateZip(''); setLockBox('');
+                setJobForms([]); setCurrentPO('');
             };
 
             const handleSelectJob = (job) => {
@@ -288,11 +306,10 @@
             const urlJobLoaded = React.useRef(false);
             useEffect(() => {
                 if (urlJobLoaded.current || !urlJobId || !user) return;
-                const idx = jobLibrary.findIndex(j => j.id === urlJobId);
-                if (idx === -1) return;
+                const job = jobLibrary.find(j => j.id === urlJobId);
+                if (!job) return;
                 urlJobLoaded.current = true;
-                setSelectedJobIndex(String(idx));
-                handleSelectJob(jobLibrary[idx]);
+                handleSelectJob(job);
             }, [jobLibrary, user]);
 
           const getNextPONumber = async () => {
@@ -324,7 +341,7 @@
         jobCode, jobAddress, cityStateZip, lockBox, superName, superEmail, superPhone
     };
     if (!currentJobId || !header.jobCode) {
-        setMessage('Load a job first');
+        setMessage('Pick a job first');
         return;
     }
     if (!header.superName) {
@@ -757,29 +774,17 @@
 
                         {jobLibrary.length > 0 && (
                             <div className="form-group">
-                                <label>Load Job</label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <select 
-                                        value={selectedJobIndex}
-                                        onChange={e => setSelectedJobIndex(e.target.value)}
-                                        style={{ flex: 1, padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
-                                    >
-                                        <option value="">-- Pick a job --</option>
-                                        {jobLibrary.map((job, idx) => (
-                                            <option key={idx} value={idx}>{job.code} - {job.address}</option>
-                                        ))}
-                                    </select>
-                                    <button 
-                                        className="btn-primary" 
-                                        onClick={() => {
-                                            if (selectedJobIndex !== '') handleSelectJob(jobLibrary[parseInt(selectedJobIndex)]);
-                                        }}
-                                        style={{ width: 'auto', padding: '8px 12px' }}
-                                        disabled={selectedJobIndex === ''}
-                                    >
-                                        (Load)
-                                    </button>
-                                </div>
+                                <label>Job</label>
+                                <select
+                                    value={currentJobId}
+                                    onChange={e => pickJob(e.target.value)}
+                                    style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
+                                >
+                                    <option value="">-- Pick a job --</option>
+                                    {jobLibrary.map(job => (
+                                        <option key={job.id} value={job.id}>{job.code} - {job.address}</option>
+                                    ))}
+                                </select>
                             </div>
                         )}
 
@@ -790,7 +795,7 @@
                                 <div>Lock box: {lockBox || '(none)'}</div>
                             </div>
                         ) : (
-                            <div style={{ fontSize: '13px', color: '#666' }}>Pick a job and click Load. Jobs are added and changed on Customer Information.</div>
+                            <div style={{ fontSize: '13px', color: '#666' }}>Pick a job. Jobs are added and changed on Customer Information.</div>
                         )}
                     </div>
 
@@ -798,7 +803,7 @@
                         <div className="section-title">SUPERVISOR</div>
 
                         {!currentJobId ? (
-                            <div style={{ fontSize: '13px', color: '#666' }}>Load a job to see its Super.</div>
+                            <div style={{ fontSize: '13px', color: '#666' }}>Pick a job to see its Super.</div>
                         ) : superName ? (
                             <div className="form-group" style={{ fontSize: '14px', lineHeight: 1.6 }}>
                                 <div><strong>{superName}</strong></div>
