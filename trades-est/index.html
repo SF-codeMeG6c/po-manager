@@ -853,6 +853,13 @@
         };
         const fmtTime = (ts) => { const d = toDate(ts); return d ? d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; };
 
+        // ---------- Hand off to PO Manager ----------
+        // Owner and Estimator hand off a job after the customer signs the final CES. Each Complete request becomes a CES PO in
+        // PO Manager (jobs/{jobId}/forms, same record id and PO number). The job then locks those requests; Unlock reopens them
+        // for the customer's changes, and handing off again updates the same POs (the earlier version is kept in the PO's history).
+        const HANDOFF_ROLES = ['owner', 'estimator'];
+        const handoffKey = (r) => JSON.stringify([...REQ_FIELDS.map(k => String(r[k] == null ? '' : r[k])), r.notes || '', attKey(r.attachments)]);
+
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
         const capLines = (t) => (t || '').replace(/(^|\n)(\s*)([a-z])/g, (m, nl, sp, ch) => nl + sp + ch.toUpperCase());
         const capInPlace = (el) => {
@@ -877,6 +884,7 @@
         // so both places work the same way.
         function useRequestActions(po) {
             const { jobId, jobCode, job, superPick, me } = po || {}; // the start list has no job and no requests
+            const frozen = (r) => !!(po && po.handoffLocked && r.handedOffAt); // handed off and the job is locked
             const [previewId, setPreviewId] = useState(null); // request whose form is being built
             const [sendingId, setSendingId] = useState(null); // request being emailed
             const [note, setNote] = useState('');
@@ -900,7 +908,7 @@
             // Send for pricing: build the form, keep that exact PDF in the job folder, then email it to the sub.
             // Replies go to the job's estimator, or to whoever clicks this when none is picked (the function decides and reports back).
             const send = async (r) => {
-                if (!r.email) return;
+                if (!r.email || frozen(r)) return;
                 if (r.kind === 'none') { setNote(`Error: ${r.poNumber} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
                 if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
                 const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
@@ -958,6 +966,7 @@
 
             // Delete hides the request (kept for records); Owner/Admin can restore it
             const hide = async (r) => {
+                if (frozen(r)) return;
                 if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
                 try {
                     await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
@@ -973,7 +982,7 @@
 
             // Pending or Complete, set by hand like PO Manager's tracker. Saved on the click; each change is kept.
             const setStatus = async (r, status) => {
-                if ((r.status || 'Pending') === status) return;
+                if ((r.status || 'Pending') === status || frozen(r)) return;
                 try {
                     const now = new Date();
                     const data = { status, statusBy: me, statusAt: now, statusHistory: firebase.firestore.FieldValue.arrayUnion({ status, by: me, at: now }) };
@@ -994,7 +1003,7 @@
                 if (r.notes) data.noteHistory = firebase.firestore.FieldValue.arrayUnion({ notes: r.notes, savedBy: r.notesBy || null, savedAt: r.notesAt || null, replacedAt: now, replacedBy: me });
                 await reqRef(r.id).update(data);
             };
-            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes };
+            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes, frozen };
         }
 
         // Notes window, like PO Manager's: a big box with Voice
@@ -1067,6 +1076,9 @@
                     <tbody>
                         {rows.map(r => {
                             const status = r.status === 'Complete' ? 'Complete' : 'Pending';
+                            const fz = act.frozen(r);       // handed off and the job is locked: no Edit, Delete, status or Send
+                            const lk = lock || fz;
+                            const fzTip = fz ? 'Handed off to PO Manager. Unlock the job to change it.' : '';
                             const by = [r.createdBy && `Created by ${r.createdBy.name} ${fmtDay(r.createdAt)}`,
                                 (r.versions || []).length > 0 && r.updatedBy && `Edited by ${r.updatedBy.name} ${fmtDay(r.updatedAt)}`,
                                 (r.attachments || []).length > 0 && `${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
@@ -1077,6 +1089,13 @@
                                             <div>{titleOf(r)}</div>
                                             <div style={{ marginTop: '2px' }}><span className="po-num">{r.poNumber}</span> <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
+                                            {r.handedOffAt && (
+                                                <div style={{ fontSize: '11px', marginTop: '2px', fontWeight: 600, color: '#388e3c' }}>
+                                                    Handed off {fmtDay(r.handedOffAt)}{r.handedOffBy ? ' by ' + r.handedOffBy.name : ''}
+                                                    {!fz && handoffKey(r) !== r.handedOffKey && <span style={{ color: '#cc6600' }}> · Changed since handoff</span>}
+                                                    {!fz && r.status !== 'Complete' && <span style={{ color: '#cc6600' }}> · Pending here, its PO stays in PO Manager</span>}
+                                                </div>
+                                            )}
                                         </td>
                                         <td>
                                             <button type="button" className="btn-secondary btn-sm" onClick={() => setNoteId(r.id)} title={r.notes || ''}
@@ -1087,19 +1106,19 @@
                                         <td>
                                             {['Pending', 'Complete'].map(sName => (
                                                 <label key={sName} style={radio}>
-                                                    <input type="radio" style={{ width: 'auto', margin: 0 }} checked={status === sName} onChange={() => act.setStatus(r, sName)} />{sName}
+                                                    <input type="radio" style={{ width: 'auto', margin: 0 }} checked={status === sName} disabled={fz} title={fzTip} onChange={() => act.setStatus(r, sName)} />{sName}
                                                 </label>
                                             ))}
                                         </td>
                                         <td style={{ whiteSpace: 'nowrap' }}>
                                             <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => act.preview(r)} disabled={!!act.previewId}>{act.previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
-                                            <button className="btn-secondary btn-sm" onClick={() => onEdit(r)} disabled={lock} title={lock ? 'Save or cancel the request that is open first.' : ''}>Edit</button>{' '}
+                                            <button className="btn-secondary btn-sm" onClick={() => onEdit(r)} disabled={lk} title={fzTip || (lock ? 'Save or cancel the request that is open first.' : '')} style={fz ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}>Edit</button>{' '}
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
-                                            <button className="btn-x" onClick={() => act.hide(r)} disabled={lock}>Delete</button>
+                                            <button className="btn-x" onClick={() => act.hide(r)} disabled={lk} title={fzTip} style={fz ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}>Delete</button>
                                             <div style={{ marginTop: '4px' }}>
-                                                <button className="btn-sm" style={{ background: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? '#ccc' : '#0066cc', color: 'white', cursor: (r.kind === 'none' || !r.email || !!act.sendingId || lock) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
-                                                    disabled={r.kind === 'none' || !r.email || !!act.sendingId || lock}
-                                                    title={r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                <button className="btn-sm" style={{ background: (r.kind === 'none' || !r.email || !!act.sendingId || lk) ? '#ccc' : '#0066cc', color: 'white', cursor: (r.kind === 'none' || !r.email || !!act.sendingId || lk) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
+                                                    disabled={r.kind === 'none' || !r.email || !!act.sendingId || lk}
+                                                    title={fz ? fzTip : r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
                                                     {act.sendingId === r.id ? 'Sending...' : 'Send for pricing'}
                                                 </button>
                                                 {r.kind === 'none' ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
@@ -2245,6 +2264,8 @@
             const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
             const [jump, setJump] = useState(null);           // Edit on a PO: { lineId, requestId } to open in that trade's worksheet
             const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
+            const [handoffBusy, setHandoffBusy] = useState('');   // progress text while handing off
+            const [handoffNote, setHandoffNote] = useState('');   // result or error of the last hand off / unlock
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -2340,6 +2361,7 @@
                 setDirty(false);
                 setSettle('');
                 setTaxPct(DEFAULT_TAX_PCT);
+                setHandoffNote('');
                 if (!profile || !jobId || !startReady) return;
                 db.collection('tradesEst').doc(jobId).get().then(doc => {
                     if (doc.exists) {
@@ -2384,7 +2406,7 @@
                     // PO amounts follow the worksheet: bring each PO that follows up to the price being saved
                     let moved = 0;
                     (requests || []).forEach(r => {
-                        const amount = followAmount(r, clean, requests);
+                        const amount = record && record.handoff && record.handoff.locked && r.handedOffAt ? null : followAmount(r, clean, requests);
                         if (amountDiffers(r, amount)) { batch.update(ref.collection('requests').doc(r.id), followUpdate(r, amount, by, now)); moved++; }
                     });
                     await batch.commit();
@@ -2506,8 +2528,115 @@
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
                 draftOpen, setDraftOpen,
+                handoffLocked: !!(record && record.handoff && record.handoff.locked),
                 follow: (r) => followAmount(r, record && record.lines, requests) // amount a PO should have from the saved worksheet, or null
             };
+            // ----- Hand off to PO Manager (Owner and Estimator) -----
+            const canHandOff = HANDOFF_ROLES.includes(profile.role);
+            const handoff = (record && record.handoff) || null;
+            const handOff = async () => {
+                setHandoffNote('');
+                if (!job || !record) { setHandoffNote('Error: save the trade list first.'); return; }
+                if (dirty) { setHandoffNote('Error: the trade list has unsaved changes. Save first, then hand off.'); return; }
+                if (draftOpen) { setHandoffNote('Error: a request is open for editing. Save or cancel it first.'); return; }
+                if (requests === null) return;
+                if (!window.POForm) { setHandoffNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const live = requests.filter(r => !r.deleted);
+                const complete = live.filter(r => r.status === 'Complete');
+                const toAdd = complete.filter(r => !r.handedOffAt);
+                const toUpdate = complete.filter(r => r.handedOffAt && handoffKey(r) !== r.handedOffKey);
+                const work = [...toAdd, ...toUpdate].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+                const label = (r) => `${r.category || r.tradeCode || ''} ${r.poNumber || ''}`.trim();
+                // Checks: nothing moves unless all of them pass
+                const missing = [];
+                if (!superPick) missing.push('The job has no Super. Set it on Customer Information.');
+                work.forEach(r => { if (!(n(r.contractAmount) > 0)) missing.push(`${label(r)} has no amount.`); });
+                if (missing.length) { setHandoffNote('Error: nothing was handed off. ' + missing.join(' ')); return; }
+                const leftBehind = requests.filter(r => r.handedOffAt && (r.deleted || r.status !== 'Complete'));
+                const total = work.reduce((t, r) => t + n(r.contractAmount), 0);
+                const lines = [];
+                if (work.length) lines.push(`Hand off ${toAdd.length ? `${toAdd.length} new PO${toAdd.length === 1 ? '' : 's'}` : ''}${toAdd.length && toUpdate.length ? ' and ' : ''}${toUpdate.length ? `${toUpdate.length} changed PO${toUpdate.length === 1 ? '' : 's'}` : ''} totaling ${money(total)} to PO Manager?`);
+                else lines.push(handoff && !handoff.locked ? 'Nothing changed since the last handoff. Lock the job again?' : 'There are no Complete requests to hand off.');
+                if (leftBehind.length) lines.push('', 'Already in PO Manager and left as they are there (now Pending or deleted here): ' + leftBehind.map(label).join(', ') + '.');
+                if (!work.length && !(handoff && !handoff.locked)) { setHandoffNote(lines[0]); return; }
+                if (!window.confirm(lines.join('\n'))) return;
+                const by = me;
+                const now = new Date();
+                const header = {
+                    jobCode: job.code || '', jobAddress: job.address || '', cityStateZip: job.cityStateZip || '', lockBox: job.lockBox || '',
+                    superName: superPick.name || '', superEmail: superPick.email || '', superPhone: superPick.phone || ''
+                };
+                const formsRef = db.collection('jobs').doc(jobId).collection('forms');
+                const reqsRef = db.collection('tradesEst').doc(jobId).collection('requests');
+                const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+                const dateStr = `${now.getMonth() + 1}-${now.getDate()}-${String(now.getFullYear()).slice(-2)}`;
+                let added = 0, updated = 0;
+                try {
+                    for (const r of work) {
+                        setHandoffBusy(`Handing off ${r.poNumber} (${added + updated + 1} of ${work.length})...`);
+                        const scope = String(r.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
+                        const amountShown = window.POForm.amountText(r.contractAmount);
+                        const bytes = await window.POForm.build({
+                            ...header, poNumber: r.poNumber, subName: r.subName, contact: r.contact, phone: r.phone, email: r.email,
+                            subCode: r.subCode, category: r.category, amount: r.contractAmount, scope
+                        }, r.attachments || []);
+                        // PO Manager's file name pattern
+                        const fileName = `${clean(r.category)}_${clean(r.subName)}_${clean(amountShown)}_${r.poNumber}_${dateStr}.pdf`;
+                        const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                        const pdfUrl = await fileRef.getDownloadURL();
+                        const poData = {
+                            fileName, pdfUrl, poNumber: r.poNumber, subName: r.subName || '', category: r.category || '', contact: r.contact || '',
+                            phone: r.phone || '', email: r.email || '', subCode: r.subCode || '', contractAmount: String(r.contractAmount == null ? '' : r.contractAmount),
+                            scope, header, attachments: r.attachments || [], notes: r.notes || '', status: 'CES',
+                            pdfUpdatedAt: now, dateUpdated: now, fromTradesEst: { requestId: r.id, handedOffBy: by, handedOffAt: now }
+                        };
+                        const formRef = formsRef.doc(r.id);
+                        const old = r.handedOffAt ? await formRef.get() : null;
+                        if (old && old.exists) {
+                            // Hand off again: the PO keeps what it said before, like an Edit PO in PO Manager
+                            const p = old.data();
+                            const prev = {
+                                fileName: p.fileName || '', pdfUrl: p.pdfUrl || '', poNumber: p.poNumber || '', subName: p.subName || '', category: p.category || '',
+                                contractAmount: p.contractAmount || '', scope: p.scope || '', attachments: p.attachments || [], header: p.header || null, notes: p.notes || '',
+                                savedAt: p.pdfUpdatedAt || p.dateCreated || null, savedBy: p.editedBy || p.createdBy || null, replacedAt: now, replacedBy: by, replacedWhy: 'handed off again from Trades-EST'
+                            };
+                            await formRef.update({ ...poData, editedBy: by, editedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+                            updated++;
+                        } else {
+                            await formRef.set({ ...poData, dateCreated: now, createdBy: by });
+                            added++;
+                        }
+                        await reqsRef.doc(r.id).update({ handedOffAt: now, handedOffBy: by, handedOffKey: handoffKey(r), formId: r.id });
+                    }
+                    const done = { locked: true, at: now, by, count: complete.length };
+                    await db.collection('tradesEst').doc(jobId).update({
+                        handoff: done,
+                        handoffHistory: firebase.firestore.FieldValue.arrayUnion({ action: 'handed off', at: now, by, added, updated })
+                    });
+                    setRecord(rec => ({ ...(rec || {}), handoff: done }));
+                    const parts = [added && `${added} new PO${added === 1 ? '' : 's'} added`, updated && `${updated} PO${updated === 1 ? '' : 's'} updated`].filter(Boolean);
+                    setHandoffNote(`Handed off${parts.length ? ': ' + parts.join(', ') : ''}. ${parts.length ? 'They are in PO Manager as CES. Nothing was emailed. ' : ''}The job is locked.`);
+                } catch (err) {
+                    setHandoffNote(`Error handing off (${added + updated} of ${work.length} done, the job is not locked): ${err.message}. Click Hand off again to finish; the ones done are not repeated.`);
+                }
+                setHandoffBusy('');
+            };
+            const unlock = async () => {
+                setHandoffNote('');
+                if (!window.confirm(`Unlock ${job ? job.code : 'this job'} for changes? The POs already in PO Manager stay as they are until you hand off again.`)) return;
+                try {
+                    const now = new Date();
+                    const next = { ...handoff, locked: false, unlockedAt: now, unlockedBy: me };
+                    await db.collection('tradesEst').doc(jobId).update({
+                        handoff: next,
+                        handoffHistory: firebase.firestore.FieldValue.arrayUnion({ action: 'unlocked', at: now, by: me })
+                    });
+                    setRecord(rec => ({ ...(rec || {}), handoff: next }));
+                    setHandoffNote('Unlocked. Make the changes, then click Hand off to PO Manager to update the POs.');
+                } catch (err) { setHandoffNote('Error unlocking: ' + err.message); }
+            };
+
             const savedText = record && record.updatedAt
                 ? `Last saved by ${record.updatedBy ? record.updatedBy.name : ''} on ${fmtStamp(record.updatedAt)}`
                 : 'Not saved yet. Showing the start list.';
@@ -2619,8 +2748,19 @@
                                         <input type="file" accept="application/pdf" onChange={runCheck} disabled={checkBusy} style={{ display: 'none' }} />
                                     </label>
                                     <button className="btn-secondary btn-sm" onClick={openStart} disabled={!startReady}>Edit start list</button>
+                                    {canHandOff && record && (handoff && handoff.locked
+                                        ? <button className="btn-secondary btn-sm" onClick={unlock} disabled={!!handoffBusy}>Unlock for changes</button>
+                                        : <button className="btn-sm" style={{ background: '#0066cc', color: 'white' }} onClick={handOff} disabled={!!handoffBusy || requests === null}>{handoffBusy ? 'Handing off...' : 'Hand off to PO Manager'}</button>)}
                                 </div>
                             </div>
+                            {handoff && (
+                                <div style={{ fontSize: '13px', fontWeight: 600, margin: '4px 0 8px', color: handoff.locked ? '#388e3c' : '#cc6600' }}>
+                                    {handoff.locked
+                                        ? `Handed off to PO Manager ${fmtStamp(handoff.at)}${handoff.by ? ' by ' + handoff.by.name : ''}. Handed-off POs are locked here.`
+                                        : `Unlocked for changes ${fmtStamp(handoff.unlockedAt)}${handoff.unlockedBy ? ' by ' + handoff.unlockedBy.name : ''}. Hand off again to update PO Manager.`}
+                                </div>
+                            )}
+                            {(handoffBusy || handoffNote) && <div style={{ fontSize: '13px', fontWeight: 600, margin: '4px 0 8px', color: (handoffNote || '').startsWith('Error') ? '#d32f2f' : '#388e3c', whiteSpace: 'pre-wrap' }}>{handoffBusy || handoffNote}</div>}
                             {check && <WorkOrderCheck wo={check} lines={lines} jobCode={job ? job.code : ''} onClose={() => setCheck(null)} />}
                             <LineTable key={jobId} lines={lines} me={me} canRestore={canRestore} worksheets={true} po={po} startList={startLines} onSaveItems={saveItemsToStart} onSaveSplit={saveSplitToStart}
                                 onChange={next => { setLines(next); setDirty(true); setMessage(''); }} />
