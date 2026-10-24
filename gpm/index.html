@@ -372,7 +372,9 @@
             const [jobs, setJobs] = useState([]);
             const [showArchived, setShowArchived] = useState(false);
             const [jobId, setJobId] = useState('');
-            const [inputs, setInputs] = useState(BLANK_INPUTS);
+            const [typedInputs, setInputs] = useState(BLANK_INPUTS); // what is typed here; the PA % comes from Customer Information (see inputs below)
+            const [paCard, setPaCard] = useState(null);      // the job card's public adjusting company: null = loading
+            const [paCardError, setPaCardError] = useState('');
             const [dirty, setDirty] = useState(false);
             const [lastSaved, setLastSaved] = useState(null); // { name, at }
             const [saving, setSaving] = useState(false);
@@ -392,6 +394,27 @@
             const [snapNote, setSnapNote] = useState('');
             const [snapSaving, setSnapSaving] = useState(false);
             const [openSnapId, setOpenSnapId] = useState(null);
+
+            // PA % from the job's Customer Information card (publicAdjusting.percent), live. Changed only on Customer Information.
+            useEffect(() => {
+                setPaCard(null);
+                setPaCardError('');
+                if (!jobId) return;
+                const unsub = db.collection('jobs').doc(jobId).collection('notesInfo').doc('contactCard').onSnapshot(doc => {
+                    setPaCard((doc.exists && doc.data().publicAdjusting) || {});
+                    setPaCardError('');
+                }, error => { setPaCard({}); setPaCardError('Error loading the PA % from Customer Information: ' + error.message); });
+                return () => unsub();
+            }, [jobId]);
+            // "10" or "10%" = 10%. No PA company = 0%. A PA company with no % = 0% and a warning until it is set.
+            const paInfo = (() => {
+                const p = paCard || {};
+                const n = parseFloat(String(p.percent || '').replace(/[^0-9.]/g, ''));
+                if (!isNaN(n)) return { pct: n, note: 'From Customer Information (Public adjusting company).' };
+                if ((p.company || '').trim()) return { pct: 0, warn: true, note: 'No PA % on Customer Information. Set it there.' };
+                return { pct: 0, note: paCard === null ? 'Loading...' : 'No Public Adjusting company on Customer Information.' };
+            })();
+            const inputs = { ...typedInputs, paFeePct: String(paInfo.pct) };
 
             // Live list of the picked job's snapshots (read-only once saved)
             useEffect(() => {
@@ -650,7 +673,11 @@
                                 {field('settlementAmount', 'Settlement amount', 'Total Insurance Obligated to pay, from the statement')}
                                 {field('settlementDate', 'Settlement date', null, 'date')}
                                 {field('deductible', 'Deductible', 'Enter as a positive number')}
-                                {field('paFeePct', 'PA fee %', 'Enter 10 for 10%. Enter 0 if no PA.')}
+                                <div className="form-group">
+                                    <label>PA fee %</label>
+                                    <div style={{ padding: '8px 0', fontWeight: 600 }}>{paInfo.pct}%</div>
+                                    <div className="hint" style={paInfo.warn || paCardError ? { color: '#d32f2f', fontWeight: 600 } : null}>{paCardError || paInfo.note}</div>
+                                </div>
                             </div>
                         </div>
 
