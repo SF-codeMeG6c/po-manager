@@ -127,7 +127,6 @@
             const [noteModal, setNoteModal] = useState(null); // { form, text } while the note window is open
             const [sendingId, setSendingId] = useState(null); // PO being emailed
             const [openVersions, setOpenVersions] = useState(null); // PO row showing its old versions
-            const [showDeleted, setShowDeleted] = useState(false); // Owner/Admin: show hidden (deleted) POs
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
 
@@ -506,41 +505,6 @@
                 document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
             };
 
-            const handleSaveTemplate = async () => {
-                if (!user) return;
-                if (!formMetadata.subName || !formMetadata.category) {
-                    setMessage('Subcontractor and Category required');
-                    return;
-                }
-                setUploadLoading(true);
-                try {
-                    const templateData = {
-                        userId: user.uid,
-                        subName: formMetadata.subName,
-                        category: formMetadata.category,
-                        contact: formMetadata.contact,
-                        phone: formMetadata.phone,
-                        email: formMetadata.email,
-                        subCode: formMetadata.subCode,
-                        contractAmount: formMetadata.contractAmount,
-                        scope: formMetadata.scope || '',
-                        dateUpdated: new Date()
-                    };
-                    // Same sub + category already saved? Update it instead of adding a duplicate
-                    const existing = formLibraryData.find(f => f.subName === formMetadata.subName && f.category === formMetadata.category);
-                    if (existing) {
-                        await db.collection('formLibrary').doc(existing.id).update(templateData);
-                        setMessage('Template updated');
-                    } else {
-                        await db.collection('formLibrary').add({ ...templateData, dateCreated: new Date() });
-                        setMessage('Template saved');
-                    }
-                } catch (error) {
-                    setMessage('Error saving template: ' + error.message);
-                }
-                setUploadLoading(false);
-            };
-
             const handleDeleteTemplate = async (t) => {
                 if (!window.confirm(`Delete template ${t.subName} | ${t.category}?`)) return;
                 try {
@@ -696,35 +660,6 @@
                 }
             };
 
-            // Delete hides the record (kept for records); Owner/Admin can restore it
-            const handleDeleteForm = async (formId) => {
-                if (!currentJobId || !window.confirm('Delete this PO? It will be hidden from the list. The record and PDF are kept.')) return;
-                try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
-                        deleted: true,
-                        deletedBy: { uid: user.uid, name: (profile && profile.name) || user.email },
-                        deletedAt: new Date()
-                    });
-                    setMessage('PO deleted');
-                } catch (error) {
-                    setMessage('Error deleting form: ' + error.message);
-                }
-            };
-
-            const handleRestoreForm = async (formId) => {
-                if (!currentJobId) return;
-                try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({
-                        deleted: false,
-                        restoredBy: { uid: user.uid, name: (profile && profile.name) || user.email },
-                        restoredAt: new Date()
-                    });
-                    setMessage('PO restored');
-                } catch (error) {
-                    setMessage('Error restoring form: ' + error.message);
-                }
-            };
-
             if (!user) {
                 return (
                     <div className="section">
@@ -867,9 +802,6 @@
                         <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
                             {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
                         </button>
-                        {canEditJobs && <button className="btn-secondary" onClick={async () => { await handleSaveTemplate(); await handleGeneratePDF(); }} disabled={uploadLoading || !currentJobId} style={{ marginTop: '8px' }}>
-                            {editingPO ? 'Save Changes + Update Template' : 'Create PO & Save to Template + Job'}
-                        </button>}
                         {editingPO && (
                             <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
                         )}
@@ -878,15 +810,7 @@
 
                     {currentJobId && jobForms.length > 0 && (
                         <div className="section">
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <div className="section-title">JOB FORM COMPLETION TRACKER</div>
-                                {isAdminUser && jobForms.some(f => f.deleted === true) && (
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', margin: 0 }}>
-                                        <input type="checkbox" style={{ width: 'auto' }} checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} />
-                                        Show deleted ({jobForms.filter(f => f.deleted === true).length})
-                                    </label>
-                                )}
-                            </div>
+                            <div className="section-title">PO TRACKER</div>
                             <table>
                                 <thead>
                                     <tr>
@@ -898,7 +822,7 @@
                                 </thead>
                                 <tbody>
                                     {[...jobForms]
-                                        .filter(form => form.deleted !== true || (showDeleted && isAdminUser))
+                                        .filter(form => form.deleted !== true) // POs hidden before Oct 24 stay hidden
                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
                                         .map(form => {
                                             // New = made in PO Manager, CES = from the Trades-EST handoff (or set by hand), Revised = changed by the Super.
@@ -906,14 +830,9 @@
                                             const status = ['CES', 'Complete', 'Completed'].includes(form.status) ? 'CES'
                                                 : form.status === 'Revised' ? 'Revised' : 'New';
                                             return (
-                                                <tr key={form.id} style={form.deleted ? { background: '#fdecea', opacity: 0.8 } : undefined}>
+                                                <tr key={form.id}>
                                                     <td>
                                                         {form.fileName}
-                                                        {form.deleted && (
-                                                            <div style={{ fontSize: '11px', color: '#d32f2f', fontWeight: 600, marginTop: '2px' }}>
-                                                                Deleted{form.deletedBy ? ' by ' + form.deletedBy.name : ''} {fmtTime(form.deletedAt)}
-                                                            </div>
-                                                        )}
                                                         {(form.createdBy || form.editedBy) && (
                                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
                                                                 {[
@@ -959,13 +878,10 @@
                                                     </td>
                                                     <td>
                                                         <div className="button-group" style={{ gap: '4px' }}>
-                                                            {form.poNumber && !form.deleted && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
+                                                            {form.poNumber && <button className="btn-secondary btn-sm" onClick={() => handleEditPO(form)}>Edit PO</button>}
                                                             <button className="btn-secondary btn-sm" onClick={() => window.open(form.pdfUrl)}>View</button>
-                                                            {form.deleted
-                                                                ? <button className="btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => handleRestoreForm(form.id)}>Restore</button>
-                                                                : <button className="btn-danger btn-sm" onClick={() => handleDeleteForm(form.id)}>Delete</button>}
                                                         </div>
-                                                        {form.poNumber && !form.deleted && (
+                                                        {form.poNumber && (
                                                             <button className="btn-primary btn-sm" style={{ width: 'auto', marginTop: '4px' }}
                                                                 onClick={() => handleSendToSub(form)}
                                                                 disabled={!form.email || sendingId === form.id}
