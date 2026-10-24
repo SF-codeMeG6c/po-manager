@@ -101,6 +101,8 @@
             
             const [currentPO, setCurrentPO] = useState('');
             const [message, setMessage] = useState('');
+            const [poWindow, setPoWindow] = useState(false);       // the Make New PO / Edit PO window is open
+            const [showTemplates, setShowTemplates] = useState(false); // template list shown inside that window
             const [jobLibrary, setJobLibrary] = useState([]);
             const [teamError, setTeamError] = useState(''); // error reading the Super from Customer Information
 
@@ -487,6 +489,8 @@
         setCurrentPO(poNumber);
         setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
         setAttachments([]);
+        setPoWindow(false);
+        setShowTemplates(false);
     } catch (error) {
         setMessage('Error creating PO: ' + error.message);
     }
@@ -494,28 +498,13 @@
 };
 
             const handleUseTemplate = (t) => {
-                setEditingPO(null);
-                setAttachments([]);
                 setFormMetadata({
                     subName: t.subName || '', category: t.category || '', contact: t.contact || '',
                     phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
                     contractAmount: t.contractAmount || '', scope: t.scope || ''
                 });
                 setMessage(`Template loaded: ${t.subName} | ${t.category}`);
-                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
-            };
-
-            const handleDeleteTemplate = async (t) => {
-                if (!window.confirm(`Delete template ${t.subName} | ${t.category}?`)) return;
-                try {
-                    await db.collection('formLibrary').doc(t.id).delete();
-                    if (t.pdfUrl) {
-                        try { await storage.refFromURL(t.pdfUrl).delete(); } catch (e) { console.log('Old template file not removed:', e.message); }
-                    }
-                    setMessage('Template deleted');
-                } catch (error) {
-                    setMessage('Error deleting template: ' + error.message);
-                }
+                setShowTemplates(false);
             };
 
             // Voice to text (Chrome/Edge). target = 'scope' or a tracker row id; onText gets each spoken phrase
@@ -600,8 +589,9 @@
                     phone: form.phone || '', email: form.email || '', subCode: form.subCode || '',
                     contractAmount: form.contractAmount || '', scope: form.scope || ''
                 });
-                setMessage(`Editing PO ${form.poNumber}`);
-                document.getElementById('generate-po-section')?.scrollIntoView({ behavior: 'smooth' });
+                setMessage('');
+                setShowTemplates(false);
+                setPoWindow(true);
             };
 
             const handleAddAttachments = (e) => {
@@ -630,6 +620,26 @@
                 setAttachments([]);
                 setFormMetadata({ subName: '', category: '', contact: '', phone: '', email: '', subCode: '', contractAmount: '', scope: '' });
                 setMessage('');
+            };
+
+            // Make New PO: open the window with a blank form (POs made here start as New)
+            const openNewPO = () => {
+                handleCancelEditPO();
+                setShowTemplates(false);
+                setPoWindow(true);
+            };
+            // Cancel: close the window; ask first if anything was typed or changed
+            const closePoWindow = () => {
+                const f = formMetadata;
+                const typed = editingPO
+                    ? ['subName', 'category', 'contact', 'phone', 'email', 'subCode', 'contractAmount', 'scope'].some(k => (f[k] || '') !== (editingPO[k] || ''))
+                        || (attachments || []).length !== (editingPO.attachments || []).length || attachments.some(a => a.file)
+                    : Object.values(f).some(v => (v || '').trim()) || attachments.length > 0;
+                if (typed && !window.confirm('Close and drop what you typed?')) return;
+                if (listening === 'scope' && recognitionRef.current) recognitionRef.current.stop();
+                handleCancelEditPO();
+                setShowTemplates(false);
+                setPoWindow(false);
             };
 
             const fmtTime = (ts) => {
@@ -750,67 +760,14 @@
                         {teamError && <div className="error">{teamError}</div>}
                     </div>
 
-                    <div className="section" id="generate-po-section">
-                        <div className="section-title">GENERATE PO</div>
-                        <div style={{ background: '#f9f9f9', padding: '12px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px' }}>
-                            Job: {jobCode || '(none)'} | Super: {superName || '(none)'}<br/>
-                            {currentPO && <strong>Last PO: {currentPO}</strong>}
-                            {editingPO && <div style={{ color: '#cc6600', fontWeight: 600, marginTop: '4px' }}>Editing PO: {editingPO.poNumber}</div>}
-                        </div>
-                        <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginBottom: '15px' }}>
-                            New Blank PO
-                        </button>
-                        <div className="form-group"><label>Subcontractor</label>
-                            <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
-                        <div className="form-group"><label>Contact</label>
-                            <input value={formMetadata.contact || ''} onChange={e => setFormMetadata({ ...formMetadata, contact: e.target.value })} /></div>
-                        <div className="form-group"><label>Phone</label>
-                            <input value={formMetadata.phone || ''} onChange={e => setFormMetadata({ ...formMetadata, phone: e.target.value })} /></div>
-                        <div className="form-group"><label>Email</label>
-                            <input value={formMetadata.email || ''} onChange={e => setFormMetadata({ ...formMetadata, email: e.target.value })} /></div>
-                        <div className="form-group"><label>Sub Code</label>
-                            <input value={formMetadata.subCode || ''} onChange={e => setFormMetadata({ ...formMetadata, subCode: e.target.value })} /></div>
-                        <div className="form-group"><label>Category</label>
-                            <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
-                        <div className="form-group"><label>Contract Amount</label>
-                            <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
-                        <div className="form-group"><label>Scope of Work
-                            <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
-                                {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
-                            </button></label>
-                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
-
-                        <div className="form-group">
-                            <label>Attachments (added after the PO page)
-                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', cursor: 'pointer' }}>
-                                    + Add Files
-                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={handleAddAttachments} style={{ display: 'none' }} />
-                                </label>
-                            </label>
-                            {attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
-                            {attachments.map((att, i) => (
-                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
-                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
-                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}</span>
-                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, -1)} disabled={i === 0}>↑</button>
-                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, 1)} disabled={i === attachments.length - 1}>↓</button>
-                                    <button type="button" className="btn-danger btn-sm" style={{ width: 'auto' }} onClick={() => removeAttachment(i)}>✕</button>
-                                </div>
-                            ))}
-                        </div>
-
-                        <button className="btn-primary" onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
-                            {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
-                        </button>
-                        {editingPO && (
-                            <button className="btn-secondary" onClick={handleCancelEditPO} disabled={uploadLoading} style={{ marginTop: '8px' }}>Cancel Edit</button>
-                        )}
-                        {message && <div style={{ marginTop: '15px', padding: '10px', textAlign: 'center', color: message.includes('Error') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
-                    </div>
-
-                    {currentJobId && jobForms.length > 0 && (
+                    {currentJobId && (
                         <div className="section">
-                            <div className="section-title">PO TRACKER</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div className="section-title" style={{ margin: 0 }}>PO TRACKER</div>
+                                <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', marginTop: 0 }} onClick={openNewPO}>+ Make New PO</button>
+                            </div>
+                            {!poWindow && message && <div style={{ marginTop: '10px', padding: '8px', textAlign: 'center', color: message.includes('Error') || message.includes('no Super') || message.includes('required') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
+                            {jobForms.filter(f => f.deleted !== true).length === 0 && <div style={{ fontSize: '13px', color: '#666', marginTop: '12px' }}>No POs on this job yet.</div>}
                             <table>
                                 <thead>
                                     <tr>
@@ -914,6 +871,88 @@
                         </div>
                     )}
 
+                    {poWindow && (
+                        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 1000, overflowY: 'auto', padding: '30px 0' }}>
+                            <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                                    <div style={{ fontWeight: 700, fontSize: '16px' }}>{editingPO ? `Edit PO ${editingPO.poNumber}` : `New PO for ${jobCode}`}</div>
+                                    {!editingPO && <button type="button" className="btn-secondary" style={{ width: 'auto', marginTop: 0 }} onClick={() => setShowTemplates(!showTemplates)}>{showTemplates ? 'Hide templates' : '📋 Pick a template'}</button>}
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#666', margin: '4px 0 12px' }}>Super: {superName || '(none on Customer Information)'}{editingPO ? '' : ' · Starts as New'}</div>
+                                {showTemplates && !editingPO && (
+                                    <div style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '8px', marginBottom: '12px', background: '#fafafa', maxHeight: '300px', overflowY: 'auto' }}>
+                                        {formLibraryData.length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates yet. Templates are saved from Trades-EST.</div> : (
+                                            <table style={{ marginTop: 0 }}>
+                                                <thead><tr><th>Category</th><th>Subcontractor</th><th>Amount</th><th></th></tr></thead>
+                                                <tbody>
+                                                    {[...formLibraryData]
+                                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
+                                                        .map(t => (
+                                                            <tr key={t.id}>
+                                                                <td>{t.category}</td>
+                                                                <td>{t.subName}</td>
+                                                                <td>{t.contractAmount || '-'}</td>
+                                                                <td><button className="btn-secondary btn-sm" style={{ marginTop: 0 }} onClick={() => handleUseTemplate(t)}>Use</button></td>
+                                                            </tr>
+                                                        ))}
+                                                </tbody>
+                                            </table>
+                                        )}
+                                    </div>
+                                )}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
+                        <div className="form-group"><label>Subcontractor</label>
+                            <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
+                        <div className="form-group"><label>Contact</label>
+                            <input value={formMetadata.contact || ''} onChange={e => setFormMetadata({ ...formMetadata, contact: e.target.value })} /></div>
+                        <div className="form-group"><label>Phone</label>
+                            <input value={formMetadata.phone || ''} onChange={e => setFormMetadata({ ...formMetadata, phone: e.target.value })} /></div>
+                        <div className="form-group"><label>Email</label>
+                            <input value={formMetadata.email || ''} onChange={e => setFormMetadata({ ...formMetadata, email: e.target.value })} /></div>
+                        <div className="form-group"><label>Sub Code</label>
+                            <input value={formMetadata.subCode || ''} onChange={e => setFormMetadata({ ...formMetadata, subCode: e.target.value })} /></div>
+                        <div className="form-group"><label>Category</label>
+                            <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
+                        <div className="form-group"><label>Contract Amount</label>
+                            <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
+                        </div>
+                        <div className="form-group"><label>Scope of Work
+                            <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
+                                {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
+                            </button></label>
+                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
+
+                        <div className="form-group">
+                            <label>Attachments (added after the PO page)
+                                <label className="btn-secondary btn-sm" style={{ display: 'inline-block', width: 'auto', marginLeft: '10px', cursor: 'pointer' }}>
+                                    + Add Files
+                                    <input type="file" multiple accept="application/pdf,image/png,image/jpeg" onChange={handleAddAttachments} style={{ display: 'none' }} />
+                                </label>
+                            </label>
+                            {attachments.length === 0 && <div style={{ fontSize: '12px', color: '#888' }}>No attachments (PDF, JPG, PNG)</div>}
+                            {attachments.map((att, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
+                                    <span style={{ width: '20px', color: '#888' }}>{i + 1}.</span>
+                                    <span style={{ flex: 1, wordBreak: 'break-all' }}>{att.name}</span>
+                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, -1)} disabled={i === 0}>↑</button>
+                                    <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto' }} onClick={() => moveAttachment(i, 1)} disabled={i === attachments.length - 1}>↓</button>
+                                    <button type="button" className="btn-danger btn-sm" style={{ width: 'auto' }} onClick={() => removeAttachment(i)}>✕</button>
+                                </div>
+                            ))}
+                        </div>
+
+                                {message && <div style={{ marginTop: '10px', padding: '8px', textAlign: 'center', color: message.includes('Error') || message.includes('no Super') || message.includes('required') ? '#d32f2f' : '#388e3c', fontWeight: 500 }}>{message}</div>}
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                                    <div style={{ flex: 1 }} />
+                                    <button type="button" className="btn-secondary" style={{ width: 'auto' }} onClick={closePoWindow} disabled={uploadLoading}>Cancel</button>
+                                    <button type="button" className="btn-primary" style={{ width: 'auto' }} onClick={handleGeneratePDF} disabled={uploadLoading || !currentJobId}>
+                                        {uploadLoading ? 'Saving...' : (editingPO ? 'Save Changes to PO' : 'Create PO & Save to Job')}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {noteModal && (
                         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
                             <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
@@ -940,43 +979,6 @@
                         </div>
                     )}
 
-                    {formLibraryData.length > 0 && (
-                        <div className="section">
-                            <div className="section-title">TEMPLATE LIBRARY</div>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Category</th>
-                                        <th>Subcontractor</th>
-                                        <th>Contract Amount</th>
-                                        <th>Last Updated</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {[...formLibraryData]
-                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
-                                        .map(t => {
-                                            const d = t.dateUpdated || t.dateCreated;
-                                            return (
-                                                <tr key={t.id}>
-                                                    <td>{t.category}</td>
-                                                    <td>{t.subName}</td>
-                                                    <td>{t.contractAmount || '-'}</td>
-                                                    <td>{d && d.toDate ? d.toDate().toLocaleDateString() : '-'}</td>
-                                                    <td>
-                                                        <div className="button-group" style={{ gap: '4px' }}>
-                                                            <button className="btn-secondary btn-sm" onClick={() => handleUseTemplate(t)}>Use</button>
-                                                            {canEditJobs && <button className="btn-danger btn-sm" onClick={() => handleDeleteTemplate(t)}>Delete</button>}
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
 
                 </div>
             );
