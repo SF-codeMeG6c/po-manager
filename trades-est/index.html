@@ -1201,6 +1201,7 @@
             const [listening, setListening] = useState(false);
             const recRef = React.useRef(null);
             const scopeRef = React.useRef(null);
+            const [tplDelete, setTplDelete] = useState(false); // "Delete a template" list open
             useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
 
             const isAllow = line.method === 'allowance';
@@ -1247,7 +1248,7 @@
             }, [po.jump, requests === null]);
             const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
             const loadTemplate = (id) => {
-                const t = (templates || []).find(x => x.id === id);
+                const t = (templates || []).find(x => x.id === id && !x.deleted);
                 if (!t) return;
                 const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
                 const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
@@ -1296,15 +1297,16 @@
                 if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
                 const key = (t) => (t || '').trim().toLowerCase();
                 const old = (templates || []).find(t => key(t.subName) === key(f.subName) && key(t.category) === key(f.category));
-                if (old && !window.confirm(`A template for ${old.category} | ${old.subName} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
+                if (old && !old.deleted && !window.confirm(`A template for ${old.category} | ${old.subName} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
                 setBusy(true);
                 setNote('');
                 try {
                     const now = new Date();
                     // An existing template keeps its amount; a new one starts with none (a request's amount belongs to one job)
-                    if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now });
+                    // A deleted (hidden) template with the same sub and category comes back with these details
+                    if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now, ...(old.deleted ? { deleted: false, restoredBy: me, restoredAt: now } : {}) });
                     else await db.collection('formLibrary').add({ ...f, userId: me.uid, contractAmount: '', dateCreated: now, dateUpdated: now });
-                    setNote(`Template ${old ? 'updated' : 'saved'}: ${f.category} | ${f.subName}. The request itself is not saved until you click Save request.`);
+                    setNote(`Template ${old && !old.deleted ? 'updated' : 'saved'}: ${f.category} | ${f.subName}. The request itself is not saved until you click Save request.`);
                 } catch (err) {
                     setNote('Error saving the template: ' + err.message);
                 }
@@ -1392,7 +1394,19 @@
                 }
                 setBusy(false);
             };
-            const sortedTemplates = [...(templates || [])].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
+            // Delete a template = hide it (kept for records, with who and when); hidden ones show in neither Trades-EST nor PO Manager
+            const deleteTemplate = async (t) => {
+                if (!window.confirm(`Delete template ${t.category} | ${t.subName}? It will no longer show in Trades-EST or PO Manager.`)) return;
+                setBusy(true);
+                try {
+                    await db.collection('formLibrary').doc(t.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
+                    setNote(`Template deleted: ${t.category} | ${t.subName}.`);
+                } catch (err) {
+                    setNote('Error deleting the template: ' + err.message);
+                }
+                setBusy(false);
+            };
+            const sortedTemplates = [...(templates || [])].filter(t => !t.deleted).sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
             const wsNow = draft ? wsAmount(draft.part) : 0;
             const byHand = draft ? whyByHand() : '';
             const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
@@ -1423,11 +1437,25 @@
                             <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
                         </div>
                         <div className="form-group">
-                            <label>Load vendor from a PO Manager template</label>
-                            <select value="" onChange={e => loadTemplate(e.target.value)}>
-                                <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved in PO Manager'}</option>
-                                {sortedTemplates.map(t => <option key={t.id} value={t.id}>{t.category} | {t.subName}</option>)}
-                            </select>
+                            <label>Load vendor from a template</label>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <select value="" onChange={e => loadTemplate(e.target.value)} style={{ flex: 1 }}>
+                                    <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved yet.'}</option>
+                                    {sortedTemplates.map(t => <option key={t.id} value={t.id}>{t.category} | {t.subName}</option>)}
+                                </select>
+                                <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', marginTop: 0 }} onClick={() => setTplDelete(!tplDelete)} disabled={!sortedTemplates.length}>{tplDelete ? 'Close list' : 'Delete a template'}</button>
+                            </div>
+                            {tplDelete && (
+                                <div style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '6px 8px', marginTop: '6px', maxHeight: '240px', overflowY: 'auto', background: '#fafafa' }}>
+                                    {sortedTemplates.length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates saved yet.</div> : sortedTemplates.map(t => (
+                                        <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
+                                            <span style={{ width: '90px' }}>{t.category}</span>
+                                            <span style={{ flex: 1 }}>{t.subName}</span>
+                                            <button type="button" className="btn-x" style={{ marginTop: 0 }} onClick={() => deleteTemplate(t)} disabled={busy}>Delete</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                         <div className="req-grid">
                             <div><label>Subcontractor</label><input value={draft.subName} onChange={e => setF('subName', e.target.value)} /></div>
@@ -2281,7 +2309,7 @@
             const superPick = team && team.super && team.super.uid ? team.super : null;       // { uid, name, email, phone } or null
             const estPick = team && team.estimator && team.estimator.uid ? team.estimator : null;
 
-            // PO Manager's templates, for filling in a request's vendor
+            // Templates (vendor details and scope wording), shared with PO Manager. Hidden (deleted) ones are skipped where they are listed.
             useEffect(() => {
                 if (!profile) return;
                 return db.collection('formLibrary').onSnapshot(snapshot => {
