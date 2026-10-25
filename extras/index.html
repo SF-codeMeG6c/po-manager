@@ -129,16 +129,17 @@
         };
         const linePrice = (l) => round2(toNumber(l.cost) / (1 - marginOf(l) / 100));
         const calcTotals = (lines) => {
-            let costTotal = 0, absorbedCost = 0, subtotal = 0;
+            let costTotal = 0, absorbedCost = 0, allowanceCost = 0, subtotal = 0;
             (lines || []).forEach(l => {
                 const c = toNumber(l.cost);
                 costTotal += c;
+                if (l.use !== 'absorb' && l.allowance === true) allowanceCost += c;
                 if (l.use === 'absorb') absorbedCost += c;
                 else subtotal += linePrice(l);
             });
             subtotal = round2(subtotal);
             const op = round2(subtotal * OP_RATE);
-            return { costTotal: round2(costTotal), absorbedCost: round2(absorbedCost), subtotal, op, total: round2(subtotal + op) };
+            return { costTotal: round2(costTotal), absorbedCost: round2(absorbedCost), allowanceCost: round2(allowanceCost), subtotal, op, total: round2(subtotal + op) };
         };
         const fmtMoney = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const $ = (n) => '$' + fmtMoney(n);
@@ -932,6 +933,7 @@
 
                             <div className="totals">
                                 <div><span>Cost of all lines</span><span>{$(totals.costTotal)}</span></div>
+                                {totals.allowanceCost > 0 && <div style={{ color: '#888' }}><span>Allowances (cost)</span><span>{$(totals.allowanceCost)}</span></div>}
                                 {totals.absorbedCost > 0 && <div style={{ color: '#888' }}><span>We absorb (cost)</span><span>{$(totals.absorbedCost)}</span></div>}
                                 <div><span>Sub Total</span><span>{$(totals.subtotal)}</span></div>
                                 <div><span>Overhead and Profit (10 &amp; 10)</span><span>{$(totals.op)}</span></div>
