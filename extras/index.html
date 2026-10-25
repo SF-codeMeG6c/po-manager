@@ -68,6 +68,10 @@
         .mic.on { background: #d32f2f; color: white; border-color: #d32f2f; }
         .allow { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #555; margin-top: 4px; font-weight: normal; }
         .allow input { width: auto; }
+        .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 30px 12px; overflow-y: auto; }
+        .modal { background: white; border-radius: 8px; padding: 22px; width: 100%; max-width: 860px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+        .po-tag { display: inline-block; margin-top: 4px; font-size: 12px; font-weight: 600; color: #0052a3; white-space: nowrap; }
+        .group { border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; margin-top: 8px; font-size: 13px; background: #fafcff; }
         @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .totals { width: 100%; } }
     </style>
 </head>
@@ -87,6 +91,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="/shared/po-form.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -169,9 +174,14 @@
                 cost: round2(toNumber(l.cost)),
                 margin: marginOf(l),
                 allowance: l.allowance === true,
-                use: ['po', 'budget', 'absorb'].includes(l.use) ? l.use : 'budget'
+                use: ['po', 'budget', 'absorb'].includes(l.use) ? l.use : 'budget',
+                ...(l.po && l.po.formId ? { po: { formId: l.po.formId, poNumber: l.po.poNumber || '' } } : {})
             })).filter(l => l.cat || l.description || l.vendor || l.cost)
         });
+        // An extra with any line on a PO can't be changed (its POs were made from these lines)
+        const hasPOs = (x) => !!x && (x.lines || []).some(l => l.po && l.po.formId);
+        const PO_STATUSES = ['Signed', 'Customer refused']; // Make POs works only in these
+        const groupKey = (l) => String(l.cat || '').trim().toUpperCase() + '|' + String(l.vendor || '').trim().toLowerCase();
         const sameEditable = (a, b) => JSON.stringify(editable(a)) === JSON.stringify(editable(b));
         // Saved record -> form (cost shown as text)
         const toForm = (x) => {
@@ -462,7 +472,7 @@
                     const list = [];
                     snap.forEach(doc => {
                         const d = doc.data();
-                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', lockBox: d.lockBox || '', archived: d.archived === true });
                     });
                     list.sort((a, b) => a.code.localeCompare(b.code));
                     setJobs(list);
@@ -522,7 +532,13 @@
                 if (!allowed) return;
                 return db.collection('formLibrary').onSnapshot(snap => {
                     const list = [];
-                    snap.forEach(doc => { const d = doc.data(); if (!d.deleted) list.push({ category: String(d.category || '').trim(), subName: String(d.subName || '').trim() }); });
+                    snap.forEach(doc => {
+                        const d = doc.data();
+                        if (!d.deleted) list.push({
+                            category: String(d.category || '').trim(), subName: String(d.subName || '').trim(),
+                            contact: String(d.contact || ''), phone: String(d.phone || ''), email: String(d.email || ''), subCode: String(d.subCode || '')
+                        });
+                    });
                     setTemplates(list);
                 }, () => setTemplates([]));
             }, [allowed]);
@@ -580,7 +596,9 @@
             const name = customerName(card);
             const current = openId && openId !== 'new' ? extras.find(x => x.id === openId) || null : null;
             const dirty = !!form && (openId === 'new' ? !sameEditable(form, BLANK_FORM()) : (current ? !sameEditable(form, current) : false));
-            const locked = !!current && LOCKED.includes(current.status);
+            const locked = !!current && (LOCKED.includes(current.status) || hasPOs(current));
+            const [poPick, setPoPick] = useState(null); // Make POs window: { [line index]: ticked }
+            const superPick = card && card.team && card.team.super && card.team.super.uid ? card.team.super : null;
 
             const say = (ok, text) => setMsg({ ok, text });
             const leaveOk = () => !dirty || window.confirm('You have unsaved changes to this extra. Drop them?');
@@ -647,6 +665,7 @@
                     } else {
                         if (!current) return;
                         if (LOCKED.includes(current.status)) { say(false, `Extra #${current.number} is ${current.status} and can't be changed.`); return; }
+                        if (hasPOs(current)) { say(false, `Extra #${current.number} has POs, so it can't be changed.`); return; }
                         if (sameEditable(e, current)) { say(true, 'No changes to save.'); return; }
                         const old = { ...editable(current), total: current.total || 0, savedAt: current.updatedAt || current.createdAt || null, savedBy: current.updatedBy || current.createdBy || null };
                         await db.collection('extras').doc(jobId).collection('items').doc(current.id).update({
@@ -664,7 +683,8 @@
             const setStatus = async (s) => {
                 if (!current || current.status === s) return;
                 if (dirty) { say(false, 'Save your changes first.'); return; }
-                if (s === 'Void' && !window.confirm(`Void Extra #${current.number}? It will no longer count in GPM or Job Cost.`)) return;
+                const madePOs = [...new Set((current.lines || []).filter(l => l.po && l.po.poNumber).map(l => l.po.poNumber))];
+                if (s === 'Void' && !window.confirm(`Void Extra #${current.number}? It will no longer count in GPM or Job Cost.` + (madePOs.length ? `\n\nIts POs (${madePOs.join(', ')}) stay in PO Manager. Handle them there.` : ''))) return;
                 if (current.status === 'Signed' && !window.confirm(`Extra #${current.number} is Signed. Change it to ${s}?`)) return;
                 if (s === 'Signed' && !(current.signedCopies || []).length && !window.confirm(`Mark Extra #${current.number} Signed without uploading the signed copy?`)) return;
                 setBusy('status'); setMsg(null);
@@ -678,6 +698,129 @@
                     say(true, `Extra #${current.number} is now ${s}.`);
                 } catch (err) {
                     say(false, 'Status change failed: ' + err.message);
+                } finally { setBusy(''); }
+            };
+
+            // ---------- Make POs (step 2) ----------
+            // Ticked lines with the same Cat and vendor become one PO (status Extra). Unticked lines go to the trade budget.
+            const openPoPick = () => {
+                if (!current || dirty) return;
+                const pick = {};
+                (current.lines || []).forEach((l, i) => { if (!(l.po && l.po.formId)) pick[i] = l.use === 'po'; });
+                setPoPick(pick); setMsg(null);
+            };
+            const pickedGroups = () => {
+                const groups = [];
+                (current ? current.lines || [] : []).forEach((l, i) => {
+                    if (!poPick || !poPick[i]) return;
+                    const k = groupKey(l);
+                    let g = groups.find(x => x.key === k);
+                    if (!g) { g = { key: k, cat: String(l.cat || '').trim(), vendor: String(l.vendor || '').trim(), idx: [], cost: 0 }; groups.push(g); }
+                    g.idx.push(i); g.cost = round2(g.cost + toNumber(l.cost));
+                });
+                return groups;
+            };
+            const scopeFor = (g) => [`EXTRA #${current.number} - ${current.title || ''}`.trim(), ...g.idx.map(i => String(current.lines[i].description || '').trim()).filter(Boolean)].join('\n');
+            const templateFor = (g) => {
+                const low = (t) => String(t || '').trim().toLowerCase();
+                return templates.find(t => low(t.subName) === low(g.vendor) && low(t.category) === low(g.cat))
+                    || templates.find(t => low(t.subName) === low(g.vendor)) || null;
+            };
+
+            const makePOs = async () => {
+                if (!current || !poPick) return;
+                const lines = current.lines || [];
+                const groups = pickedGroups();
+                const untickedOpen = lines.map((l, i) => i).filter(i => !(lines[i].po && lines[i].po.formId) && !poPick[i]);
+                // Checks first: nothing is made if anything is missing
+                const problems = [];
+                if (!PO_STATUSES.includes(current.status)) problems.push('The extra must be Signed or Customer refused.');
+                if (!job || !job.code) problems.push('The job has no code.');
+                if (!superPick) problems.push('This job has no Super. Set it on Customer Information.');
+                if (!window.POForm) problems.push('The PO form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.');
+                groups.forEach(g => g.idx.forEach(i => {
+                    const l = lines[i], n = `Line ${i + 1}`;
+                    if (!String(l.cat || '').trim()) problems.push(`${n} has no Cat.`);
+                    if (!String(l.vendor || '').trim()) problems.push(`${n} has no vendor.`);
+                    if (!(toNumber(l.cost) > 0)) problems.push(`${n} has no cost.`);
+                }));
+                if (!problems.length && window.POForm && window.POForm.scopeFit) {
+                    for (const g of groups) {
+                        try { const f = await window.POForm.scopeFit(scopeFor(g)); if (!f.fits) problems.push(`The scope for ${g.cat} / ${g.vendor} is too long for one page. Shorten those line descriptions.`); } catch (e) {}
+                    }
+                }
+                if (problems.length) { say(false, 'Nothing was made. ' + problems.join(' ')); return; }
+                const total = round2(groups.reduce((a, g) => a + g.cost, 0));
+                const ask = (groups.length
+                    ? `Make ${groups.length} PO${groups.length > 1 ? 's' : ''} totaling ${$(total)} from Extra #${current.number}?\n\n` + groups.map(g => `${g.cat} / ${g.vendor}: ${$(g.cost)} (${g.idx.length} line${g.idx.length > 1 ? 's' : ''})`).join('\n')
+                    : `Make no POs? `) + (untickedOpen.length ? `\n\n${untickedOpen.length} unticked line${untickedOpen.length > 1 ? 's go' : ' goes'} to the trade budget.` : '');
+                if (!window.confirm(ask)) return;
+
+                setBusy('pos'); setMsg(null);
+                const itemRef = db.collection('extras').doc(jobId).collection('items').doc(current.id);
+                const jobRef = db.collection('jobs').doc(jobId);
+                const formsRef = jobRef.collection('forms');
+                const now = new Date();
+                const dateStr = `${now.getMonth() + 1}-${now.getDate()}-${String(now.getFullYear()).slice(-2)}`;
+                const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+                const header = {
+                    jobCode: job.code || '', jobAddress: job.address || '', cityStateZip: job.cityStateZip || '', lockBox: job.lockBox || '',
+                    superName: superPick.name || '', superEmail: superPick.email || '', superPhone: superPick.phone || ''
+                };
+                // Working copy of the lines: unticked open lines go to the budget (absorbed lines stay absorbed)
+                let work = lines.map((l, i) => {
+                    if (l.po && l.po.formId) return l;
+                    if (!poPick[i]) return l.use === 'absorb' ? l : { ...l, use: 'budget' };
+                    return l.use === 'absorb' ? l : { ...l, use: 'po' };
+                });
+                const made = [];
+                try {
+                    // Save the ticks first, so a stop partway leaves the extra matching what was made
+                    await itemRef.update({ lines: work, updatedAt: stamp(), updatedBy: me });
+                    for (const g of groups) {
+                        setBusy(`pos:${made.length + 1} of ${groups.length}`);
+                        const poNumber = await db.runTransaction(async (tx) => {
+                            const snap = await tx.get(jobRef);
+                            if (!snap.exists) throw new Error('Job not found.');
+                            const next = (snap.data().poCounter || 0) + 1;
+                            tx.update(jobRef, { poCounter: next });
+                            return `${snap.data().code || job.code}-${String(next).padStart(3, '0')}`;
+                        });
+                        const tpl = templateFor(g) || {};
+                        const amount = g.cost.toFixed(2);
+                        const scope = scopeFor(g);
+                        const bytes = await window.POForm.build({
+                            ...header, poNumber, subName: g.vendor, contact: tpl.contact || '', phone: tpl.phone || '', email: tpl.email || '',
+                            subCode: tpl.subCode || '', category: g.cat, amount, scope
+                        }, []);
+                        const amountShown = window.POForm.amountText(amount);
+                        const fileName = `${clean(g.cat)}_${clean(g.vendor)}_${clean(amountShown)}_${poNumber}_${dateStr}.pdf`;
+                        const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                        const pdfUrl = await fileRef.getDownloadURL();
+                        const formRef = formsRef.doc();
+                        await formRef.set({
+                            fileName, pdfUrl, poNumber, subName: g.vendor, category: g.cat, contact: tpl.contact || '', phone: tpl.phone || '',
+                            email: tpl.email || '', subCode: tpl.subCode || '', contractAmount: amount, scope, header, attachments: [],
+                            notes: '', status: 'Extra', pdfUpdatedAt: now, dateUpdated: now, dateCreated: now, createdBy: me,
+                            fromExtra: { extraId: current.id, number: current.number, title: current.title || '', lines: g.idx.map(i => i + 1) }
+                        });
+                        work = work.map((l, i) => g.idx.includes(i) ? { ...l, po: { formId: formRef.id, poNumber } } : l);
+                        made.push({ poNumber, cat: g.cat, vendor: g.vendor, cost: g.cost, formId: formRef.id, lines: g.idx.map(i => i + 1) });
+                        await itemRef.update({
+                            lines: work, updatedAt: stamp(), updatedBy: me,
+                            poHistory: firebase.firestore.FieldValue.arrayUnion({ poNumber, formId: formRef.id, cat: g.cat, vendor: g.vendor, cost: g.cost, lines: g.idx.map(i => i + 1), at: stamp(), by: me })
+                        });
+                    }
+                    setPoPick(null);
+                    setForm(toForm({ ...current, lines: work })); // the form follows what was saved (PO numbers, PO/budget choices)
+                    say(true, made.length
+                        ? `Made ${made.map(m => m.poNumber).join(', ')} (status Extra) in PO Manager. The Super sends them with Send to Sub.` + (made.some(m => !templateFor({ cat: m.cat, vendor: m.vendor })) ? ' A PO with no saved template has no contact or email yet; fill them in with Edit PO.' : '')
+                        : 'Saved. Unticked lines go to the trade budget.');
+                } catch (err) {
+                    setPoPick(null);
+                    setForm(toForm({ ...current, lines: work }));
+                    say(false, (made.length ? `Made ${made.map(m => m.poNumber).join(', ')}, then stopped: ` : 'Nothing was made: ') + err.message + ' Lines not on a PO can be picked again with Make POs.');
                 } finally { setBusy(''); }
             };
 
@@ -844,6 +987,10 @@
                         </div>
                     )}
 
+                    {poPick && current && (
+                        <PoPickWindow extra={current} pick={poPick} setPick={setPoPick} groups={pickedGroups()}
+                            superName={superPick ? superPick.name || superPick.email : ''} onMake={makePOs} onClose={() => setPoPick(null)} busy={busy} />
+                    )}
                     {job && form && (
                         <div className="section box">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -861,7 +1008,7 @@
                                             <button key={s} className={'status-btn' + (current.status === s ? ' on' : '')} disabled={!!busy} onClick={() => setStatus(s)}>{s}</button>
                                         ))}
                                     </div>
-                                    {locked && <div className="info">This extra is {current.status}, so it can't be changed. {current.status === 'Signed' ? 'A change after signing is a new extra.' : ''}</div>}
+                                    {locked && <div className="info">{LOCKED.includes(current.status) ? `This extra is ${current.status}, so it can't be changed.` : 'This extra has POs, so it can\'t be changed.'} {current.status === 'Signed' || hasPOs(current) ? 'A change after signing is a new extra.' : ''}</div>}
                                 </div>
                             )}
 
@@ -922,6 +1069,7 @@
                                                 <select value={l.use} disabled={ro} onChange={e => setLine(i, 'use', e.target.value)}>
                                                     {USES.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
                                                 </select>
+                                                {l.po && l.po.poNumber && <div className="po-tag">PO {l.po.poNumber}</div>}
                                             </td>
                                             <td>{!ro && <button className="btn-link" title="Remove line" onClick={() => removeLine(i)}>✕</button>}</td>
                                         </tr>
@@ -929,7 +1077,7 @@
                                 </tbody>
                             </table>
                             {!ro && <button className="btn-secondary btn-small" style={{ marginTop: 8 }} onClick={addLine}>+ Add line</button>}
-                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO and Trade budget are saved now and are used once the PO step is added.</div>
+                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO lines start ticked in Make POs (once the extra is Signed or Customer refused); lines not put on a PO go to the trade budget.</div>
 
                             <div className="totals">
                                 <div><span>Cost of all lines</span><span>{$(totals.costTotal)}</span></div>
@@ -942,6 +1090,9 @@
 
                             <div className="row-actions">
                                 {!ro && <button className="btn-primary" disabled={!!busy || (openId !== 'new' && !dirty)} onClick={saveExtra}>{busy === 'save' ? 'Saving...' : 'Save'}</button>}
+                                {current && PO_STATUSES.includes(current.status) && (current.lines || []).some(l => !(l.po && l.po.formId)) && (
+                                    <button className="btn-primary" disabled={!!busy || dirty} onClick={openPoPick}>{busy.startsWith('pos') ? 'Making POs ' + busy.slice(4) + '...' : 'Make POs'}</button>
+                                )}
                                 {current && <button className="btn-secondary" disabled={!!busy || dirty} onClick={makePdf}>{busy === 'pdf' ? 'Making PDF...' : 'Make PDF'}</button>}
                                 {current && current.status !== 'Void' && (
                                     <button className="btn-secondary" disabled={!!busy || dirty} onClick={() => fileRef.current && fileRef.current.click()}>
@@ -971,6 +1122,14 @@
                                             </ul>
                                         </div>
                                     )}
+                                    {(current.poHistory || []).length > 0 && (
+                                        <div>
+                                            <label>POs made</label>
+                                            <ul className="small-list">
+                                                {current.poHistory.map((p, i) => <li key={i}>{p.poNumber}: {p.cat} / {p.vendor}, {$(p.cost)} (line{p.lines && p.lines.length > 1 ? 's' : ''} {(p.lines || []).join(', ')}) {fmtWhen(p.at)} by {p.by && p.by.name}</li>)}
+                                            </ul>
+                                        </div>
+                                    )}
                                     <label>Status history</label>
                                     <ul className="small-list">
                                         {(current.statusHistory || []).map((h, i) => <li key={i}>{h.status} {fmtWhen(h.at)} by {h.by && h.by.name}</li>)}
@@ -996,6 +1155,56 @@
                             )}
                         </div>
                     )}
+                </div>
+            );
+        }
+
+        function PoPickWindow({ extra, pick, setPick, groups, superName, onMake, onClose, busy }) {
+            const lines = extra.lines || [];
+            const open = lines.map((l, i) => i).filter(i => !(lines[i].po && lines[i].po.formId));
+            const ticked = open.filter(i => pick[i]).length;
+            return (
+                <div className="modal-back">
+                    <div className="modal">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <div className="section-title" style={{ margin: 0 }}>Make POs from Extra #{extra.number}</div>
+                            <button className="btn-secondary btn-small" disabled={!!busy} onClick={onClose}>Close</button>
+                        </div>
+                        <p style={{ fontSize: 13, color: '#555' }}>Tick the lines that get a PO. Lines with the same Cat and vendor go on one PO. Unticked lines go to the trade budget. Super on the POs: <b>{superName || 'none on Customer Information'}</b></p>
+                        <table>
+                            <thead><tr><th style={{ width: 40 }}>PO</th><th style={{ width: 30 }}>#</th><th>Cat</th><th>Vendor</th><th>Description</th><th className="num">Cost</th></tr></thead>
+                            <tbody>
+                                {lines.map((l, i) => {
+                                    const done = l.po && l.po.formId;
+                                    return (
+                                        <tr key={i} className={pick[i] ? 'picked' : ''}>
+                                            <td>{done ? <span className="po-tag" style={{ marginTop: 0 }}>{l.po.poNumber}</span>
+                                                : <input type="checkbox" style={{ width: 'auto' }} checked={!!pick[i]} disabled={!!busy} onChange={e => setPick(p => ({ ...p, [i]: e.target.checked }))} />}</td>
+                                            <td>{i + 1}</td>
+                                            <td>{l.cat}</td>
+                                            <td>{l.vendor}</td>
+                                            <td>{l.description}{l.use === 'absorb' && <span style={{ color: '#888' }}> (we absorb)</span>}</td>
+                                            <td className="num">{$(l.cost)}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                        {groups.length > 0 && (
+                            <div style={{ marginTop: 12 }}>
+                                <label>POs to make</label>
+                                {groups.map((g, k) => (
+                                    <div key={k} className="group"><b>{g.cat || '(no Cat)'} / {g.vendor || '(no vendor)'}</b>: {$(g.cost)}, line{g.idx.length > 1 ? 's' : ''} {g.idx.map(i => i + 1).join(', ')}</div>
+                                ))}
+                            </div>
+                        )}
+                        <div className="row-actions">
+                            <button className="btn-primary" disabled={!!busy} onClick={onMake}>
+                                {busy ? 'Working...' : groups.length ? `Make ${groups.length} PO${groups.length > 1 ? 's' : ''}` : 'Save (no POs)'}
+                            </button>
+                            <span style={{ fontSize: 13, color: '#555', alignSelf: 'center' }}>{ticked} of {open.length} open line{open.length !== 1 ? 's' : ''} ticked</span>
+                        </div>
+                    </div>
                 </div>
             );
         }
