@@ -150,22 +150,26 @@
         const $ = (n) => '$' + fmtMoney(n);
 
         const STATUSES = ['Draft', 'Sent', 'Signed', 'Customer refused', 'Void'];
-        const LOCKED = ['Signed', 'Void']; // no edits to the extra itself while in these
+        const INTERNAL_STATUSES = ['Draft', 'Approved', 'Void']; // internal extras: no PDF, no signature
+        const statusesFor = (type) => type === 'internal' ? INTERNAL_STATUSES : STATUSES;
+        const LOCKED = ['Signed', 'Approved', 'Void']; // no edits to the extra itself while in these
         const badgeClass = (s) => s === 'Customer refused' ? 'Refused' : s;
         const USES = [['po', 'New PO'], ['budget', 'Trade budget'], ['absorb', 'We absorb']];
         const useLabel = (u) => (USES.find(x => x[0] === u) || USES[1])[1];
-        const TYPES = [['customer', 'Customer'], ['internal', 'Internal (supplement)']];
+        // Customer: paid directly by the customer. Supplement: supplemented to the insurance company (customer pays if not paid).
+        // Internal: a cost we eat (no customer price, no PDF, no signature; Approved instead of Signed).
+        const TYPES = [['customer', 'Customer'], ['supplement', 'Supplement'], ['internal', 'Internal (cost we eat)']];
         const typeLabel = (t) => (TYPES.find(x => x[0] === t) || TYPES[0])[1];
 
         const BLANK_LINE = () => ({ cat: '', description: '', vendor: '', cost: '', margin: String(DEFAULT_MARGIN), allowance: false, use: 'budget' });
-        const BLANK_FORM = () => ({ type: 'customer', title: '', description: '', payBy: 'customer', daysAdded: '', lines: [BLANK_LINE()] });
+        const BLANK_FORM = () => ({ type: 'customer', title: '', description: '', daysAdded: '', lines: [BLANK_LINE()] });
 
         // The parts of an extra a person edits (what a version keeps)
         const editable = (x) => ({
-            type: x.type === 'internal' ? 'internal' : 'customer',
+            // Extras saved before Oct 25 kept the payment choice separately: "supplemented" picked = Supplement type
+            type: ['supplement', 'internal'].includes(x.type) ? x.type : (x.payBy === 'supplement' ? 'supplement' : 'customer'),
             title: String(x.title || '').trim(),
             description: String(x.description || '').trim(),
-            payBy: x.payBy === 'supplement' ? 'supplement' : 'customer',
             daysAdded: String(x.daysAdded ?? '').trim(),
             lines: (x.lines || []).map(l => ({
                 cat: String(l.cat || '').trim().toUpperCase(),
@@ -180,8 +184,10 @@
         });
         // An extra with any line on a PO can't be changed (its POs were made from these lines)
         const hasPOs = (x) => !!x && (x.lines || []).some(l => l.po && l.po.formId);
-        const PO_STATUSES = ['Signed', 'Customer refused']; // Make POs works only in these
+        const PO_STATUSES = ['Signed', 'Customer refused', 'Approved']; // Make POs works only in these (Approved = internal)
         const groupKey = (l) => String(l.cat || '').trim().toUpperCase() + '|' + String(l.vendor || '').trim().toLowerCase();
+        // Pricing-only view: what may change on a Customer refused extra that has POs (Margin % and Allowance only)
+        const withoutPricing = (x) => { const e = editable(x); return JSON.stringify({ ...e, lines: e.lines.map(l => ({ ...l, margin: 0, allowance: false })) }); };
         const sameEditable = (a, b) => JSON.stringify(editable(a)) === JSON.stringify(editable(b));
         // Saved record -> form (cost shown as text)
         const toForm = (x) => {
@@ -316,8 +322,8 @@
                 lines.forEach((t, i) => text(t, M + 25, y - i * 13, 10));
                 y -= lines.length * 13 + 10;
             };
-            check(extra.payBy === 'supplement', sLines);
-            check(extra.payBy !== 'supplement', cLines);
+            check(extra.type === 'supplement', sLines);
+            check(extra.type !== 'supplement', cLines);
             y -= 4;
             const days = extra.daysAdded === '' ? '____' : String(extra.daysAdded);
             text(days, M, y, 10, bold);
@@ -597,6 +603,8 @@
             const current = openId && openId !== 'new' ? extras.find(x => x.id === openId) || null : null;
             const dirty = !!form && (openId === 'new' ? !sameEditable(form, BLANK_FORM()) : (current ? !sameEditable(form, current) : false));
             const locked = !!current && (LOCKED.includes(current.status) || hasPOs(current));
+            // A Customer refused extra with POs stays open for re-pricing: Margin % and Allowance only
+            const priceOpen = !!current && current.status === 'Customer refused' && hasPOs(current);
             const [poPick, setPoPick] = useState(null); // Make POs window: { [line index]: ticked }
             const superPick = card && card.team && card.team.super && card.team.super.uid ? card.team.super : null;
 
@@ -665,7 +673,8 @@
                     } else {
                         if (!current) return;
                         if (LOCKED.includes(current.status)) { say(false, `Extra #${current.number} is ${current.status} and can't be changed.`); return; }
-                        if (hasPOs(current)) { say(false, `Extra #${current.number} has POs, so it can't be changed.`); return; }
+                        if (hasPOs(current) && current.status !== 'Customer refused') { say(false, `Extra #${current.number} has POs, so it can't be changed.`); return; }
+                        if (hasPOs(current) && withoutPricing(e) !== withoutPricing(current)) { say(false, `Extra #${current.number} has POs. Only Margin % and Allowance can be changed.`); return; }
                         if (sameEditable(e, current)) { say(true, 'No changes to save.'); return; }
                         const old = { ...editable(current), total: current.total || 0, savedAt: current.updatedAt || current.createdAt || null, savedBy: current.updatedBy || current.createdBy || null };
                         await db.collection('extras').doc(jobId).collection('items').doc(current.id).update({
@@ -684,6 +693,7 @@
                 if (!current || current.status === s) return;
                 if (dirty) { say(false, 'Save your changes first.'); return; }
                 const madePOs = [...new Set((current.lines || []).filter(l => l.po && l.po.poNumber).map(l => l.po.poNumber))];
+                if (!statusesFor(current.type).includes(s)) return;
                 if (s === 'Void' && !window.confirm(`Void Extra #${current.number}? It will no longer count in GPM or Job Cost.` + (madePOs.length ? `\n\nIts POs (${madePOs.join(', ')}) stay in PO Manager. Handle them there.` : ''))) return;
                 if (current.status === 'Signed' && !window.confirm(`Extra #${current.number} is Signed. Change it to ${s}?`)) return;
                 if (s === 'Signed' && !(current.signedCopies || []).length && !window.confirm(`Mark Extra #${current.number} Signed without uploading the signed copy?`)) return;
@@ -694,6 +704,7 @@
                         statusHistory: firebase.firestore.FieldValue.arrayUnion({ status: s, at: stamp(), by: me })
                     };
                     if (s === 'Signed') upd.signedAt = stamp();
+                    if (s === 'Approved') upd.approvedAt = stamp();
                     await db.collection('extras').doc(jobId).collection('items').doc(current.id).update(upd);
                     say(true, `Extra #${current.number} is now ${s}.`);
                 } catch (err) {
@@ -734,7 +745,7 @@
                 const untickedOpen = lines.map((l, i) => i).filter(i => !(lines[i].po && lines[i].po.formId) && !poPick[i]);
                 // Checks first: nothing is made if anything is missing
                 const problems = [];
-                if (!PO_STATUSES.includes(current.status)) problems.push('The extra must be Signed or Customer refused.');
+                if (!PO_STATUSES.includes(current.status)) problems.push('The extra must be Signed, Customer refused, or Approved (internal).');
                 if (!job || !job.code) problems.push('The job has no code.');
                 if (!superPick) problems.push('This job has no Super. Set it on Customer Information.');
                 if (!window.POForm) problems.push('The PO form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.');
@@ -828,6 +839,7 @@
                 if (!current) return;
                 if (dirty) { say(false, 'Save your changes first.'); return; }
                 const e = editable(current);
+                if (e.type === 'internal') { say(false, 'Internal extras have no customer change order.'); return; }
                 if (!e.lines.some(l => l.use !== 'absorb')) { say(false, 'Every line is "We absorb", so there is nothing to charge the customer.'); return; }
                 const t = calcTotals(e.lines);
                 setBusy('pdf'); setMsg(null);
@@ -855,6 +867,7 @@
                 if (!current || !file) return;
                 if (dirty) { say(false, 'Save your changes first.'); return; }
                 if (current.status === 'Void') { say(false, 'This extra is Void.'); return; }
+                if (editable(current).type === 'internal') { say(false, 'Internal extras are not signed by the customer.'); return; }
                 if (!window.confirm(`Upload ${file.name} as the signed copy of Extra #${current.number}? It will be marked Signed.`)) return;
                 setBusy('upload'); setMsg(null);
                 try {
@@ -973,11 +986,11 @@
                                             <tr key={x.id} className={(x.status === 'Void' ? 'void ' : '') + (openId === x.id ? 'picked' : '')}>
                                                 <td>{x.number}</td>
                                                 <td>{x.title}</td>
-                                                <td>{typeLabel(x.type)}</td>
+                                                <td>{typeLabel(editable(x).type)}</td>
                                                 <td><span className={'badge ' + badgeClass(x.status)}>{x.status}</span></td>
                                                 <td className="num">{$(x.costTotal)}</td>
-                                                <td className="num">{$(x.total)}</td>
-                                                <td>{x.status === 'Signed' ? fmtDate(x.signedAt) : ''}</td>
+                                                <td className="num">{editable(x).type === 'internal' ? <span style={{ color: '#888' }}>No charge</span> : $(x.total)}</td>
+                                                <td>{x.status === 'Signed' ? fmtDate(x.signedAt) : x.status === 'Approved' ? fmtDate(x.approvedAt) : ''}</td>
                                                 <td><button className="btn-link" onClick={() => openExtra(x)}>Open</button></td>
                                             </tr>
                                         ))}
@@ -1004,18 +1017,19 @@
                                 <div>
                                     <label>Status</label>
                                     <div className="status-row">
-                                        {STATUSES.map(s => (
+                                        {statusesFor(editable(current).type).map(s => (
                                             <button key={s} className={'status-btn' + (current.status === s ? ' on' : '')} disabled={!!busy} onClick={() => setStatus(s)}>{s}</button>
                                         ))}
                                     </div>
-                                    {locked && <div className="info">{LOCKED.includes(current.status) ? `This extra is ${current.status}, so it can't be changed.` : 'This extra has POs, so it can\'t be changed.'} {current.status === 'Signed' || hasPOs(current) ? 'A change after signing is a new extra.' : ''}</div>}
+                                    {locked && !priceOpen && <div className="info">{LOCKED.includes(current.status) ? `This extra is ${current.status}, so it can't be changed.` : 'This extra has POs, so it can\'t be changed.'} {current.status === 'Approved' ? 'A change after approval is a new extra.' : current.status === 'Signed' || hasPOs(current) ? 'A change after signing is a new extra.' : ''}</div>}
+                                    {priceOpen && <div className="info">This extra has POs. Only Margin % and Allowance can be changed, to re-price it. Then Make PDF, get it signed, and Upload signed copy.</div>}
                                 </div>
                             )}
 
                             <div className="grid">
                                 <div className="form-group">
                                     <label>Type</label>
-                                    <select value={form.type} disabled={ro} onChange={e => setField('type', e.target.value)}>
+                                    <select value={form.type} disabled={ro || (!!current && current.status !== 'Draft')} onChange={e => setField('type', e.target.value)}>
                                         {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                                     </select>
                                 </div>
@@ -1033,16 +1047,10 @@
                                 <textarea rows={3} value={form.description} disabled={ro} onChange={e => setField('description', e.target.value)} />
                                 {!ro && micButton('desc')}
                             </div>
-                            <div className="form-group">
-                                <label>Payment</label>
-                                <label className="radio-line">
-                                    <input type="radio" checked={form.payBy === 'supplement'} disabled={ro} onChange={() => setField('payBy', 'supplement')} />
-                                    Supplemented to the customer's insurance company; customer pays if the supplement is not paid
-                                </label>
-                                <label className="radio-line">
-                                    <input type="radio" checked={form.payBy !== 'supplement'} disabled={ro} onChange={() => setField('payBy', 'customer')} />
-                                    Paid directly by the customer
-                                </label>
+                            <div className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
+                                {form.type === 'supplement' ? 'Supplement: the change order says it will be supplemented to the insurance company, and the customer pays if the supplement is not paid.'
+                                    : form.type === 'internal' ? 'Internal: a cost we eat. No customer price, no change order, no signature. Mark it Approved to count it and to make POs.'
+                                    : 'Customer: the change order says it is paid directly by the customer.'}
                             </div>
 
                             <label>Lines</label>
@@ -1061,10 +1069,10 @@
                                             <td><Suggest value={l.vendor} disabled={ro} options={vendorOptions(l.cat)} onChange={v => setLine(i, 'vendor', v)} /></td>
                                             <td><input style={{ textAlign: 'right' }} value={l.cost} disabled={ro} onChange={e => setLine(i, 'cost', e.target.value)} onBlur={e => { const n = toNumber(e.target.value); setLine(i, 'cost', n ? fmtMoney(n) : ''); }} placeholder="0.00" /></td>
                                             <td>
-                                                <input style={{ textAlign: 'right' }} value={l.allowance ? '0' : l.margin} disabled={ro || l.allowance} onChange={e => setLine(i, 'margin', e.target.value.replace(/[^0-9.]/g, ''))} onBlur={e => { if (!l.allowance && String(e.target.value).trim() === '') setLine(i, 'margin', String(DEFAULT_MARGIN)); else if (!l.allowance && toNumber(e.target.value) > MAX_MARGIN) setLine(i, 'margin', String(MAX_MARGIN)); }} />
-                                                <label className="allow"><input type="checkbox" checked={l.allowance === true} disabled={ro} onChange={e => setLine(i, 'allowance', e.target.checked)} />Allowance</label>
+                                                <input style={{ textAlign: 'right' }} value={l.allowance ? '0' : l.margin} disabled={(ro && !priceOpen) || l.allowance || form.type === 'internal'} onChange={e => setLine(i, 'margin', e.target.value.replace(/[^0-9.]/g, ''))} onBlur={e => { if (!l.allowance && String(e.target.value).trim() === '') setLine(i, 'margin', String(DEFAULT_MARGIN)); else if (!l.allowance && toNumber(e.target.value) > MAX_MARGIN) setLine(i, 'margin', String(MAX_MARGIN)); }} />
+                                                <label className="allow"><input type="checkbox" checked={l.allowance === true} disabled={(ro && !priceOpen) || form.type === 'internal'} onChange={e => setLine(i, 'allowance', e.target.checked)} />Allowance</label>
                                             </td>
-                                            <td className="num" style={{ paddingTop: 12 }}>{l.use === 'absorb' ? <span style={{ color: '#888' }}>No charge</span> : $(linePrice(l))}</td>
+                                            <td className="num" style={{ paddingTop: 12 }}>{l.use === 'absorb' || form.type === 'internal' ? <span style={{ color: '#888' }}>No charge</span> : $(linePrice(l))}</td>
                                             <td>
                                                 <select value={l.use} disabled={ro} onChange={e => setLine(i, 'use', e.target.value)}>
                                                     {USES.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
@@ -1077,24 +1085,30 @@
                                 </tbody>
                             </table>
                             {!ro && <button className="btn-secondary btn-small" style={{ marginTop: 8 }} onClick={addLine}>+ Add line</button>}
-                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO lines start ticked in Make POs (once the extra is Signed or Customer refused); lines not put on a PO go to the trade budget.</div>
+                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO lines start ticked in Make POs (once the extra is Signed, Customer refused, or Approved for internal); lines not put on a PO go to the trade budget.</div>
 
                             <div className="totals">
                                 <div><span>Cost of all lines</span><span>{$(totals.costTotal)}</span></div>
                                 {totals.allowanceCost > 0 && <div style={{ color: '#888' }}><span>Allowances (cost)</span><span>{$(totals.allowanceCost)}</span></div>}
                                 {totals.absorbedCost > 0 && <div style={{ color: '#888' }}><span>We absorb (cost)</span><span>{$(totals.absorbedCost)}</span></div>}
-                                <div><span>Sub Total</span><span>{$(totals.subtotal)}</span></div>
-                                <div><span>Overhead and Profit (10 &amp; 10)</span><span>{$(totals.op)}</span></div>
-                                <div className="grand"><span>Total Extra</span><span>{$(totals.total)}</span></div>
+                                {form.type === 'internal' ? (
+                                    <div className="grand"><span>Customer price</span><span style={{ color: '#888' }}>No charge (internal)</span></div>
+                                ) : (
+                                    <React.Fragment>
+                                        <div><span>Sub Total</span><span>{$(totals.subtotal)}</span></div>
+                                        <div><span>Overhead and Profit (10 &amp; 10)</span><span>{$(totals.op)}</span></div>
+                                        <div className="grand"><span>Total Extra</span><span>{$(totals.total)}</span></div>
+                                    </React.Fragment>
+                                )}
                             </div>
 
                             <div className="row-actions">
-                                {!ro && <button className="btn-primary" disabled={!!busy || (openId !== 'new' && !dirty)} onClick={saveExtra}>{busy === 'save' ? 'Saving...' : 'Save'}</button>}
+                                {(!ro || priceOpen) && <button className="btn-primary" disabled={!!busy || (openId !== 'new' && !dirty)} onClick={saveExtra}>{busy === 'save' ? 'Saving...' : 'Save'}</button>}
                                 {current && PO_STATUSES.includes(current.status) && (current.lines || []).some(l => !(l.po && l.po.formId)) && (
                                     <button className="btn-primary" disabled={!!busy || dirty} onClick={openPoPick}>{busy.startsWith('pos') ? 'Making POs ' + busy.slice(4) + '...' : 'Make POs'}</button>
                                 )}
-                                {current && <button className="btn-secondary" disabled={!!busy || dirty} onClick={makePdf}>{busy === 'pdf' ? 'Making PDF...' : 'Make PDF'}</button>}
-                                {current && current.status !== 'Void' && (
+                                {current && editable(current).type !== 'internal' && <button className="btn-secondary" disabled={!!busy || dirty} onClick={makePdf}>{busy === 'pdf' ? 'Making PDF...' : 'Make PDF'}</button>}
+                                {current && current.status !== 'Void' && editable(current).type !== 'internal' && (
                                     <button className="btn-secondary" disabled={!!busy || dirty} onClick={() => fileRef.current && fileRef.current.click()}>
                                         {busy === 'upload' ? 'Uploading...' : 'Upload signed copy'}
                                     </button>
