@@ -8,6 +8,7 @@
 //                  subName, contact, phone, email, subCode, category, amount, scope
 //     attachments: [{ name, type, file }] not yet saved, or [{ name, type, url }] saved
 //   POForm.amountText(v) -> "$12,345.00" from anything typed, or "" when there is no amount
+//   POForm.scopeFit(scope) -> { left, right, per, fits }: lines used in each scope column (for the counter under a Scope box)
 //
 // The scope prints in two columns: one typed line per item, left column first, then the right one.
 // A long item wraps inside its column and is never split between the columns. Blank lines count as lines,
@@ -17,6 +18,54 @@
     var FORM_CODE = 'SubSpec_Super_Forms_10-25-26_V3';
     var FOOTER = 'Freeman Restoration \u00b7 751 S. Weir Canyon Rd., Suite 157 PMB#153, Anaheim, CA 92808 \u00b7 800-778-8910 \u00b7 www.freemanrestoration.com \u00b7 CSLB#688391';
     var AGREEMENT = 'Freeman Restoration, in exchange for goods and services provided by the Subcontractor, agrees to pay the Subcontract amount upon completion of the Subcontractor\u2019s work per the terms and conditions of payment as outlined in the Master Agreement. Any changes or extras not signed for by the Supervisor will not be paid.';
+
+    // Scope box size: two columns of SCOPE_PER lines each (the counter and the PDF use the same numbers)
+    var SCOPE_W = 532, SCOPE_H = 268, SCOPE_PAD = 10, SCOPE_GAP = 16, SCOPE_LINE_H = 12.5, SCOPE_SIZE = 9;
+    var SCOPE_COL_W = (SCOPE_W - 2 * SCOPE_PAD - SCOPE_GAP) / 2;
+    var SCOPE_PER = Math.floor((SCOPE_H - 30) / SCOPE_LINE_H);
+
+    // The built-in fonts only know common characters: anything else (an emoji, an arrow) prints as "?"
+    function safe(s, font) {
+        var out = '';
+        String(s == null ? '' : s).replace(/\t/g, '    ').replace(/\r/g, '').split('').forEach(function (ch) {
+            try { font.encodeText(ch); out += ch; } catch (e) { out += '?'; }
+        });
+        return out;
+    }
+    function wrap(s, font, size, maxW, indent) {
+        var out = [], cur = '';
+        safe(s, font).split(' ').forEach(function (word) {
+            var tryS = cur ? cur + ' ' + word : word;
+            if (cur && font.widthOfTextAtSize(tryS, size) > maxW) { out.push(cur); cur = indent + word; }
+            else cur = tryS;
+        });
+        out.push(cur);
+        return out;
+    }
+    // Where each scope line goes: one typed line per item, left column first, then the right one.
+    // A long item wraps inside its column and is never split between columns; a blank line takes one line.
+    function layoutScope(scope, font) {
+        var placed = [], col = 0, row = 0, left = 0, right = 0, fits = true;
+        var items = String(scope == null ? '' : scope).replace(/\r/g, '').replace(/\s+$/, '').split('\n');
+        if (items.length === 1 && items[0] === '') items = [];
+        items.forEach(function (item) {
+            var wrapped = item.trim() === '' ? [''] : wrap(item, font, SCOPE_SIZE, SCOPE_COL_W, /^\s*-\s/.test(item) ? '   ' : '');
+            if (!fits) { right += wrapped.length; return; }
+            if (row + wrapped.length > SCOPE_PER && col === 0) { col = 1; row = 0; }
+            if (row + wrapped.length > SCOPE_PER) { fits = false; right += wrapped.length; return; }
+            wrapped.forEach(function (t) { placed.push({ text: t, col: col, row: row }); row++; });
+            if (col === 0) left = row; else right = row;
+        });
+        return { placed: placed, left: left, right: right, per: SCOPE_PER, fits: fits };
+    }
+    // For the counter: measured with the same font, so it always agrees with the PDF
+    var measureFont = null;
+    async function scopeFit(scope) {
+        if (!window.PDFLib) throw new Error('The PDF library did not load.');
+        if (!measureFont) measureFont = window.PDFLib.PDFDocument.create().then(function (d) { return d.embedFont(window.PDFLib.StandardFonts.Helvetica); });
+        var r = layoutScope(scope, await measureFont);
+        return { left: r.left, right: r.right, per: r.per, fits: r.fits };
+    }
 
     // Amount always shown as $12,345.00 (typed with or without $ or commas). Blank stays blank.
     function amountText(v) {
@@ -42,14 +91,6 @@
         var line = rgb(0.8, 0.8, 0.8), red = rgb(0.75, 0.1, 0.1), pale = rgb(0.97, 0.97, 0.97), white = rgb(1, 1, 1);
         var L = 40, W = 532;
 
-        // The built-in fonts only know common characters: anything else (an emoji, an arrow) prints as "?"
-        function safe(s, font) {
-            var out = '';
-            String(s == null ? '' : s).replace(/\t/g, '    ').replace(/\r/g, '').split('').forEach(function (ch) {
-                try { font.encodeText(ch); out += ch; } catch (e) { out += '?'; }
-            });
-            return out;
-        }
         function text(s, x, y, o) {
             o = o || {};
             var font = o.bold ? B : R, size = o.size || 9;
@@ -63,16 +104,6 @@
                 }
             }
             page.drawText(str, { x: x, y: y, size: size, font: font, color: o.color || ink });
-        }
-        function wrap(s, font, size, maxW, indent) {
-            var out = [], cur = '';
-            safe(s, font).split(' ').forEach(function (word) {
-                var tryS = cur ? cur + ' ' + word : word;
-                if (cur && font.widthOfTextAtSize(tryS, size) > maxW) { out.push(cur); cur = indent + word; }
-                else cur = tryS;
-            });
-            out.push(cur);
-            return out;
         }
         // A titled box of label / value rows, in one or two columns side by side
         function panel(x, w, title, rows, top, cols) {
@@ -111,25 +142,18 @@
             ['Email', v.email], ['Sub code', v.subCode], ['Category', v.category]], y, 2);
         y -= h2 + 10;
 
-        // Scope of work, two columns
-        var sh = 268, pad = 10, gap = 16, colW = (W - 2 * pad - gap) / 2, lineH = 12.5, size = 9;
+        // Scope of work, two columns (see layoutScope)
+        var sh = SCOPE_H, colW = SCOPE_COL_W;
         page.drawRectangle({ x: L, y: y - 16, width: W, height: 16, color: pale });
         page.drawRectangle({ x: L, y: y - sh, width: W, height: sh, borderColor: line, borderWidth: 0.8 });
         text('SCOPE OF WORK', L + 8, y - 11.5, { bold: true, size: 8, color: grey });
-        var midX = L + pad + colW + gap / 2;
+        var midX = L + SCOPE_PAD + colW + SCOPE_GAP / 2;
         page.drawLine({ start: { x: midX, y: y - 22 }, end: { x: midX, y: y - sh + 6 }, thickness: 0.6, color: line });
-        var per = Math.floor((sh - 30) / lineH), col = 0, row = 0;
-        var items = String(v.scope == null ? '' : v.scope).replace(/\r/g, '').replace(/\s+$/, '').split('\n');
-        for (var k = 0; k < items.length; k++) {
-            var item = items[k];
-            var wrapped = item.trim() === '' ? [''] : wrap(item, R, size, colW, /^\s*-\s/.test(item) ? '   ' : '');
-            if (row + wrapped.length > per && col === 0) { col = 1; row = 0; }
-            if (row + wrapped.length > per) throw new Error('The scope is too long for one page. Shorten it, or remove some blank lines.');
-            for (var j = 0; j < wrapped.length; j++) {
-                if (wrapped[j]) page.drawText(wrapped[j], { x: L + pad + col * (colW + gap), y: y - 30 - row * lineH, size: size, font: R, color: ink });
-                row++;
-            }
-        }
+        var lay = layoutScope(v.scope, R);
+        if (!lay.fits) throw new Error('The scope is too long for one page. Shorten it, or remove some blank lines.');
+        lay.placed.forEach(function (p) {
+            if (p.text) page.drawText(p.text, { x: L + SCOPE_PAD + p.col * (colW + SCOPE_GAP), y: y - 30 - p.row * SCOPE_LINE_H, size: SCOPE_SIZE, font: R, color: ink });
+        });
         y -= sh + 10;
 
         // Payment notice
@@ -188,5 +212,5 @@
         return await pdfDoc.save();
     }
 
-    window.POForm = { build: build, amountText: amountText };
+    window.POForm = { build: build, amountText: amountText, scopeFit: scopeFit };
 })();
