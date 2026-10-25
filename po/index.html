@@ -753,9 +753,11 @@
                                         .filter(form => form.deleted !== true) // POs hidden before Oct 24 stay hidden
                                         .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.fileName || '').localeCompare(b.fileName || ''))
                                         .map(form => {
-                                            // New = made in PO Manager, CES = from the Trades-EST handoff (or set by hand), Revised = changed by the Super.
+                                            // New = made in PO Manager, CES = from the Trades-EST handoff (or set by hand), Revised = changed by the Super,
+                                            // Extra = made from a signed extra in Extras & Credits (set only there; no buttons here).
                                             // Older records: Complete shows as CES, Pending (or none) as New.
-                                            const status = ['CES', 'Complete', 'Completed'].includes(form.status) ? 'CES'
+                                            const status = form.status === 'Extra' ? 'Extra'
+                                                : ['CES', 'Complete', 'Completed'].includes(form.status) ? 'CES'
                                                 : form.status === 'Revised' ? 'Revised' : 'New';
                                             return (
                                                 <tr key={form.id}>
@@ -796,7 +798,9 @@
                                                         </button>
                                                     </td>
                                                     <td>
-                                                        {['New', 'CES', 'Revised'].map(st => (
+                                                        {status === 'Extra' ? (
+                                                            <div style={{ fontWeight: 600, whiteSpace: 'nowrap' }} title="Made from an extra in Extras & Credits">Extra</div>
+                                                        ) : ['New', 'CES', 'Revised'].map(st => (
                                                             <label key={st} style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap' }}>
                                                                 <input type="radio" name={'status-' + form.id} checked={status === st}
                                                                     onChange={() => handleUpdateForm(form.id, { status: st })} style={{ width: 'auto', margin: 0 }} />
