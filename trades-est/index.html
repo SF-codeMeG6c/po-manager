@@ -1221,6 +1221,14 @@
             const recRef = React.useRef(null);
             const scopeRef = React.useRef(null);
             const [tplDelete, setTplDelete] = useState(false); // "Delete a template" list open
+            const [fit, setFit] = useState(null);         // scope counter: { left, right, per, fits } from POForm.scopeFit
+            const scopeNow = draft ? draft.scope : null;
+            useEffect(() => {
+                if (scopeNow == null || !window.POForm || !window.POForm.scopeFit) { setFit(null); return; }
+                let live = true;
+                const tm = setTimeout(() => { window.POForm.scopeFit(scopeNow).then(f => { if (live) setFit(f); }).catch(() => { if (live) setFit(null); }); }, 150);
+                return () => { live = false; clearTimeout(tm); };
+            }, [scopeNow]);
             useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
 
             const isAllow = line.method === 'allowance';
@@ -1453,6 +1461,13 @@
                                 <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} onClick={toggleVoice} style={{ marginLeft: '10px' }}>{listening ? '■ Stop' : '🎤 Voice'}</button>
                             </label>
                             <textarea ref={scopeRef} rows="9" value={draft.scope} onChange={e => setF('scope', capInPlace(e.target))} />
+                            {fit && (
+                                <div style={{ fontSize: '12px', fontWeight: 600, marginTop: '3px', color: !fit.fits ? '#d32f2f' : fit.right > 0 ? '#0066cc' : '#555' }}>
+                                    {!fit.fits ? 'Too long for one page. Shorten the scope or remove some blank lines.'
+                                        : fit.right > 0 ? `Right side: ${fit.right} of ${fit.per} lines (left side full)`
+                                        : `Left side: ${fit.left} of ${fit.per} lines`}
+                                </div>
+                            )}
                             <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
                         </div>
                         <div className="form-group">
