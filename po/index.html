@@ -61,10 +61,10 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-functions-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="/shared/po-form.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
-        const { PDFDocument } = PDFLib;
 
         const firebaseConfig = {
             apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
@@ -81,7 +81,6 @@
         const storage = firebase.storage();
         const functions = firebase.functions();
 
-        const TEMPLATE_PDF_URL = 'https://raw.githubusercontent.com/SF-codeMeG6c/po-manager/main/Sub_Spec_Blank_9-20-26_V2.pdf';
 
         function POApp() {
             const [user, setUser] = useState(null);
@@ -131,6 +130,14 @@
             const [openVersions, setOpenVersions] = useState(null); // PO row showing its old versions
             const [attachments, setAttachments] = useState([]); // [{ name, type, file }] new, or [{ name, type, url }] saved
             const [profile, setProfile] = useState(null); // users record: null = checking, false = no access, object = active user
+            const [fit, setFit] = useState(null);                 // scope counter: { left, right, per, fits } from POForm.scopeFit
+            const scopeNow = poWindow ? (formMetadata.scope || '') : null;
+            useEffect(() => {
+                if (scopeNow === null || !window.POForm || !window.POForm.scopeFit) { setFit(null); return; }
+                let live = true;
+                const tm = setTimeout(() => { window.POForm.scopeFit(scopeNow).then(f => { if (live) setFit(f); }).catch(() => { if (live) setFit(null); }); }, 150);
+                return () => { live = false; clearTimeout(tm); };
+            }, [scopeNow]);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -353,68 +360,32 @@
         setMessage('Subcontractor and Category required');
         return;
     }
+    if (!window.POForm) {
+        setMessage('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.');
+        return;
+    }
+    // Checked before a PO number is taken, so a scope that doesn't fit never uses up a number
+    try {
+        const f = await window.POForm.scopeFit(formMetadata.scope || '');
+        if (!f.fits) { setMessage('Error: the scope is too long for one page. Shorten it, or remove some blank lines.'); return; }
+    } catch (e) { /* the build below reports any problem */ }
     setUploadLoading(true);
     try {
         const poNumber = editingPO ? editingPO.poNumber : await getNextPONumber();
         if (!poNumber) { setUploadLoading(false); return; }
 
-        const response = await fetch(TEMPLATE_PDF_URL);
-        const arrayBuffer = await response.arrayBuffer();
-        const pdfDoc = await PDFDocument.load(arrayBuffer);
-        const form = pdfDoc.getForm();
-
-        // Amount always shown as $12,345.00 (typed with or without $ or commas)
+        // Amount always shown as $12,345.00 (typed with or without $ or commas); used in the file name
         const rawAmount = (formMetadata.contractAmount || '').replace(/[^0-9.]/g, '');
         const amountNoSign = rawAmount && !isNaN(parseFloat(rawAmount))
             ? parseFloat(rawAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : '';
-        const amountDisplay = amountNoSign ? `$${amountNoSign}` : '';
 
-        // PDF form field name -> value
-        const values = {
-            'Job Code': header.jobCode,
-            'Job Address': header.jobAddress,
-            'City State Zip': header.cityStateZip,
-            'Lock Box': header.lockBox,
-            'PO': poNumber,
-            'Super': header.superName,
-            'Email': header.superEmail,
-            'Super Phone': header.superPhone,
-            'Subcontractor': formMetadata.subName,
-            'Contact': formMetadata.contact,
-            'Phone': formMetadata.phone,
-            'Email_2': formMetadata.email,
-            'Sub Code': formMetadata.subCode,
-            'Category': formMetadata.category,
-            'Contract Amount': amountDisplay,
-            'Text1': formMetadata.scope
-        };
-        // Match on name with extra spaces ignored (e.g. "City  State  Zip")
-        form.getFields().forEach(field => {
-            const name = field.getName().replace(/\s+/g, ' ').trim();
-            if (values[name] !== undefined && field.setText) {
-                field.setText(values[name] || '');
-            }
-        });
-
-        // Add attachment pages after the PO page, in list order
-        for (const att of attachments) {
-            const bytes = att.file ? await att.file.arrayBuffer() : await (await fetch(att.url)).arrayBuffer();
-            if (att.type === 'application/pdf') {
-                const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-                try { src.getForm().flatten(); } catch (e) { /* no form fields */ }
-                const pages = await pdfDoc.copyPages(src, src.getPageIndices());
-                pages.forEach(p => pdfDoc.addPage(p));
-            } else {
-                const img = att.type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
-                const page = pdfDoc.addPage([612, 792]); // letter size
-                const scale = Math.min(540 / img.width, 720 / img.height, 1);
-                const w = img.width * scale, h = img.height * scale;
-                page.drawImage(img, { x: (612 - w) / 2, y: (792 - h) / 2, width: w, height: h });
-            }
-        }
-
-        const pdfBytes = await pdfDoc.save();
+        // The PO page, drawn by the shared form builder (same as Trades-EST), with the attachments as pages after it
+        const pdfBytes = await window.POForm.build({
+            ...header, poNumber,
+            subName: formMetadata.subName, contact: formMetadata.contact, phone: formMetadata.phone, email: formMetadata.email,
+            subCode: formMetadata.subCode, category: formMetadata.category, amount: formMetadata.contractAmount, scope: formMetadata.scope
+        }, attachments);
 
         // Save new attachment files so Edit PO can rebuild with them
         const savedAttachments = [];
@@ -920,7 +891,14 @@
                             <button type="button" className={listening === 'scope' ? 'btn-danger btn-sm' : 'btn-secondary btn-sm'} onClick={toggleScopeVoice} style={{ width: 'auto', marginLeft: '10px' }}>
                                 {listening === 'scope' ? '■ Stop' : '🎤 Voice'}
                             </button></label>
-                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} /></div>
+                            <textarea ref={scopeRef} rows="8" value={formMetadata.scope || ''} onChange={e => { const v = capInPlace(e.target); setFormMetadata({ ...formMetadata, scope: v }); }} />
+                            {fit && (
+                                <div style={{ fontSize: '12px', fontWeight: 600, marginTop: '3px', color: !fit.fits ? '#d32f2f' : fit.right > 0 ? '#0066cc' : '#555' }}>
+                                    {!fit.fits ? 'Too long for one page. Shorten the scope or remove some blank lines.'
+                                        : fit.right > 0 ? `Right side: ${fit.right} of ${fit.per} lines (left side full)`
+                                        : `Left side: ${fit.left} of ${fit.per} lines`}
+                                </div>
+                            )}</div>
 
                         <div className="form-group">
                             <label>Attachments (added after the PO page)
