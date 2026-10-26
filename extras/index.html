@@ -154,6 +154,8 @@
         const statusesFor = (type) => type === 'internal' ? INTERNAL_STATUSES : STATUSES;
         const LOCKED = ['Signed', 'Approved', 'Void']; // no edits to the extra itself while in these
         const badgeClass = (s) => s === 'Customer refused' ? 'Refused' : s;
+        // Shown name for a status. 'Customer refused' is still the saved value (records and GPM read it).
+        const statusLabel = (s) => s === 'Customer refused' ? 'Work Done Customer Refused' : s;
         const USES = [['po', 'New PO'], ['budget', 'Trade budget'], ['absorb', 'We absorb']];
         const useLabel = (u) => (USES.find(x => x[0] === u) || USES[1])[1];
         // Customer: paid directly by the customer. Supplement: supplemented to the insurance company (customer pays if not paid).
@@ -695,7 +697,7 @@
                 const madePOs = [...new Set((current.lines || []).filter(l => l.po && l.po.poNumber).map(l => l.po.poNumber))];
                 if (!statusesFor(current.type).includes(s)) return;
                 if (s === 'Void' && !window.confirm(`Void Extra #${current.number}? It will no longer count in GPM or Job Cost.` + (madePOs.length ? `\n\nIts POs (${madePOs.join(', ')}) stay in PO Manager. Handle them there.` : ''))) return;
-                if (current.status === 'Signed' && !window.confirm(`Extra #${current.number} is Signed. Change it to ${s}?`)) return;
+                if (current.status === 'Signed' && !window.confirm(`Extra #${current.number} is Signed. Change it to ${statusLabel(s)}?`)) return;
                 if (s === 'Signed' && !(current.signedCopies || []).length && !window.confirm(`Mark Extra #${current.number} Signed without uploading the signed copy?`)) return;
                 setBusy('status'); setMsg(null);
                 try {
@@ -706,7 +708,7 @@
                     if (s === 'Signed') upd.signedAt = stamp();
                     if (s === 'Approved') upd.approvedAt = stamp();
                     await db.collection('extras').doc(jobId).collection('items').doc(current.id).update(upd);
-                    say(true, `Extra #${current.number} is now ${s}.`);
+                    say(true, `Extra #${current.number} is now ${statusLabel(s)}.`);
                 } catch (err) {
                     say(false, 'Status change failed: ' + err.message);
                 } finally { setBusy(''); }
@@ -745,7 +747,7 @@
                 const untickedOpen = lines.map((l, i) => i).filter(i => !(lines[i].po && lines[i].po.formId) && !poPick[i]);
                 // Checks first: nothing is made if anything is missing
                 const problems = [];
-                if (!PO_STATUSES.includes(current.status)) problems.push('The extra must be Signed, Customer refused, or Approved (internal).');
+                if (!PO_STATUSES.includes(current.status)) problems.push('The extra must be Signed, Work Done Customer Refused, or Approved (internal).');
                 if (!job || !job.code) problems.push('The job has no code.');
                 if (!superPick) problems.push('This job has no Super. Set it on Customer Information.');
                 if (!window.POForm) problems.push('The PO form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.');
@@ -987,7 +989,7 @@
                                                 <td>{x.number}</td>
                                                 <td>{x.title}</td>
                                                 <td>{typeLabel(editable(x).type)}</td>
-                                                <td><span className={'badge ' + badgeClass(x.status)}>{x.status}</span></td>
+                                                <td><span className={'badge ' + badgeClass(x.status)}>{statusLabel(x.status)}</span></td>
                                                 <td className="num">{$(x.costTotal)}</td>
                                                 <td className="num">{editable(x).type === 'internal' ? <span style={{ color: '#888' }}>No charge</span> : $(x.total)}</td>
                                                 <td>{x.status === 'Signed' ? fmtDate(x.signedAt) : x.status === 'Approved' ? fmtDate(x.approvedAt) : ''}</td>
@@ -1018,7 +1020,7 @@
                                     <label>Status</label>
                                     <div className="status-row">
                                         {statusesFor(editable(current).type).map(s => (
-                                            <button key={s} className={'status-btn' + (current.status === s ? ' on' : '')} disabled={!!busy} onClick={() => setStatus(s)}>{s}</button>
+                                            <button key={s} className={'status-btn' + (current.status === s ? ' on' : '')} disabled={!!busy} onClick={() => setStatus(s)}>{statusLabel(s)}</button>
                                         ))}
                                     </div>
                                     {locked && !priceOpen && <div className="info">{LOCKED.includes(current.status) ? `This extra is ${current.status}, so it can't be changed.` : 'This extra has POs, so it can\'t be changed.'} {current.status === 'Approved' ? 'A change after approval is a new extra.' : current.status === 'Signed' || hasPOs(current) ? 'A change after signing is a new extra.' : ''}</div>}
@@ -1085,7 +1087,7 @@
                                 </tbody>
                             </table>
                             {!ro && <button className="btn-secondary btn-small" style={{ marginTop: 8 }} onClick={addLine}>+ Add line</button>}
-                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO lines start ticked in Make POs (once the extra is Signed, Customer refused, or Approved for internal); lines not put on a PO go to the trade budget.</div>
+                            <div className="hint">Price = cost ÷ (1 − margin). Margin starts at 25% (cost ÷ 0.75); Allowance = no margin (price = cost), O&amp;P still added. "We absorb" lines are left off the customer's change order; their cost still counts. New PO lines start ticked in Make POs (once the extra is Signed, Work Done Customer Refused, or Approved for internal); lines not put on a PO go to the trade budget.</div>
 
                             <div className="totals">
                                 <div><span>Cost of all lines</span><span>{$(totals.costTotal)}</span></div>
@@ -1146,7 +1148,7 @@
                                     )}
                                     <label>Status history</label>
                                     <ul className="small-list">
-                                        {(current.statusHistory || []).map((h, i) => <li key={i}>{h.status} {fmtWhen(h.at)} by {h.by && h.by.name}</li>)}
+                                        {(current.statusHistory || []).map((h, i) => <li key={i}>{statusLabel(h.status)} {fmtWhen(h.at)} by {h.by && h.by.name}</li>)}
                                     </ul>
                                     {(current.versions || []).length > 0 && (
                                         <div>
