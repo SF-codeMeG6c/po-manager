@@ -72,6 +72,14 @@
         .modal { background: white; border-radius: 8px; padding: 22px; width: 100%; max-width: 860px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
         .po-tag { display: inline-block; margin-top: 4px; font-size: 12px; font-weight: 600; color: #0052a3; white-space: nowrap; }
         .group { border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; margin-top: 8px; font-size: 13px; background: #fafcff; }
+        .tabs { display: flex; gap: 4px; border-bottom: 2px solid #ddd; margin-bottom: 20px; }
+        .tab { background: none; border: none; border-bottom: 3px solid transparent; margin-bottom: -2px; padding: 8px 16px; font-size: 15px; font-weight: 600; color: #666; border-radius: 0; }
+        .tab.on { color: #0066cc; border-bottom-color: #0066cc; }
+        .room td { background: #f1f4f8; font-weight: 600; font-size: 12px; color: #444; padding: 5px 8px; }
+        tr.ticked td { background: #eef8ee; }
+        .credits td { font-size: 12.5px; padding: 4px 6px; }
+        .credits td input[type=text] { padding: 4px 6px; font-size: 12.5px; }
+        .pnote { font-size: 11px; font-weight: 600; color: #8a5a00; }
         @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .totals { width: 100%; } }
     </style>
 </head>
@@ -79,7 +87,7 @@
     <div class="container">
         <a href="/" class="back-link">&larr; Dashboard</a>
         <h1>Extras &amp; Credits</h1>
-        <p class="subtitle">Freeman Restoration extra change orders</p>
+        <p class="subtitle">Freeman Restoration extra change orders and credits</p>
         <div id="app"></div>
     </div>
 
@@ -351,6 +359,306 @@
             setTimeout(() => URL.revokeObjectURL(url), 10000);
         };
 
+        // ---------- Credits: read the Xactimate export (step 4a) ----------
+        // .xlsx is a zip of XML files. Read it with the browser's own unzip (Chrome / Edge), no outside library.
+        const unzipEntries = async (buf) => {
+            const dv = new DataView(buf), u8 = new Uint8Array(buf);
+            let eocd = -1;
+            for (let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+            if (eocd < 0) throw new Error('This is not an Excel (.xlsx) file.');
+            const count = dv.getUint16(eocd + 10, true);
+            let p = dv.getUint32(eocd + 16, true);
+            const dec = new TextDecoder();
+            const out = {};
+            for (let k = 0; k < count; k++) {
+                if (dv.getUint32(p, true) !== 0x02014b50) break;
+                const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+                const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+                const local = dv.getUint32(p + 42, true);
+                const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+                out[name] = { method, csize, local };
+                p += 46 + nlen + xlen + clen;
+            }
+            const read = async (name) => {
+                const e = out[name];
+                if (!e) return null;
+                const start = e.local + 30 + dv.getUint16(e.local + 26, true) + dv.getUint16(e.local + 28, true);
+                const data = u8.subarray(start, start + e.csize);
+                if (e.method === 0) return dec.decode(data);
+                if (e.method !== 8) throw new Error('Unsupported zip method in ' + name);
+                const ds = new DecompressionStream('deflate-raw');
+                const stream = new Blob([data]).stream().pipeThrough(ds);
+                return await new Response(stream).text();
+            };
+            return { names: Object.keys(out), read };
+        };
+        const colIndex = (ref) => { const m = /^([A-Z]+)/.exec(ref || ''); let n = 0; if (m) for (const ch of m[1]) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+        const readXlsxRows = async (file) => {
+            const z = await unzipEntries(await file.arrayBuffer());
+            const parse = (t) => new DOMParser().parseFromString(t || '<x/>', 'application/xml');
+            const shared = [];
+            const ss = await z.read('xl/sharedStrings.xml');
+            if (ss) parse(ss).querySelectorAll('si').forEach(si => shared.push(Array.from(si.querySelectorAll('t')).map(t => t.textContent).join('')));
+            // First sheet: workbook order, then its file from the relationships; fall back to sheet1.xml
+            let sheetPath = 'xl/worksheets/sheet1.xml';
+            try {
+                const wb = parse(await z.read('xl/workbook.xml'));
+                const first = wb.querySelector('sheet');
+                const rid = first && (first.getAttribute('r:id') || first.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+                const rels = parse(await z.read('xl/_rels/workbook.xml.rels'));
+                const rel = Array.from(rels.querySelectorAll('Relationship')).find(r => r.getAttribute('Id') === rid);
+                if (rel) { const t = rel.getAttribute('Target'); sheetPath = t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, ''); }
+            } catch (e) { /* use sheet1.xml */ }
+            const sheet = await z.read(sheetPath);
+            if (!sheet) throw new Error('No worksheet found in the file.');
+            const rows = [];
+            parse(sheet).querySelectorAll('sheetData > row').forEach(r => {
+                const row = [];
+                r.querySelectorAll('c').forEach(c => {
+                    const t = c.getAttribute('t'), v = c.querySelector('v');
+                    let val = '';
+                    if (t === 's') val = shared[parseInt(v ? v.textContent : '0', 10)] ?? '';
+                    else if (t === 'inlineStr') val = Array.from(c.querySelectorAll('is t')).map(x => x.textContent).join('');
+                    else if (t === 'str' || t === 'b' || t === 'e') val = v ? v.textContent : '';
+                    else val = v ? Number(v.textContent) : '';
+                    row[colIndex(c.getAttribute('r'))] = val;
+                });
+                rows.push(row);
+            });
+            return rows;
+        };
+        const readCsvRows = (text) => {
+            const rows = []; let row = [], cur = '', q = false;
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+                else if (ch === '"') q = true;
+                else if (ch === ',') { row.push(cur); cur = ''; }
+                else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
+                else cur += ch;
+            }
+            if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+            return rows;
+        };
+        // Rows -> credit lines. Columns found by header name: #, Group Description, Desc, Qty, Unit, Unit Cost, Item Amount, Cat, Note 1, RCV.
+        // A line with no unit price shows its price note (CHANGE, ELE BID ITEM, OPEN-ITEM...) from the RCV column.
+        const parseExport = (rows) => {
+            const norm = (t) => String(t ?? '').trim().toLowerCase();
+            const hi = rows.findIndex(r => r && r.some(c => norm(c) === 'desc') && r.some(c => norm(c) === 'unit cost'));
+            if (hi < 0) throw new Error('This does not look like the Xactimate export (no "Desc" and "Unit Cost" columns).');
+            const h = rows[hi].map(norm);
+            const col = (name) => h.indexOf(name);
+            const c = { n: col('#'), room: col('group description'), desc: col('desc'), qty: col('qty'), unit: col('unit'), unitCost: col('unit cost'),
+                        amount: col('item amount'), cat: col('cat'), note: col('note 1'), rcv: col('rcv') };
+            const num = (v) => { const x = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.\-]/g, '')); return isNaN(x) ? 0 : x; };
+            const lines = [];
+            rows.slice(hi + 1).forEach(r => {
+                if (!r) return;
+                const n = Math.round(num(r[c.n]));
+                const desc = String(r[c.desc] ?? '').trim();
+                if (!n || !desc) return;
+                const qty = num(r[c.qty]), unitCost = num(r[c.unitCost]);
+                const rcv = c.rcv >= 0 ? r[c.rcv] : '';
+                const priceNote = !unitCost && typeof rcv === 'string' && rcv.trim() ? rcv.trim() : '';
+                const amount = c.amount >= 0 && r[c.amount] !== '' && r[c.amount] !== undefined ? num(r[c.amount]) : qty * unitCost;
+                lines.push({ n, room: String(r[c.room] ?? '').trim(), desc, qty: round2(qty), unit: String(r[c.unit] ?? '').trim(), unitCost,
+                             amount: round2(amount), cat: String(r[c.cat] ?? '').trim().toUpperCase(), note: String(r[c.note] ?? '').trim(), priceNote });
+            });
+            if (!lines.length) throw new Error('No line items found in the file.');
+            return lines;
+        };
+        const CREDIT_BUDGET = 0.60; // trade budget comes down by 60% of a credited line; 100% when it is picked as an allowance
+        // picks: { [line #]: { allowance, note, amount (typed, price-note lines only) } }
+        const calcCredits = (lines, picks, paPct) => {
+            const byN = {}; (lines || []).forEach(l => { byN[l.n] = l; });
+            let total = 0; const byCat = {}; const rows = [];
+            Object.keys(picks || {}).forEach(k => {
+                const l = byN[k]; if (!l) return;
+                const pk = picks[k];
+                const credit = l.priceNote || !l.unitCost ? round2(toNumber(pk.amount)) : round2(l.amount);
+                const budget = round2(credit * (pk.allowance ? 1 : CREDIT_BUDGET));
+                total += credit;
+                const cat = l.cat || '(no Cat)';
+                byCat[cat] = round2((byCat[cat] || 0) + budget);
+                rows.push({ ...l, credit, budget, allowance: !!pk.allowance, userNote: pk.note || '' });
+            });
+            total = round2(total);
+            const paFee = round2(total * (paPct || 0) / 100);
+            rows.sort((a, b) => a.n - b.n);
+            return { rows, total, paPct: paPct || 0, paFee, lessPA: round2(total - paFee), byCat, budgetTotal: round2(Object.values(byCat).reduce((a, b) => a + b, 0)) };
+        };
+        const cleanPicks = (picks) => {
+            const out = {};
+            Object.keys(picks || {}).forEach(k => {
+                const p = picks[k] || {};
+                out[k] = { allowance: p.allowance === true, note: String(p.note || '').trim(), amount: p.amount === undefined || p.amount === '' ? '' : String(round2(toNumber(p.amount))) };
+            });
+            return out;
+        };
+        const samePicks = (a, b) => JSON.stringify(Object.keys(cleanPicks(a)).sort().map(k => [k, cleanPicks(a)[k]])) === JSON.stringify(Object.keys(cleanPicks(b)).sort().map(k => [k, cleanPicks(b)[k]]));
+
+        function CreditsTab({ jobId, card, me, onDirty }) {
+            const [exp, setExp] = useState(undefined);   // creditExport/current: undefined = loading, null = none
+            const [list, setList] = useState(undefined); // credits/list
+            const [picks, setPicks] = useState({});
+            const [search, setSearch] = useState('');
+            const [onlyTicked, setOnlyTicked] = useState(false);
+            const [busy, setBusy] = useState('');
+            const [msg, setMsg] = useState(null);
+            const fileRef = useRef(null);
+            const say = (ok, text) => setMsg({ ok, text });
+            const stamp = () => firebase.firestore.Timestamp.now();
+            const base = db.collection('extras').doc(jobId);
+
+            useEffect(() => base.collection('creditExport').doc('current').onSnapshot(d => setExp(d.exists ? d.data() : null), e => { setExp(null); say(false, 'Error loading the export: ' + e.message); }), [jobId]);
+            useEffect(() => base.collection('credits').doc('list').onSnapshot(d => setList(d.exists ? d.data() : null), e => { setList(null); say(false, 'Error loading credits: ' + e.message); }), [jobId]);
+            const saved = (list && list.picks) || {};
+            const dirty = list !== undefined && !samePicks(picks, saved);
+            useEffect(() => { onDirty(dirty); }, [dirty]);
+            // Load the saved ticks (and again after a save), unless there are unsaved changes
+            const loadedRef = useRef(false);
+            useEffect(() => { if (list === undefined) return; if (!loadedRef.current || !dirty) { setPicks(cleanPicks(saved)); loadedRef.current = true; } }, [list]);
+
+            const paPct = (() => { const p = (card && card.publicAdjusting) || {}; const n = parseFloat(String(p.percent || '').replace(/[^0-9.]/g, '')); return isNaN(n) ? 0 : n; })();
+            const lines = (exp && exp.lines) || [];
+            const totals = calcCredits(lines, picks, paPct);
+            const tickedCount = Object.keys(picks).length;
+
+            const upload = async (file) => {
+                if (!file) return;
+                if (exp && Object.keys(saved).length) { say(false, 'Credits are already picked on this export, so it cannot be replaced.'); return; }
+                if (exp && !window.confirm(`Replace the export ${exp.fileName} with ${file.name}? The old one is kept.`)) return;
+                setBusy('upload'); setMsg(null);
+                try {
+                    const rows = /\.csv$/i.test(file.name) ? readCsvRows(await file.text()) : await readXlsxRows(file);
+                    const parsed = parseExport(rows);
+                    if (exp) await base.collection('creditExport').doc('old_' + Date.now()).set({ ...exp, replacedAt: stamp(), replacedBy: me });
+                    await base.collection('creditExport').doc('current').set({ fileName: file.name, count: parsed.length, lines: parsed, uploadedAt: stamp(), uploadedBy: me });
+                    say(true, `${file.name}: ${parsed.length} lines read.`);
+                } catch (e) { say(false, 'Upload failed: ' + e.message); }
+                finally { setBusy(''); if (fileRef.current) fileRef.current.value = ''; }
+            };
+            const toggle = (l, on) => setPicks(p => { const x = { ...p }; if (on) x[l.n] = { allowance: false, note: '', amount: '' }; else delete x[l.n]; return x; });
+            const setPick = (n, k, v) => setPicks(p => ({ ...p, [n]: { ...p[n], [k]: v } }));
+            const save = async () => {
+                const byN = {}; lines.forEach(l => { byN[l.n] = l; });
+                const missing = Object.keys(picks).filter(k => byN[k] && (byN[k].priceNote || !byN[k].unitCost) && !(toNumber(picks[k].amount) > 0));
+                if (missing.length) { say(false, `Type a credit amount for line${missing.length > 1 ? 's' : ''} ${missing.join(', ')} (no price on the estimate).`); return; }
+                setBusy('save'); setMsg(null);
+                try {
+                    const clean = cleanPicks(picks);
+                    const t = calcCredits(lines, clean, paPct);
+                    if (list) await base.collection('credits').doc('v_' + Date.now()).set({ kind: 'version', picks: list.picks || {}, total: list.total || 0, savedAt: list.updatedAt || null, savedBy: list.updatedBy || null, replacedAt: stamp(), replacedBy: me });
+                    await base.collection('credits').doc('list').set({
+                        picks: clean, total: t.total, paPct: t.paPct, paFee: t.paFee, lessPA: t.lessPA, budgetByCat: t.byCat, budgetTotal: t.budgetTotal,
+                        exportFile: exp ? exp.fileName : '', updatedAt: stamp(), updatedBy: me
+                    });
+                    setPicks(clean);
+                    say(true, 'Credits saved.' + (list ? ' The earlier list is kept.' : ''));
+                } catch (e) { say(false, 'Save failed: ' + e.message); }
+                finally { setBusy(''); }
+            };
+
+            if (exp === undefined || list === undefined) return <div className="section">Loading credits...</div>;
+
+            const q = search.trim().toLowerCase();
+            const shown = lines.filter(l => (!onlyTicked || picks[l.n]) && (!q || String(l.n) === q || l.desc.toLowerCase().includes(q) || l.room.toLowerCase().includes(q) || l.cat.toLowerCase().includes(q) || l.note.toLowerCase().includes(q) || l.priceNote.toLowerCase().includes(q)));
+            let lastRoom = null;
+            const fmtW = (t) => { try { const d = t && t.toDate ? t.toDate() : null; return d ? `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : ''; } catch (e) { return ''; } };
+
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">CES EXPORT</div>
+                        {exp ? (
+                            <p style={{ fontSize: 13 }}><b>{exp.fileName}</b>: {exp.count} lines. Uploaded {fmtW(exp.uploadedAt)} by {exp.uploadedBy && exp.uploadedBy.name}.
+                                {!Object.keys(saved).length && <span> <button className="btn-link" disabled={!!busy} onClick={() => fileRef.current && fileRef.current.click()}>Replace export</button> (only until credits are saved)</span>}
+                            </p>
+                        ) : (
+                            <div>
+                                <p style={{ fontSize: 13, color: '#555' }}>Upload the Xactimate export of the signed CES (Excel .xlsx, or .csv), as it comes out of Xactimate. One export per job.</p>
+                                <button className="btn-primary" disabled={!!busy} onClick={() => fileRef.current && fileRef.current.click()}>{busy === 'upload' ? 'Reading...' : 'Upload CES export'}</button>
+                            </div>
+                        )}
+                        <input ref={fileRef} type="file" accept=".xlsx,.csv" style={{ display: 'none' }} onChange={e => upload(e.target.files && e.target.files[0])} />
+                        {msg && !lines.length && <div className={msg.ok ? 'ok' : 'error'}>{msg.text}</div>}
+                    </div>
+
+                    {lines.length > 0 && (
+                        <div className="section">
+                            <div className="section-title">CREDITS ({tickedCount} line{tickedCount !== 1 ? 's' : ''})</div>
+                            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+                                <input style={{ flex: 1, minWidth: 220 }} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search: line #, description, room, Cat, note" />
+                                <label className="radio-line" style={{ margin: 0 }}><input type="checkbox" checked={onlyTicked} onChange={e => setOnlyTicked(e.target.checked)} />Show only credited lines</label>
+                            </div>
+                            <div style={{ maxHeight: 560, overflowY: 'auto', border: '1px solid #eee' }}>
+                                <table className="credits">
+                                    <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                                        <tr><th style={{ width: 30 }}></th><th style={{ width: 44 }}>#</th><th>Description</th><th className="num">Qty</th><th className="num">Unit price</th><th>Cat</th><th className="num" style={{ width: 110 }}>Credit</th><th style={{ width: 80 }}>Allowance</th><th style={{ width: 200 }}>Note</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {shown.map(l => {
+                                            const pk = picks[l.n];
+                                            const typed = !!(l.priceNote || !l.unitCost);
+                                            const head = l.room !== lastRoom ? (lastRoom = l.room, <tr key={'r' + l.n} className="room"><td colSpan={9}>{l.room || '(no room)'}</td></tr>) : null;
+                                            return (
+                                                <React.Fragment key={l.n}>
+                                                    {head}
+                                                    <tr className={pk ? 'ticked' : ''}>
+                                                        <td><input type="checkbox" style={{ width: 'auto' }} checked={!!pk} onChange={e => toggle(l, e.target.checked)} /></td>
+                                                        <td>{l.n}</td>
+                                                        <td>{l.desc}{l.note && <div className="hint" style={{ marginTop: 1 }}>{l.note}</div>}</td>
+                                                        <td className="num">{l.qty} {l.unit}</td>
+                                                        <td className="num">{typed ? <span className="pnote">{l.priceNote || 'no price'}</span> : $(l.unitCost)}</td>
+                                                        <td>{l.cat}</td>
+                                                        <td className="num">
+                                                            {typed ? (pk ? <input type="text" style={{ textAlign: 'right' }} value={pk.amount} placeholder="type amount" onChange={e => setPick(l.n, 'amount', e.target.value.replace(/[^0-9.]/g, ''))} /> : '')
+                                                                : (pk ? <b>{$(l.amount)}</b> : <span style={{ color: '#888' }}>{$(l.amount)}</span>)}
+                                                        </td>
+                                                        <td>{pk && <input type="checkbox" style={{ width: 'auto' }} checked={!!pk.allowance} onChange={e => setPick(l.n, 'allowance', e.target.checked)} />}</td>
+                                                        <td>{pk && <input type="text" value={pk.note} onChange={e => setPick(l.n, 'note', e.target.value)} />}</td>
+                                                    </tr>
+                                                </React.Fragment>
+                                            );
+                                        })}
+                                        {shown.length === 0 && <tr><td colSpan={9} style={{ color: '#888' }}>No lines match.</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="hint">Credit = qty × unit price. Lines with a price note (CHANGE, BID ITEM, OPEN-ITEM...) have no price: type the credit amount when one applies. Trade budget comes down by 60% of each credit, or 100% for allowance lines.</div>
+
+                            <div style={{ display: 'flex', gap: 30, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 14 }}>
+                                <div style={{ flex: 1, minWidth: 260 }}>
+                                    <label>Budget reduction by trade</label>
+                                    {Object.keys(totals.byCat).length === 0 ? <p style={{ color: '#888', fontSize: 13 }}>No credits picked.</p> : (
+                                        <table>
+                                            <tbody>
+                                                {Object.keys(totals.byCat).sort().map(k => <tr key={k}><td>{k}</td><td className="num">{$(totals.byCat[k])}</td></tr>)}
+                                                <tr><td><b>Total</b></td><td className="num"><b>{$(totals.budgetTotal)}</b></td></tr>
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                                <div className="totals" style={{ marginTop: 0 }}>
+                                    <div><span>Credits</span><span>{$(totals.total)}</span></div>
+                                    <div><span>Less PA fee ({totals.paPct}%)</span><span>({$(totals.paFee)})</span></div>
+                                    <div className="grand"><span>Credits less PA fee</span><span>{$(totals.lessPA)}</span></div>
+                                    <div className="hint">PA % from Customer Information.</div>
+                                </div>
+                            </div>
+
+                            <div className="row-actions">
+                                <button className="btn-primary" disabled={!!busy || !dirty} onClick={save}>{busy === 'save' ? 'Saving...' : 'Save credits'}</button>
+                            </div>
+                            {dirty && <div className="hint">Unsaved changes.</div>}
+                            {msg && <div className={msg.ok ? 'ok' : 'error'}>{msg.text}</div>}
+                            {list && list.updatedAt && <div className="hint">Last saved {fmtW(list.updatedAt)} by {list.updatedBy && list.updatedBy.name}.</div>}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         // ---------- Pick lists for Cat and Vendor ----------
         // Built-in trade codes (same as Trades-EST's built-in start list). Used when the saved start list can't be read.
         const BUILT_IN_TRADES = [
@@ -436,6 +744,8 @@
             const [busy, setBusy] = useState('');
             const [msg, setMsg] = useState(null); // { ok, text }
             const [showVersions, setShowVersions] = useState(false);
+            const [tab, setTab] = useState('extras');           // 'extras' or 'credits'
+            const [creditsDirty, setCreditsDirty] = useState(false);
             const fileRef = useRef(null);
             const [jobPOs, setJobPOs] = useState([]);       // this job's POs: { category, subName }
             const [trades, setTrades] = useState(BUILT_IN_TRADES); // company trade list (Trades-EST start list)
@@ -612,12 +922,13 @@
 
             const say = (ok, text) => setMsg({ ok, text });
             const leaveOk = () => !dirty || window.confirm('You have unsaved changes to this extra. Drop them?');
+            const leaveJobOk = () => (!dirty && !creditsDirty) || window.confirm('You have unsaved changes on this job. Drop them?');
 
             const pickJob = (id) => {
                 if (id === jobId) return;
-                if (!leaveOk()) return;
+                if (!leaveJobOk()) return;
                 stopVoice();
-                setOpenId(null); setForm(null); setMsg(null); setShowVersions(false);
+                setOpenId(null); setForm(null); setMsg(null); setShowVersions(false); setCreditsDirty(false);
                 setJobId(id);
             };
             const openExtra = (x) => {
@@ -971,6 +1282,19 @@
                     </div>
 
                     {job && (
+                        <div className="tabs">
+                            <button className={'tab' + (tab === 'extras' ? ' on' : '')} onClick={() => setTab('extras')}>Extras</button>
+                            <button className={'tab' + (tab === 'credits' ? ' on' : '')} onClick={() => setTab('credits')}>Credits{creditsDirty ? ' *' : ''}</button>
+                        </div>
+                    )}
+                    {job && (
+                        <div style={{ display: tab === 'credits' ? 'block' : 'none' }}>
+                            <CreditsTab key={jobId} jobId={jobId} card={card} me={me} onDirty={setCreditsDirty} />
+                        </div>
+                    )}
+
+                    <div style={{ display: tab === 'extras' ? 'block' : 'none' }}>
+                    {job && (
                         <div className="section">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                                 <div className="section-title" style={{ margin: 0 }}>EXTRAS</div>
@@ -1171,6 +1495,7 @@
                             )}
                         </div>
                     )}
+                    </div>
                 </div>
             );
         }
