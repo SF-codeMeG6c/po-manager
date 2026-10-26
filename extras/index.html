@@ -502,7 +502,8 @@
             const [list, setList] = useState(undefined); // credits/list
             const [picks, setPicks] = useState({});
             const [search, setSearch] = useState('');
-            const [onlyTicked, setOnlyTicked] = useState(false);
+            const [catPick, setCatPick] = useState(''); // '' = all categories; otherwise only that Cat's lines
+            const [onlyTicked, setOnlyTicked] = useState(false); // show only credited lines
             const [busy, setBusy] = useState('');
             const [msg, setMsg] = useState(null);
             const fileRef = useRef(null);
@@ -562,7 +563,16 @@
             if (exp === undefined || list === undefined) return <div className="section">Loading credits...</div>;
 
             const q = search.trim().toLowerCase();
-            const shown = lines.filter(l => (!onlyTicked || picks[l.n]) && (!q || String(l.n) === q || l.desc.toLowerCase().includes(q) || l.room.toLowerCase().includes(q) || l.cat.toLowerCase().includes(q) || l.note.toLowerCase().includes(q) || l.priceNote.toLowerCase().includes(q)));
+            const catOf = (l) => l.cat || '(no Cat)';
+            // Each Cat: number of lines, CES dollar total (priced lines), and what is credited so far
+            const catStats = {};
+            const creditedByN = {}; totals.rows.forEach(r => { creditedByN[r.n] = r.credit; });
+            lines.forEach(l => {
+                const k = catOf(l), c = catStats[k] || (catStats[k] = { count: 0, ces: 0, credited: 0 });
+                c.count++; c.ces = round2(c.ces + (l.priceNote ? 0 : l.amount)); c.credited = round2(c.credited + (creditedByN[l.n] || 0));
+            });
+            const catList = Object.keys(catStats).sort().filter(k => !onlyTicked || catStats[k].credited > 0 || k === catPick);
+            const shown = lines.filter(l => (!onlyTicked || picks[l.n]) && (!catPick || catOf(l) === catPick) && (!q || String(l.n) === q || l.desc.toLowerCase().includes(q) || l.room.toLowerCase().includes(q) || l.cat.toLowerCase().includes(q) || l.note.toLowerCase().includes(q) || l.priceNote.toLowerCase().includes(q)));
             let lastRoom = null;
             const fmtW = (t) => { try { const d = t && t.toDate ? t.toDate() : null; return d ? `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : ''; } catch (e) { return ''; } };
 
@@ -590,7 +600,27 @@
                             <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
                                 <input style={{ flex: 1, minWidth: 220 }} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search: line #, description, room, Cat, note" />
                                 <label className="radio-line" style={{ margin: 0 }}><input type="checkbox" checked={onlyTicked} onChange={e => setOnlyTicked(e.target.checked)} />Show only credited lines</label>
+                                <label style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6, fontWeight: 'normal' }}>Cat
+                                    <select value={catPick} onChange={e => setCatPick(e.target.value)} style={{ width: 'auto', maxWidth: 320 }}>
+                                        <option value="">All categories</option>
+                                        {catList.map(k => <option key={k} value={k}>{onlyTicked ? `${k} · ${$(catStats[k].credited)} credited` : `${k} · ${catStats[k].count} line${catStats[k].count !== 1 ? 's' : ''} · ${$(catStats[k].ces)}`}</option>)}
+                                    </select>
+                                </label>
                             </div>
+                            {(onlyTicked || catPick) && (() => {
+                                const cs = catPick ? catStats[catPick] : null;
+                                const credLines = totals.rows.filter(r => !catPick || catOf(r) === catPick);
+                                const credSum = round2(credLines.reduce((a, r) => a + r.credit, 0));
+                                const n = credLines.length;
+                                return (
+                                    <div className="info" style={{ marginBottom: 8 }}>
+                                        {onlyTicked
+                                            ? (catPick ? <span><b>{catPick} credited</b>: {n} line{n !== 1 ? 's' : ''} · {$(credSum)}{cs ? ` (of ${$(cs.ces)} on the CES)` : ''}</span>
+                                                       : <span><b>Credited</b>: {n} line{n !== 1 ? 's' : ''} · {$(credSum)}</span>)
+                                            : cs && <span><b>{catPick}</b>: {cs.count} line{cs.count !== 1 ? 's' : ''} · {$(cs.ces)} on the CES · {$(cs.credited)} credited</span>}
+                                    </div>
+                                );
+                            })()}
                             <div style={{ maxHeight: 560, overflowY: 'auto', border: '1px solid #eee' }}>
                                 <table className="credits">
                                     <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
