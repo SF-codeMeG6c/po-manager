@@ -351,6 +351,95 @@
             return await doc.save();
         };
 
+        // ---------- Credit page PDF (step 4b) ----------
+        // Columns: Line #, Description, Quantity, Unit Cost, Category, Notes, Extended price (no room).
+        // Typed lines (price-note lines) leave Unit Cost blank; their typed amount is the extended price.
+        const buildCreditPdf = async ({ rows, totals, name, address, code, dateText }) => {
+            const { PDFDocument, StandardFonts, rgb } = PDFLib;
+            const doc = await PDFDocument.create();
+            const font = await doc.embedFont(StandardFonts.Helvetica);
+            const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+            const W = 612, H = 792, M = 36, BOTTOM = 56;
+            const black = rgb(0, 0, 0), grey = rgb(0.4, 0.4, 0.4), light = rgb(0.8, 0.8, 0.8);
+            const SZ = 8.5, LH = 10.5;
+            let page, y, pageNo = 0;
+            const wrap = (text, f, size, width) => {
+                const out = [];
+                plain(text).split('\n').forEach(para => {
+                    const words = para.split(/\s+/).filter(Boolean);
+                    if (!words.length) { out.push(''); return; }
+                    let cur = '';
+                    words.forEach(w => {
+                        let word = w;
+                        while (f.widthOfTextAtSize(word, size) > width) { // a very long word is cut to fit
+                            let k = word.length; while (k > 1 && f.widthOfTextAtSize(word.slice(0, k), size) > width) k--;
+                            if (cur) { out.push(cur); cur = ''; }
+                            out.push(word.slice(0, k)); word = word.slice(k);
+                        }
+                        const test = cur ? cur + ' ' + word : word;
+                        if (f.widthOfTextAtSize(test, size) <= width) cur = test; else { if (cur) out.push(cur); cur = word; }
+                    });
+                    if (cur) out.push(cur);
+                });
+                return out;
+            };
+            const text = (s2, x, yy, size = SZ, f = font, color = black) => page.drawText(plain(s2), { x, y: yy, size, font: f, color });
+            const right = (s2, xr, yy, size = SZ, f = font) => text(s2, xr - f.widthOfTextAtSize(plain(s2), size), yy, size, f);
+            // Column layout (x = left edge; numbers right-aligned at the column's right edge)
+            const C = { n: M, desc: M + 30, qty: M + 245, unit: M + 300, cat: M + 308, note: M + 352, ext: W - M };
+            const DESC_W = C.qty - 48 - C.desc, NOTE_W = C.ext - 58 - C.note;
+            const header = () => {
+                text('Line #', C.n, y, SZ, bold); text('Description', C.desc, y, SZ, bold); right('Quantity', C.qty, y, SZ, bold);
+                right('Unit Cost', C.unit, y, SZ, bold); text('Category', C.cat, y, SZ, bold); text('Notes', C.note, y, SZ, bold); right('Extended', C.ext, y, SZ, bold);
+                y -= 4; page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 1, color: black }); y -= 11;
+            };
+            const newPage = () => {
+                page = doc.addPage([W, H]); pageNo++;
+                const fw = font.widthOfTextAtSize(FOOTER, 8);
+                text(FOOTER, (W - fw) / 2, 26, 8, font, grey);
+                y = H - M;
+                if (pageNo > 1) { text(`Credits - ${name || code || ''} (continued)`, M, y, 9, bold); y -= 18; header(); }
+            };
+            newPage();
+            text('Freeman Restoration', M, y, 15, bold); y -= 13;
+            COMPANY.forEach(l => { text(l, M, y, 8.5, font, grey); y -= 10; });
+            y -= 10;
+            const title = 'CREDITS';
+            text(title, (W - bold.widthOfTextAtSize(title, 17)) / 2, y, 17, bold); y -= 26;
+            text('Name:', M, y, 9.5, bold); text(name || '', M + 50, y, 9.5);
+            text('Date:', 420, y, 9.5, bold); text(dateText, 460, y, 9.5); y -= 13;
+            text('Address:', M, y, 9.5, bold);
+            const addr = wrap(address || '', font, 9.5, 300);
+            addr.forEach((l, i) => text(l, M + 50, y - i * 12, 9.5));
+            if (code) { text('Job:', 420, y, 9.5, bold); text(code, 460, y, 9.5); }
+            y -= Math.max(1, addr.length) * 12 + 14;
+            header();
+            rows.forEach(r => {
+                const typed = !!(r.priceNote || !r.unitCost);
+                const d = wrap(r.desc, font, SZ, DESC_W), nt = wrap(r.userNote || '', font, SZ, NOTE_W);
+                const h = Math.max(1, d.length, nt.length) * LH + 3;
+                if (y - h < BOTTOM) newPage();
+                text(String(r.n), C.n, y);
+                d.forEach((t, i) => text(t, C.desc, y - i * LH));
+                right(`${fmtNum(r.qty)} ${r.unit || ''}`.trim(), C.qty, y);
+                if (!typed) right($(r.unitCost), C.unit, y);
+                text(r.cat || '', C.cat, y);
+                nt.forEach((t, i) => text(t, C.note, y - i * LH));
+                right($(r.credit), C.ext, y);
+                y -= h;
+                page.drawLine({ start: { x: M, y: y + LH - 3 }, end: { x: W - M, y: y + LH - 3 }, thickness: 0.4, color: light });
+            });
+            if (y - 60 < BOTTOM) newPage();
+            y -= 8;
+            const tl = 360;
+            text('Credits', tl, y, 10); right($(totals.total), C.ext, y, 10); y -= 14;
+            text(`Less PA fee (${totals.paPct}%)`, tl, y, 10); right('(' + $(totals.paFee) + ')', C.ext, y, 10); y -= 6;
+            page.drawLine({ start: { x: tl, y }, end: { x: C.ext, y }, thickness: 1, color: black }); y -= 13;
+            text('Credits less PA fee', tl, y, 11, bold); right($(totals.lessPA), C.ext, y, 11, bold);
+            return await doc.save();
+        };
+        const fmtNum = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
         const downloadBytes = (bytes, fileName) => {
             const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
             const a = document.createElement('a');
@@ -497,7 +586,7 @@
         };
         const samePicks = (a, b) => JSON.stringify(Object.keys(cleanPicks(a)).sort().map(k => [k, cleanPicks(a)[k]])) === JSON.stringify(Object.keys(cleanPicks(b)).sort().map(k => [k, cleanPicks(b)[k]]));
 
-        function CreditsTab({ jobId, card, me, onDirty }) {
+        function CreditsTab({ jobId, job, card, me, onDirty }) {
             const [exp, setExp] = useState(undefined);   // creditExport/current: undefined = loading, null = none
             const [list, setList] = useState(undefined); // credits/list
             const [picks, setPicks] = useState({});
@@ -512,6 +601,11 @@
             const base = db.collection('extras').doc(jobId);
 
             useEffect(() => base.collection('creditExport').doc('current').onSnapshot(d => setExp(d.exists ? d.data() : null), e => { setExp(null); say(false, 'Error loading the export: ' + e.message); }), [jobId]);
+            const [pdfs, setPdfs] = useState([]);
+            useEffect(() => base.collection('credits').where('kind', '==', 'pdf').onSnapshot(sn => {
+                const l = []; sn.forEach(d => l.push({ id: d.id, ...d.data() }));
+                l.sort((a, b) => (b.id > a.id ? 1 : -1)); setPdfs(l);
+            }, () => setPdfs([])), [jobId]);
             useEffect(() => base.collection('credits').doc('list').onSnapshot(d => setList(d.exists ? d.data() : null), e => { setList(null); say(false, 'Error loading credits: ' + e.message); }), [jobId]);
             const saved = (list && list.picks) || {};
             const dirty = list !== undefined && !samePicks(picks, saved);
@@ -541,6 +635,25 @@
             };
             const toggle = (l, on) => setPicks(p => { const x = { ...p }; if (on) x[l.n] = { allowance: false, note: '', amount: '' }; else delete x[l.n]; return x; });
             const setPick = (n, k, v) => setPicks(p => ({ ...p, [n]: { ...p[n], [k]: v } }));
+            const makeCreditPdf = async () => {
+                if (dirty) { say(false, 'Save credits first.'); return; }
+                const t = calcCredits(lines, saved, paPct);
+                if (!t.rows.length) { say(false, 'No credits picked.'); return; }
+                setBusy('pdf'); setMsg(null);
+                try {
+                    const d = new Date();
+                    const code = (job && job.code) || '';
+                    const bytes = await buildCreditPdf({ rows: t.rows, totals: t, name: customerName(card), address: job ? [job.address, job.cityStateZip].filter(Boolean).join(', ') : '', code, dateText: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}` });
+                    const fileName = `Credits_$${fmtMoney(t.total)}_${code.replace(/[^\w.-]+/g, '_') || 'job'}_${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}.pdf`;
+                    downloadBytes(bytes, fileName);
+                    const ref = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                    await ref.put(new Blob([bytes], { type: 'application/pdf' }));
+                    const url = await ref.getDownloadURL();
+                    await base.collection('credits').doc('pdf_' + Date.now()).set({ kind: 'pdf', url, fileName, total: t.total, lessPA: t.lessPA, lines: t.rows.length, madeAt: stamp(), madeBy: me });
+                    say(true, `${fileName} downloaded and saved with the job. Add it to the AAR Statement Paperwork.`);
+                } catch (e) { say(false, 'PDF failed: ' + e.message); }
+                finally { setBusy(''); }
+            };
             const save = async () => {
                 const byN = {}; lines.forEach(l => { byN[l.n] = l; });
                 const missing = Object.keys(picks).filter(k => byN[k] && (byN[k].priceNote || !byN[k].unitCost) && !(toNumber(picks[k].amount) > 0));
@@ -679,10 +792,19 @@
 
                             <div className="row-actions">
                                 <button className="btn-primary" disabled={!!busy || !dirty} onClick={save}>{busy === 'save' ? 'Saving...' : 'Save credits'}</button>
+                                <button className="btn-secondary" disabled={!!busy || dirty || !Object.keys(saved).length} onClick={makeCreditPdf}>{busy === 'pdf' ? 'Making PDF...' : 'Make credit page PDF'}</button>
                             </div>
                             {dirty && <div className="hint">Unsaved changes.</div>}
                             {msg && <div className={msg.ok ? 'ok' : 'error'}>{msg.text}</div>}
                             {list && list.updatedAt && <div className="hint">Last saved {fmtW(list.updatedAt)} by {list.updatedBy && list.updatedBy.name}.</div>}
+                            {pdfs.length > 0 && (
+                                <div style={{ marginTop: 12 }}>
+                                    <label>Credit pages made</label>
+                                    <ul className="small-list">
+                                        {pdfs.map(p2 => <li key={p2.id}><a href={p2.url} target="_blank" rel="noopener">{p2.fileName}</a> ({p2.lines} lines, {$(p2.total)}) {fmtW(p2.madeAt)} by {p2.madeBy && p2.madeBy.name}</li>)}
+                                    </ul>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -1319,7 +1441,7 @@
                     )}
                     {job && (
                         <div style={{ display: tab === 'credits' ? 'block' : 'none' }}>
-                            <CreditsTab key={jobId} jobId={jobId} card={card} me={me} onDirty={setCreditsDirty} />
+                            <CreditsTab key={jobId} jobId={jobId} job={job} card={card} me={me} onDirty={setCreditsDirty} />
                         </div>
                     )}
 
