@@ -379,9 +379,12 @@
             const [lastSaved, setLastSaved] = useState(null); // { name, at }
             const [saving, setSaving] = useState(false);
             const [message, setMessage] = useState('');
-            const [pos, setPos] = useState([]);              // this job's POs (read-only): from Trades-EST until handed off, then from PO Manager
+            const [livePos, setPos] = useState([]);          // this job's POs (read-only): from Trades-EST until handed off, then from PO Manager
             const [handoff, setHandoff] = useState(null);    // the job's Trades-EST handoff: undefined = never handed off, null = loading
-            const [excludedPoIds, setExcludedPoIds] = useState([]);
+            const [liveExcluded, setExcludedPoIds] = useState([]);
+            const [lockRec, setLockRec] = useState(null);    // { cesLock, lockHistory } from gpm/{jobId}, live
+            const [lockBusy, setLockBusy] = useState(false);
+            const [showLockHistory, setShowLockHistory] = useState(false);
             const [notesEdit, setNotesEdit] = useState(null); // one-off edits to the notes (not saved); null = use generated
             const [layout, setLayout] = useState(DEFAULT_LAYOUT);   // company-wide notes layout
             const [layoutInfo, setLayoutInfo] = useState(null);     // { name, at } of last layout save
@@ -415,7 +418,25 @@
                 if ((p.company || '').trim()) return { pct: 0, warn: true, note: 'No PA % on Customer Information. Set it there.' };
                 return { pct: 0, note: paCard === null ? 'Loading...' : 'No Public Adjusting company on Customer Information.' };
             })();
-            const inputs = { ...typedInputs, paFeePct: String(paInfo.pct) };
+            const liveInputs = { ...typedInputs, paFeePct: String(paInfo.pct) };
+
+            // CES lock (decided Oct 26): at CES signing the CES version is locked. While locked, the page shows the locked
+            // inputs, PA %, PO list and include ticks, so later PO revisions, Extra POs and new POs don't move it.
+            // Owner and Estimator lock and unlock; each lock takes a permanent snapshot; every lock is kept in lockHistory.
+            useEffect(() => {
+                setLockRec(null);
+                if (!jobId) return;
+                const unsub = db.collection('gpm').doc(jobId).onSnapshot(doc => {
+                    const d = doc.exists ? doc.data() : {};
+                    setLockRec({ cesLock: d.cesLock || null, lockHistory: Array.isArray(d.lockHistory) ? d.lockHistory : [] });
+                }, error => setMessage('Error loading the CES lock: ' + error.message));
+                return () => unsub();
+            }, [jobId]);
+            const cesLock = lockRec && lockRec.cesLock && lockRec.cesLock.locked ? lockRec.cesLock : null;
+            const locked = !!cesLock;
+            const inputs = locked ? { ...BLANK_INPUTS, ...cesLock.inputs } : liveInputs;
+            const pos = locked ? (cesLock.pos || []) : livePos;
+            const excludedPoIds = locked ? (cesLock.excludedPoIds || []) : liveExcluded;
 
             // Live list of the picked job's snapshots (read-only once saved)
             useEffect(() => {
@@ -576,6 +597,7 @@
                 setPdfReport(null);
                 setSnapNote('');
                 setOpenSnapId(null);
+                setShowLockHistory(false);
                 if (!id) { setInputs(BLANK_INPUTS); return; }
                 try {
                     const snap = await db.collection('gpm').doc(id).get();
@@ -673,7 +695,7 @@
             const field = (k, labelText, hint, type = 'text') => (
                 <div className="form-group">
                     <label>{labelText}</label>
-                    <input type={type} value={inputs[k]} onChange={e => setField(k, e.target.value)} />
+                    <input type={type} value={inputs[k]} disabled={locked} onChange={e => setField(k, e.target.value)} />
                     {hint && <div className="hint">{hint}</div>}
                 </div>
             );
@@ -696,6 +718,13 @@
                         </label>
                     </div>
 
+                    {jobId && locked && (
+                        <div style={{ background: '#e8f0fe', border: '1px solid #0066cc', borderRadius: '6px', padding: '10px 14px', marginBottom: '20px', fontSize: '14px' }}>
+                            <strong>Locked at CES signing</strong> {cesLock.at && cesLock.at.toDate ? cesLock.at.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : ''} by {cesLock.by ? cesLock.by.name : ''}.
+                            <span style={{ color: '#555' }}> This is the CES version. Extras, credits and PO changes do not change it.</span>
+                        </div>
+                    )}
+
                     {jobId && (<>
                         <div className="section">
                             <div className="section-title">SETTLEMENT</div>
@@ -705,8 +734,9 @@
                                 {field('deductible', 'Deductible', 'Enter as a positive number')}
                                 <div className="form-group">
                                     <label>PA fee %</label>
-                                    <div style={{ padding: '8px 0', fontWeight: 600 }}>{paInfo.pct}%</div>
-                                    <div className="hint" style={paInfo.warn || paCardError ? { color: '#d32f2f', fontWeight: 600 } : null}>{paCardError || paInfo.note}</div>
+                                    <div style={{ padding: '8px 0', fontWeight: 600 }}>{locked ? inputs.paFeePct : paInfo.pct}%</div>
+                                    {locked ? <div className="hint">Locked at CES signing.</div>
+                                        : <div className="hint" style={paInfo.warn || paCardError ? { color: '#d32f2f', fontWeight: 600 } : null}>{paCardError || paInfo.note}</div>}
                                 </div>
                             </div>
                         </div>
@@ -735,7 +765,11 @@
 
                         <div className="section">
                             <div className="section-title">POs ({pos.length})</div>
-                            {handoff !== null && (
+                            {locked ? (
+                                <div style={{ fontSize: '13px', color: '#555', marginTop: '-8px', marginBottom: '10px' }}>
+                                    POs as they were when the CES was locked. Later PO changes, Extra POs and new POs are not shown here.
+                                </div>
+                            ) : handoff !== null && (
                                 <div style={{ fontSize: '13px', color: '#555', marginTop: '-8px', marginBottom: '10px' }}>
                                     {fromPOManager ? 'POs from PO Manager (handed off from Trades-EST).'
                                         : handoff ? 'POs from Trades-EST (unlocked for changes). Requests with an amount, Pending and Complete.'
@@ -755,7 +789,7 @@
                                                 const bad = po.amount === null;
                                                 return (
                                                     <tr key={po.id} style={{ color: included ? '#333' : '#aaa' }}>
-                                                        <td><input type="checkbox" checked={included} onChange={e => toggleInclude(po.id, e.target.checked)} style={{ width: 'auto' }} /></td>
+                                                        <td><input type="checkbox" checked={included} disabled={locked} onChange={e => toggleInclude(po.id, e.target.checked)} style={{ width: 'auto' }} /></td>
                                                         <td>{po.poNumber}</td>
                                                         <td>{po.category}</td>
                                                         <td>{po.subName}</td>
@@ -1104,9 +1138,100 @@
                             );
                         })()}
 
-                        <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
-                            {saving ? 'Saving...' : 'Save'}
-                        </button>
+                        {!locked && (
+                            <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
+                                {saving ? 'Saving...' : 'Save'}
+                            </button>
+                        )}
+                        {(() => {
+                            const canLock = ['owner', 'estimator'].includes(profile.role);
+                            const byMe = { uid: user.uid, name: profile.name || user.email };
+                            const round2 = (n) => Math.round(n * 100) / 100;
+                            const history = (lockRec && lockRec.lockHistory) || [];
+                            const fmtWhen = (t) => t && t.toDate ? t.toDate().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : '';
+
+                            const lockCes = async () => {
+                                const poTotal = livePos.filter(p => !liveExcluded.includes(p.id)).reduce((s, p) => s + (p.amount || 0), 0);
+                                const r = calcGPM(liveInputs, poTotal);
+                                if (!r) { setMessage('Error: enter the settlement amount and Xactimate totals before locking.'); return; }
+                                if (dirty || !lastSaved) { setMessage('Error: save your changes before locking.'); return; }
+                                if (!window.confirm('CES signed: lock the CES version of this job?\n\nGPM will stop following POs and inputs. Extras, credits and PO changes will not change it. A permanent snapshot is saved.')) return;
+                                setLockBusy(true);
+                                try {
+                                    const now = new Date();
+                                    const job = jobs.find(j => j.id === jobId);
+                                    const savedInputs = {};
+                                    Object.keys(BLANK_INPUTS).forEach(k => { savedInputs[k] = NUMBER_FIELDS.includes(k) ? toNumber(liveInputs[k]) : (liveInputs[k] || '').trim(); });
+                                    const results = {
+                                        over: r.over, customerEstimate: round2(r.ce), paFee: round2(r.paFee), customerItems: round2(r.customerItems),
+                                        sellingPrice: round2(r.sellingPrice), poTotal: round2(r.poTotal), inHouseLabor: round2(r.inHouseLabor),
+                                        jobCost: round2(r.jobCost), grossProfit: round2(r.grossProfit), gpm: r.gpm, difference: round2(r.difference)
+                                    };
+                                    const posNow = livePos.map(p => ({ id: p.id, poNumber: p.poNumber, category: p.category, subName: p.subName, status: p.status, amount: p.amount }));
+                                    const notesText = notesEdit !== null ? notesEdit : buildNotes(layout[r.over ? 'over' : 'under'], r, liveInputs);
+                                    const snapRef = await db.collection('gpm').doc(jobId).collection('snapshots').add({
+                                        savedAt: now, savedBy: byMe, note: 'CES signed - locked', jobCode: job ? job.code : '',
+                                        inputs: savedInputs, rates: { inHouseLaborPct: IN_HOUSE_LABOR_PCT, targetGpm: TARGET_GPM },
+                                        pos: posNow.map(p => ({ ...p, included: !liveExcluded.includes(p.id) })),
+                                        results, notesText, cesLock: true
+                                    });
+                                    // The page shows these while locked: inputs as typed (text), PA % used, POs and include ticks
+                                    const lockInputs = {};
+                                    Object.keys(BLANK_INPUTS).forEach(k => { lockInputs[k] = String(liveInputs[k] == null ? '' : liveInputs[k]); });
+                                    await db.collection('gpm').doc(jobId).set({
+                                        cesLock: { locked: true, at: now, by: byMe, inputs: lockInputs, pos: posNow, excludedPoIds: liveExcluded, results, notesText, snapshotId: snapRef.id },
+                                        lockHistory: firebase.firestore.FieldValue.arrayUnion({ action: 'locked', at: now, by: byMe, sellingPrice: results.sellingPrice, gpm: r.gpm, snapshotId: snapRef.id })
+                                    }, { merge: true });
+                                    setMessage('CES version locked. Snapshot saved.');
+                                } catch (error) {
+                                    setMessage('Error locking: ' + error.message);
+                                }
+                                setLockBusy(false);
+                            };
+
+                            const unlockCes = async () => {
+                                if (!window.confirm('Unlock the CES version? GPM goes back to following POs and inputs, for a revised CES. The locked version is kept in the lock history and its snapshot.')) return;
+                                setLockBusy(true);
+                                try {
+                                    const now = new Date();
+                                    await db.collection('gpm').doc(jobId).set({
+                                        cesLock: { ...cesLock, locked: false, unlockedAt: now, unlockedBy: byMe },
+                                        lockHistory: firebase.firestore.FieldValue.arrayUnion({ action: 'unlocked', at: now, by: byMe, lockedAt: cesLock.at || null, snapshotId: cesLock.snapshotId || '' })
+                                    }, { merge: true });
+                                    setMessage('Unlocked. Lock again when the revised CES is signed.');
+                                } catch (error) {
+                                    setMessage('Error unlocking: ' + error.message);
+                                }
+                                setLockBusy(false);
+                            };
+
+                            return (
+                                <div style={{ marginTop: '12px' }}>
+                                    {canLock && !locked && (
+                                        <button className="btn-secondary" onClick={lockCes} disabled={lockBusy || saving || dirty || !lastSaved}>
+                                            {lockBusy ? 'Locking...' : 'CES signed \u2013 Lock'}
+                                        </button>
+                                    )}
+                                    {canLock && !locked && (dirty || !lastSaved) && <div className="hint" style={{ textAlign: 'center' }}>Save first, then lock when the CES is signed.</div>}
+                                    {canLock && locked && (
+                                        <button className="btn-secondary" onClick={unlockCes} disabled={lockBusy}>{lockBusy ? 'Unlocking...' : 'Unlock (revised CES)'}</button>
+                                    )}
+                                    {!canLock && locked && <div className="hint" style={{ textAlign: 'center' }}>Owner or Estimator can unlock for a revised CES.</div>}
+                                    {history.length > 0 && (
+                                        <div style={{ marginTop: '8px', fontSize: '12px', textAlign: 'center' }}>
+                                            <span style={{ color: '#0066cc', cursor: 'pointer' }} onClick={() => setShowLockHistory(v => !v)}>{showLockHistory ? 'Hide' : 'Show'} lock history ({history.length})</span>
+                                            {showLockHistory && (
+                                                <div style={{ marginTop: '6px', color: '#555' }}>
+                                                    {[...history].reverse().map((h, i) => (
+                                                        <div key={i}>{h.action === 'locked' ? `Locked ${fmtWhen(h.at)} by ${h.by ? h.by.name : ''} (selling price ${$(h.sellingPrice || 0)}, GPM ${pct(h.gpm || 0)})` : `Unlocked ${fmtWhen(h.at)} by ${h.by ? h.by.name : ''}`}</div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
                         {lastSaved && (
                             <div className="hint" style={{ textAlign: 'center', marginTop: '8px' }}>
                                 Last saved by {lastSaved.name} {lastSaved.at.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
