@@ -106,8 +106,7 @@
             tradesest: ['M3 9h18v10H3z', 'M8 9V6h8v3', 'M3 13h18'],
             notes:   ['M4 5h16v11H9l-5 4z', 'M8 9h8', 'M8 12h5'],
             cost:    ['M12 3v18', 'M16 7h-5a2.5 2.5 0 0 0 0 5h2a2.5 2.5 0 0 1 0 5H7'],
-            extras:  ['M12 5v14', 'M5 12h14'],
-            credits: ['M5 12h14'],
+            extras:  ['M12 4v8', 'M8 8h8', 'M8 18h8'],   // plus over minus: extras and credits
             stmt:    ['M6 3h12v18H6z', 'M9 7h6', 'M9 11h6', 'M9 15h4'],
             approve: ['M4 12l5 5L20 6'],
             ar:      ['M3 7h18v10H3z', 'M12 10v4', 'M7 12h.01', 'M17 12h.01'],
@@ -123,9 +122,8 @@
             { key: 'frmest',  name: 'FRM-EST',        roles: ['owner', 'admin', 'estimator'],          url: '/frm-est/' },
             { key: 'tradesest', name: 'Trades-EST',   roles: ['owner', 'admin', 'estimator'],          url: '/trades-est/' },
             { key: 'notes',   name: 'Customer Information & Contact Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/notes/' },
+            { key: 'extras',  name: 'Extras & Credits', roles: ['owner', 'admin', 'estimator', 'super'],     url: '/extras/' },
             { key: 'cost',    name: 'Job Costing',    url: null },
-            { key: 'extras',  name: 'Extras',         url: null },
-            { key: 'credits', name: 'Credits',        url: null },
             { key: 'stmt',    name: 'Statement',      url: null }
         ];
 
