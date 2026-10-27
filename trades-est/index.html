@@ -858,6 +858,11 @@
         // PO Manager (jobs/{jobId}/forms, same record id and PO number). The job then locks those requests; Unlock reopens them
         // for the customer's changes, and handing off again updates the same POs (the earlier version is kept in the PO's history).
         const HANDOFF_ROLES = ['owner', 'estimator'];
+        // Hand off this PO now (decided Oct 27): TMP trades and DMO #1 (interior demo) get their POs before the CES is signed
+        // (board up, temp items, demo). One PO goes to PO Manager as CES right away; the Super sends it from there.
+        // It locks here for good: the full handoff skips it and Unlock does not reopen it, so the Super's changes are never overwritten.
+        // Owner, Admin and Estimator (everyone who uses Trades-EST).
+        const earlyTrade = (r) => { const c = String((r && (r.tradeCode || r.category)) || '').toUpperCase().replace(/\s+/g, ''); return c.startsWith('TMP') || c === 'DMO#1'; };
         const handoffKey = (r) => JSON.stringify([...REQ_FIELDS.map(k => String(r[k] == null ? '' : r[k])), r.notes || '', attKey(r.attachments)]);
 
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
@@ -884,7 +889,8 @@
         // so both places work the same way.
         function useRequestActions(po) {
             const { jobId, jobCode, job, superPick, me } = po || {}; // the start list has no job and no requests
-            const frozen = (r) => !!(po && po.handoffLocked && r.handedOffAt); // handed off and the job is locked
+            const frozen = (r) => !!(r.earlyHandoff || (po && po.handoffLocked && r.handedOffAt)); // handed off early, or handed off and the job is locked
+            const [earlyId, setEarlyId] = useState(null); // request being handed off early
             const [previewId, setPreviewId] = useState(null); // request whose form is being built
             const [sendingId, setSendingId] = useState(null); // request being emailed
             const [note, setNote] = useState('');
@@ -964,6 +970,54 @@
                 setPreviewId(null);
             };
 
+            // Hand off this PO now: the same steps as the full handoff, for one PO (TMP trades and DMO #1)
+            const handOffNow = async (r) => {
+                if (!earlyTrade(r) || r.handedOffAt || r.deleted) return;
+                const label = `${r.category || r.tradeCode || ''} ${r.poNumber || ''}`.trim();
+                if (po.draftOpen) { setNote('Error: a request is open for editing. Save or cancel it first.'); return; }
+                if (r.status !== 'Complete') { setNote(`Error: mark ${label} Complete first.`); return; }
+                if (!(n(r.contractAmount) > 0)) { setNote(`Error: ${label} has no amount.`); return; }
+                if (!superPick) { setNote('Error: the job has no Super. Set it on Customer Information.'); return; }
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                if (!window.confirm(`Hand off ${label} ${r.subName || ''} ${money(n(r.contractAmount))} to PO Manager now?\n\nIt goes in as a CES PO and nothing is emailed; the Super sends it from PO Manager. It locks here, and the full handoff later leaves it as it is in PO Manager.`)) return;
+                setEarlyId(r.id);
+                setNote('');
+                try {
+                    const now = new Date();
+                    const header = formHeader();
+                    const scope = String(r.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
+                    const amountShown = window.POForm.amountText(r.contractAmount);
+                    const bytes = await window.POForm.build({
+                        ...header, poNumber: r.poNumber, subName: r.subName, contact: r.contact, phone: r.phone, email: r.email,
+                        subCode: r.subCode, category: r.category, amount: r.contractAmount, scope
+                    }, r.attachments || []);
+                    const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
+                    const dateStr = `${now.getMonth() + 1}-${now.getDate()}-${String(now.getFullYear()).slice(-2)}`;
+                    const fileName = `${clean(r.category)}_${clean(r.subName)}_${clean(amountShown)}_${r.poNumber}_${dateStr}.pdf`; // PO Manager's pattern
+                    const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
+                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                    const pdfUrl = await fileRef.getDownloadURL();
+                    const formRef = db.collection('jobs').doc(jobId).collection('forms').doc(r.id);
+                    const existing = await formRef.get();
+                    if (existing.exists) throw new Error(`${label} is already in PO Manager`);
+                    await formRef.set({
+                        fileName, pdfUrl, poNumber: r.poNumber, subName: r.subName || '', category: r.category || '', contact: r.contact || '',
+                        phone: r.phone || '', email: r.email || '', subCode: r.subCode || '', contractAmount: String(r.contractAmount == null ? '' : r.contractAmount),
+                        scope, header, attachments: r.attachments || [], notes: r.notes || '', status: 'CES',
+                        pdfUpdatedAt: now, dateUpdated: now, dateCreated: now, createdBy: me,
+                        fromTradesEst: { requestId: r.id, handedOffBy: me, handedOffAt: now, early: true }
+                    });
+                    await reqRef(r.id).update({ handedOffAt: now, handedOffBy: me, handedOffKey: handoffKey(r), formId: r.id, earlyHandoff: { at: now, by: me } });
+                    await db.collection('tradesEst').doc(jobId).update({
+                        handoffHistory: firebase.firestore.FieldValue.arrayUnion({ action: 'handed off early', at: now, by: me, poNumber: r.poNumber || '', requestId: r.id })
+                    });
+                    setNote(`${label} is in PO Manager as CES. Nothing was emailed; the Super sends it from PO Manager.`);
+                } catch (err) {
+                    setNote('Error handing off early: ' + err.message);
+                }
+                setEarlyId(null);
+            };
+
             // Delete hides the request (kept for records); Owner/Admin can restore it
             const hide = async (r) => {
                 if (frozen(r)) return;
@@ -1003,7 +1057,7 @@
                 if (r.notes) data.noteHistory = firebase.firestore.FieldValue.arrayUnion({ notes: r.notes, savedBy: r.notesBy || null, savedAt: r.notesAt || null, replacedAt: now, replacedBy: me });
                 await reqRef(r.id).update(data);
             };
-            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes, frozen };
+            return { reqRef, previewId, sendingId, note, setNote, send, preview, hide, restore, setStatus, saveNotes, frozen, handOffNow, earlyId };
         }
 
         // Notes window, like PO Manager's: a big box with Voice
@@ -1078,7 +1132,7 @@
                             const status = r.status === 'Complete' ? 'Complete' : 'Pending';
                             const fz = act.frozen(r);       // handed off and the job is locked: no Edit, Delete, status or Send
                             const lk = lock || fz;
-                            const fzTip = fz ? 'Handed off to PO Manager. Unlock the job to change it.' : '';
+                            const fzTip = r.earlyHandoff ? 'Handed off early to PO Manager. Changes are made there.' : fz ? 'Handed off to PO Manager. Unlock the job to change it.' : '';
                             const by = [r.createdBy && `Created by ${r.createdBy.name} ${fmtDay(r.createdAt)}`,
                                 (r.versions || []).length > 0 && r.updatedBy && `Edited by ${r.updatedBy.name} ${fmtDay(r.updatedAt)}`,
                                 (r.attachments || []).length > 0 && `${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
@@ -1091,7 +1145,7 @@
                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
                                             {r.handedOffAt && (
                                                 <div style={{ fontSize: '11px', marginTop: '2px', fontWeight: 600, color: '#388e3c' }}>
-                                                    Handed off {fmtDay(r.handedOffAt)}{r.handedOffBy ? ' by ' + r.handedOffBy.name : ''}
+                                                    Handed off{r.earlyHandoff ? ' early' : ''} {fmtDay(r.handedOffAt)}{r.handedOffBy ? ' by ' + r.handedOffBy.name : ''}
                                                     {!fz && handoffKey(r) !== r.handedOffKey && <span style={{ color: '#cc6600' }}> · Changed since handoff</span>}
                                                     {!fz && r.status !== 'Complete' && <span style={{ color: '#cc6600' }}> · Pending here, its PO stays in PO Manager</span>}
                                                 </div>
@@ -1124,6 +1178,19 @@
                                                 {r.kind === 'none' ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
                                                     : !r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
                                             </div>
+                                            {earlyTrade(r) && !r.handedOffAt && (() => {
+                                                const ready = r.status === 'Complete' && n(r.contractAmount) > 0;
+                                                const off = !ready || lk || !!act.earlyId;
+                                                return (
+                                                    <div style={{ marginTop: '4px' }}>
+                                                        <button className="btn-sm" style={{ background: off ? '#ccc' : '#2e7d32', color: 'white', cursor: off ? 'not-allowed' : 'pointer' }}
+                                                            onClick={() => act.handOffNow(r)} disabled={off}
+                                                            title={lock ? 'Save or cancel the request that is open first.' : !ready ? 'Mark it Complete with an amount first.' : 'Put this PO in PO Manager now, before the full handoff.'}>
+                                                            {act.earlyId === r.id ? 'Handing off...' : 'Hand off this PO now'}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })()}
                                             {r.lastEmail && (() => {
                                                 const e = r.lastEmail;
                                                 const color = e.status === 'Delivered' ? '#388e3c' : e.status === 'Bounced' ? '#d32f2f' : '#555';
@@ -2421,7 +2488,7 @@
                     // PO amounts follow the worksheet: bring each PO that follows up to the price being saved
                     let moved = 0;
                     (requests || []).forEach(r => {
-                        const amount = record && record.handoff && record.handoff.locked && r.handedOffAt ? null : followAmount(r, clean, requests);
+                        const amount = r.earlyHandoff || (record && record.handoff && record.handoff.locked && r.handedOffAt) ? null : followAmount(r, clean, requests);
                         if (amountDiffers(r, amount)) { batch.update(ref.collection('requests').doc(r.id), followUpdate(r, amount, by, now)); moved++; }
                     });
                     await batch.commit();
@@ -2559,7 +2626,7 @@
                 const live = requests.filter(r => !r.deleted);
                 const complete = live.filter(r => r.status === 'Complete');
                 const toAdd = complete.filter(r => !r.handedOffAt);
-                const toUpdate = complete.filter(r => r.handedOffAt && handoffKey(r) !== r.handedOffKey);
+                const toUpdate = complete.filter(r => r.handedOffAt && !r.earlyHandoff && handoffKey(r) !== r.handedOffKey); // early POs belong to PO Manager
                 const work = [...toAdd, ...toUpdate].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
                 const label = (r) => `${r.category || r.tradeCode || ''} ${r.poNumber || ''}`.trim();
                 // Checks: nothing moves unless all of them pass
@@ -2567,7 +2634,7 @@
                 if (!superPick) missing.push('The job has no Super. Set it on Customer Information.');
                 work.forEach(r => { if (!(n(r.contractAmount) > 0)) missing.push(`${label(r)} has no amount.`); });
                 if (missing.length) { setHandoffNote('Error: nothing was handed off. ' + missing.join(' ')); return; }
-                const leftBehind = requests.filter(r => r.handedOffAt && (r.deleted || r.status !== 'Complete'));
+                const leftBehind = requests.filter(r => r.handedOffAt && !r.earlyHandoff && (r.deleted || r.status !== 'Complete'));
                 const total = work.reduce((t, r) => t + n(r.contractAmount), 0);
                 const lines = [];
                 if (work.length) lines.push(`Hand off ${toAdd.length ? `${toAdd.length} new PO${toAdd.length === 1 ? '' : 's'}` : ''}${toAdd.length && toUpdate.length ? ' and ' : ''}${toUpdate.length ? `${toUpdate.length} changed PO${toUpdate.length === 1 ? '' : 's'}` : ''} totaling ${money(total)} to PO Manager?`);
