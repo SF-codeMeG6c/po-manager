@@ -61,6 +61,8 @@
         button.tool.alert.expired svg, button.tool.alert.expired small { color: #a3261c; }
         .admin-users { margin-top: 20px; }
         .users .jobroles label { display: block; white-space: nowrap; font-size: 13px; }
+        .invite-toggle { margin-bottom: 16px; }
+        .invite { border: 1px solid #ddd; border-radius: 6px; background: #fafcff; padding: 14px 16px; margin-bottom: 20px; }
         .invite p { font-size: 13px; color: #555; }
         .invite label { display: block; font-size: 13px; color: #555; font-weight: 500; }
         .invite input, .invite textarea { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; color: #333; }
@@ -123,11 +125,10 @@
             approve: ['M4 12l5 5L20 6'],
             ar:      ['M3 7h18v10H3z', 'M12 10v4', 'M7 12h.01', 'M17 12h.01'],
             wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2'],
-            users:   ['M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1', 'M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M21 19v-1a4 4 0 0 0-3-3.87', 'M15.5 4.13a3 3 0 0 1 0 5.74'],
-            invite:  ['M3 6h18v12H3z', 'M3 7l9 6 9-6']   // envelope
+            users:   ['M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1', 'M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M21 19v-1a4 4 0 0 0-3-3.87', 'M15.5 4.13a3 3 0 0 1 0 5.74']
         };
 
-        // Invite a team member (decided Oct 27): a fixed message, editable per invite, sent from the person's own Outlook.
+        // Invite a team member (decided Oct 27; button inside the Users box): a fixed message, editable per invite, sent from the person's own Outlook.
         // Nothing is saved. The new person still shows as waiting for approval after they sign in.
         const SITE_URL = 'https://charming-griffin-e1112f.netlify.app';
         const COMPANY_DOMAIN = '@freemanrestoration.com';
@@ -406,51 +407,7 @@ I prefer plain, brief instructions, one step at a time.`;
                                     {pendingCount > 0 && <small>{pendingCount} waiting for approval</small>}
                                     {secretLine && <small>{secretLine}</small>}
                                 </button>
-                                <button type="button" className={'tool' + (showInvite ? ' open' : '')} aria-expanded={showInvite}
-                                    onClick={() => { setShowInvite(!showInvite); setShowUsers(false); setInviteMsg(null); }}>
-                                    <Icon d={ICONS.invite} />Invite
-                                </button>
                             </div>
-                            {showInvite && (() => {
-                                const from = (profile.name || '').trim();
-                                const body = invite.body !== null ? invite.body : inviteBody(invite.name, from);
-                                const email = invite.email.trim();
-                                const badEmail = email && !email.toLowerCase().endsWith(COMPANY_DOMAIN);
-                                const mailto = 'mailto:' + encodeURIComponent(email).replace(/%40/g, '@')
-                                    + '?subject=' + encodeURIComponent(INVITE_SUBJECT) + '&body=' + encodeURIComponent(body.replace(/\r?\n/g, '\r\n')); // Windows line breaks for Outlook
-                                return (
-                                    <div className="admin-users invite">
-                                        <p>Invite a new team member. The message opens in your Outlook to send. After they sign in, approve them under Users.</p>
-                                        <div className="invite-row">
-                                            <label>Name<input type="text" value={invite.name} placeholder="First and last name"
-                                                onChange={e => { setInvite(prev => ({ ...prev, name: e.target.value })); setInviteMsg(null); }} /></label>
-                                            <label>Email<input type="email" value={invite.email} placeholder={'name' + COMPANY_DOMAIN}
-                                                onChange={e => { setInvite(prev => ({ ...prev, email: e.target.value })); setInviteMsg(null); }} /></label>
-                                        </div>
-                                        {badEmail && <div className="error">Use their {COMPANY_DOMAIN} email. Sign-in works only with company accounts.</div>}
-                                        <label className="invite-msg">Message
-                                            <textarea rows={16} value={body} onChange={e => { setInvite(prev => ({ ...prev, body: e.target.value })); setInviteMsg(null); }} />
-                                        </label>
-                                        {invite.body !== null && (
-                                            <button type="button" className="btn-link" onClick={() => setInvite(prev => ({ ...prev, body: null }))}>Put back the standard message</button>
-                                        )}
-                                        <div className="invite-actions">
-                                            <a className={'btn-save' + (email ? '' : ' disabled')} href={email ? mailto : undefined}
-                                                onClick={e => { if (!email) { e.preventDefault(); setInviteMsg({ text: 'Type their email first.', ok: false }); } }}>
-                                                Open in Outlook
-                                            </a>
-                                            <button type="button" className="btn-secondary btn-small"
-                                                onClick={() => navigator.clipboard.writeText(body).then(
-                                                    () => setInviteMsg({ text: 'Message copied. Paste it into a text or Teams message.', ok: true }),
-                                                    () => setInviteMsg({ text: 'Copy failed. Select the message and copy it.', ok: false }))}>
-                                                Copy message
-                                            </button>
-                                            <button type="button" className="btn-link" onClick={() => { setInvite({ name: '', email: '', body: null }); setInviteMsg(null); }}>Clear</button>
-                                        </div>
-                                        {inviteMsg && <div className={inviteMsg.ok ? 'ok' : 'error'}>{inviteMsg.text}</div>}
-                                    </div>
-                                );
-                            })()}
                             {showUsers && (
                                 <div className="admin-users">
                                     {secretDaysLeft !== null && secretDaysLeft <= 60 && (
@@ -475,6 +432,52 @@ I prefer plain, brief instructions, one step at a time.`;
                                             </details>
                                         </div>
                                     )}
+                                    <div className="invite-toggle">
+                                        <button type="button" className="btn-save" aria-expanded={showInvite}
+                                            onClick={() => { setShowInvite(!showInvite); setInviteMsg(null); }}>
+                                            {showInvite ? 'Close invite' : 'Invite a team member'}
+                                        </button>
+                                    </div>
+                                    {showInvite && (() => {
+                                        const from = (profile.name || '').trim();
+                                        const body = invite.body !== null ? invite.body : inviteBody(invite.name, from);
+                                        const email = invite.email.trim();
+                                        const badEmail = email && !email.toLowerCase().endsWith(COMPANY_DOMAIN);
+                                        const mailto = 'mailto:' + encodeURIComponent(email).replace(/%40/g, '@')
+                                            + '?subject=' + encodeURIComponent(INVITE_SUBJECT) + '&body=' + encodeURIComponent(body.replace(/\r?\n/g, '\r\n')); // Windows line breaks for Outlook
+                                        return (
+                                            <div className="invite">
+                                                <p>The message opens in your Outlook to send. After they sign in, they show in the list below as waiting for access. Approve them there.</p>
+                                                <div className="invite-row">
+                                                    <label>Name<input type="text" value={invite.name} placeholder="First and last name"
+                                                        onChange={e => { setInvite(prev => ({ ...prev, name: e.target.value })); setInviteMsg(null); }} /></label>
+                                                    <label>Email<input type="email" value={invite.email} placeholder={'name' + COMPANY_DOMAIN}
+                                                        onChange={e => { setInvite(prev => ({ ...prev, email: e.target.value })); setInviteMsg(null); }} /></label>
+                                                </div>
+                                                {badEmail && <div className="error">Use their {COMPANY_DOMAIN} email. Sign-in works only with company accounts.</div>}
+                                                <label className="invite-msg">Message
+                                                    <textarea rows={19} value={body} onChange={e => { setInvite(prev => ({ ...prev, body: e.target.value })); setInviteMsg(null); }} />
+                                                </label>
+                                                {invite.body !== null && (
+                                                    <button type="button" className="btn-link" onClick={() => setInvite(prev => ({ ...prev, body: null }))}>Put back the standard message</button>
+                                                )}
+                                                <div className="invite-actions">
+                                                    <a className={'btn-save' + (email ? '' : ' disabled')} href={email ? mailto : undefined}
+                                                        onClick={e => { if (!email) { e.preventDefault(); setInviteMsg({ text: 'Type their email first.', ok: false }); } }}>
+                                                        Open in Outlook
+                                                    </a>
+                                                    <button type="button" className="btn-secondary btn-small"
+                                                        onClick={() => navigator.clipboard.writeText(body).then(
+                                                            () => setInviteMsg({ text: 'Message copied. Paste it into a text or Teams message.', ok: true }),
+                                                            () => setInviteMsg({ text: 'Copy failed. Select the message and copy it.', ok: false }))}>
+                                                        Copy message
+                                                    </button>
+                                                    <button type="button" className="btn-link" onClick={() => { setInvite({ name: '', email: '', body: null }); setInviteMsg(null); }}>Clear</button>
+                                                </div>
+                                                {inviteMsg && <div className={inviteMsg.ok ? 'ok' : 'error'}>{inviteMsg.text}</div>}
+                                            </div>
+                                        );
+                                    })()}
                                     <div className="users-wrap">
                                         <table className="users">
                                             <thead>
