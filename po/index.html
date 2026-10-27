@@ -79,6 +79,12 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
         const storage = firebase.storage();
+        // Stored files keep a time stamp in front of their name so no save ever overwrites another (records).
+        // The file is also given its name without the stamp, so View and then Save As offers the clean name (decided Oct 27).
+        const cleanSaveName = (name, type) => {
+            const nm = String(name || 'file').replace(/["\r\n]/g, '');
+            return { contentType: type || undefined, contentDisposition: `inline; filename="${nm.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(nm)}` };
+        };
         const functions = firebase.functions();
 
 
@@ -392,7 +398,7 @@
         for (const att of attachments) {
             if (att.file) {
                 const attRef = storage.ref(`jobForms/${currentJobId}/att_${Date.now()}_${att.name}`);
-                await attRef.put(att.file);
+                await attRef.put(att.file, cleanSaveName(att.name, att.file.type));
                 savedAttachments.push({ name: att.name, type: att.type, url: await attRef.getDownloadURL() });
             } else {
                 savedAttachments.push({ name: att.name, type: att.type, url: att.url });
@@ -406,7 +412,7 @@
         const fileName = `${clean(formMetadata.category)}_${clean(formMetadata.subName)}_$${clean(amountNoSign)}_${poNumber}_${dateStr}.pdf`;
 
         const fileRef = storage.ref(`jobForms/${currentJobId}/${Date.now()}_${fileName}`);
-        await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }));
+        await fileRef.put(new Blob([pdfBytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
         const downloadURL = await fileRef.getDownloadURL();
 
         const poData = {
