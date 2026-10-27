@@ -122,6 +122,12 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
         const storage = firebase.storage(); // request attachments, in the same job folder PO Manager uses
+        // Stored files keep a time stamp in front of their name so no save ever overwrites another (records).
+        // The file is also given its name without the stamp, so View and then Save As offers the clean name (decided Oct 27).
+        const cleanSaveName = (name, type) => {
+            const nm = String(name || 'file').replace(/["\r\n]/g, '');
+            return { contentType: type || undefined, contentDisposition: `inline; filename="${nm.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(nm)}` };
+        };
         const functions = firebase.functions(); // sendQuoteRequest: emails a request through Postmark
 
         const ALLOWED = ['owner', 'admin', 'estimator'];
@@ -934,7 +940,7 @@
                     const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
                     const fileName = ['RFP', clean(r.category), clean(r.subName), amountShown, r.poNumber, dateStr].filter(Boolean).join('_') + '.pdf';
                     const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                     const pdfUrl = await fileRef.getDownloadURL();
                     // The form as sent: its file, and the job and supervisor it went out with
                     await reqRef(r.id).update({ pdfUrl, fileName, header: formHeader(), pdfBuiltAt: d, pdfBuiltBy: me });
@@ -995,7 +1001,7 @@
                     const dateStr = `${now.getMonth() + 1}-${now.getDate()}-${String(now.getFullYear()).slice(-2)}`;
                     const fileName = `${clean(r.category)}_${clean(r.subName)}_${clean(amountShown)}_${r.poNumber}_${dateStr}.pdf`; // PO Manager's pattern
                     const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                    await fileRef.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                     const pdfUrl = await fileRef.getDownloadURL();
                     const formRef = db.collection('jobs').doc(jobId).collection('forms').doc(r.id);
                     const existing = await formRef.get();
@@ -1375,7 +1381,7 @@
                 for (const att of list) {
                     if (att.file) {
                         const ref = storage.ref(`jobForms/${jobId}/att_${Date.now()}_${att.name}`);
-                        await ref.put(att.file);
+                        await ref.put(att.file, cleanSaveName(att.name, att.file.type));
                         out.push({ name: att.name, type: att.type, url: await ref.getDownloadURL() });
                     } else out.push({ name: att.name, type: att.type, url: att.url });
                 }
@@ -2665,7 +2671,7 @@
                         // PO Manager's file name pattern
                         const fileName = `${clean(r.category)}_${clean(r.subName)}_${clean(amountShown)}_${r.poNumber}_${dateStr}.pdf`;
                         const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                         const pdfUrl = await fileRef.getDownloadURL();
                         const poData = {
                             fileName, pdfUrl, poNumber: r.poNumber, subName: r.subName || '', category: r.category || '', contact: r.contact || '',
