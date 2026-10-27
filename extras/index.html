@@ -117,6 +117,12 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
         const storage = firebase.storage();
+        // Stored files keep a time stamp in front of their name so no save ever overwrites another (records).
+        // The file is also given its name without the stamp, so View and then Save As offers the clean name (decided Oct 27).
+        const cleanSaveName = (name, type) => {
+            const nm = String(name || 'file').replace(/["\r\n]/g, '');
+            return { contentType: type || undefined, contentDisposition: `inline; filename="${nm.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(nm)}` };
+        };
 
         const EXTRAS_ROLES = ['owner', 'admin', 'estimator', 'super'];
 
@@ -647,7 +653,7 @@
                     const fileName = `Credits_$${fmtMoney(t.total)}_${code.replace(/[^\w.-]+/g, '_') || 'job'}_${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}.pdf`;
                     downloadBytes(bytes, fileName);
                     const ref = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                    await ref.put(new Blob([bytes], { type: 'application/pdf' }));
+                    await ref.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                     const url = await ref.getDownloadURL();
                     await base.collection('credits').doc('pdf_' + Date.now()).set({ kind: 'pdf', url, fileName, total: t.total, lessPA: t.lessPA, lines: t.rows.length, madeAt: stamp(), madeBy: me });
                     say(true, `${fileName} downloaded and saved with the job. Add it to the AAR Statement Paperwork.`);
@@ -1272,7 +1278,7 @@
                         const amountShown = window.POForm.amountText(amount);
                         const fileName = `${clean(g.cat)}_${clean(g.vendor)}_${clean(amountShown)}_${poNumber}_${dateStr}.pdf`;
                         const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }));
+                        await fileRef.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                         const pdfUrl = await fileRef.getDownloadURL();
                         const formRef = formsRef.doc();
                         await formRef.set({
@@ -1316,7 +1322,7 @@
                     const fileName = pdfFileName(current.number, t.total, job ? job.code : '');
                     downloadBytes(bytes, fileName);
                     const ref = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
-                    await ref.put(new Blob([bytes], { type: 'application/pdf' }));
+                    await ref.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                     const url = await ref.getDownloadURL();
                     await db.collection('extras').doc(jobId).collection('items').doc(current.id).update({
                         pdfs: firebase.firestore.FieldValue.arrayUnion({ url, fileName, total: t.total, madeAt: stamp(), madeBy: me }),
@@ -1338,7 +1344,7 @@
                 try {
                     const safe = file.name.replace(/[^\w.#$,-]+/g, '_');
                     const ref = storage.ref(`jobForms/${jobId}/signed_${Date.now()}_${safe}`);
-                    await ref.put(file, { contentType: file.type || 'application/pdf' });
+                    await ref.put(file, cleanSaveName(file.name, file.type || 'application/pdf'));
                     const url = await ref.getDownloadURL();
                     const upd = {
                         signedCopies: firebase.firestore.FieldValue.arrayUnion({ url, fileName: file.name, uploadedAt: stamp(), uploadedBy: me }),
