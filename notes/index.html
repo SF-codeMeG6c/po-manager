@@ -585,22 +585,60 @@
             });
             return pdfLibLoading;
         };
-        // Read the typed-in values from the form's boxes: { boxKey: value }
+        // The text drawn inside a text box. A form saved on an iPhone or iPad keeps the drawn text but empties
+        // the box's stored value (found Oct 27), so the drawn text is read when the stored value is empty.
+        const drawnText = (PDFLib, doc, field) => {
+            try {
+                let out = '';
+                field.acroField.getWidgets().forEach(w => {
+                    const ap = w.getNormalAppearance && w.getNormalAppearance();
+                    const stream = ap ? doc.context.lookup(ap) : null;
+                    if (!(stream instanceof PDFLib.PDFRawStream)) return;
+                    const bytes = PDFLib.decodePDFRawStream(stream).decode();
+                    let src = '';
+                    for (let i = 0; i < bytes.length; i++) src += String.fromCharCode(bytes[i]);
+                    // Strings shown with Tj / TJ between BT and ET: (text) and <hex>
+                    const lines = [];
+                    (src.match(/BT[\s\S]*?ET/g) || []).forEach(block => {
+                        let line = '';
+                        const re = /\((?:\\[\s\S]|[^\\)])*\)|<[0-9A-Fa-f\s]*>/g;
+                        let m;
+                        while ((m = re.exec(block))) {
+                            const t = m[0];
+                            if (t[0] === '<') {
+                                const h = t.slice(1, -1).replace(/\s/g, '');
+                                for (let i = 0; i + 1 < h.length; i += 2) line += String.fromCharCode(parseInt(h.slice(i, i + 2), 16));
+                            } else {
+                                line += t.slice(1, -1).replace(/\\([0-7]{1,3}|[\s\S])/g, (x, c) =>
+                                    /^[0-7]+$/.test(c) ? String.fromCharCode(parseInt(c, 8)) : ({ n: '\n', r: '', t: ' ', b: '', f: '' }[c] ?? c));
+                            }
+                        }
+                        if (line.trim()) lines.push(line.trim());
+                    });
+                    if (lines.length) out += (out ? ' ' : '') + lines.join(' ');
+                });
+                return out;
+            } catch (e) { return ''; }
+        };
+        // Read the typed-in values from the form's boxes: { values: { boxKey: value }, boxes, fromDrawn }
         const readIntakePdf = async (file) => {
             const PDFLib = await loadPdfLib();
             const doc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const values = {};
-            let boxes = 0;
+            let boxes = 0, fromDrawn = 0;
             doc.getForm().getFields().forEach(f => {
                 boxes++;
                 let v = '';
-                if (f instanceof PDFLib.PDFTextField) v = f.getText() || '';
+                if (f instanceof PDFLib.PDFTextField) {
+                    v = f.getText() || '';
+                    if (!String(v).trim()) { v = drawnText(PDFLib, doc, f); if (v.trim()) fromDrawn++; }
+                }
                 else if (f instanceof PDFLib.PDFCheckBox) v = f.isChecked() ? 'Yes' : '';
                 else if (f instanceof PDFLib.PDFDropdown || f instanceof PDFLib.PDFOptionList) v = (f.getSelected() || []).join(', ');
                 else if (f instanceof PDFLib.PDFRadioGroup) v = f.getSelected() || '';
                 values[boxKey(f.getName())] = String(v).replace(/\s+/g, ' ').trim();
             });
-            return { values, boxes };
+            return { values, boxes, fromDrawn };
         };
         // Put the form's values into the card being edited. Empty boxes on the form leave the card as it is.
         const applyIntake = (base, values) => {
@@ -714,7 +752,7 @@
                 setImportMsg(null);
                 setImporting(true);
                 try {
-                    const { values, boxes } = await readIntakePdf(file);
+                    const { values, boxes, fromDrawn } = await readIntakePdf(file);
                     if (boxes === 0) {
                         setImportMsg({ text: 'This PDF has no fill-in boxes (it may be scanned or printed). Type the info in by hand.', ok: false });
                     } else {
@@ -727,7 +765,8 @@
                             setEditing({ ...next, _import: file.name });
                             setImportMsg({ text: `Filled ${filled} box${filled === 1 ? '' : 'es'} from ${file.name}`
                                 + (replaced ? ` (${replaced} replaced what was there before)` : '')
-                                + '. Check them, then click Save contact card. Cancel undoes the import.', ok: true });
+                                + '. Check them, then click Save contact card. Cancel undoes the import.'
+                                + (fromDrawn ? ' This form was saved on a phone or tablet, so its boxes were read from the text shown on the page. Check them closely.' : ''), ok: true });
                         }
                         loadUsers();
                     }
