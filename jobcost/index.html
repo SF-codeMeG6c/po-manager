@@ -1,1 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Cost - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        .form-group { margin-bottom: 12px; }
+        input, select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        .hint { font-size: 11px; color: #888; margin-top: 3px; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-link { background: none; color: #0066cc; padding: 0; font-size: 13px; }
+        .btn-link:hover { text-decoration: underline; }
+        .error { color: #d32f2f; font-size: 13px; margin-top: 5px; }
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
+        .radio-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #333; margin-top: 8px; }
+        .radio-line input { width: auto; }
+        .info { background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
+        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 40px; font-size: 14px; }
+        .summary div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
+        .summary .big { font-weight: 700; font-size: 16px; }
+        .gpm-good { color: #2e7d32; }
+        .gpm-bad { color: #b71c1c; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #f5f5f5; padding: 8px 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+        td.num, th.num { text-align: right; white-space: nowrap; }
+        tr.cat td { background: #f1f4f8; font-weight: 700; color: #333; border-top: 2px solid #dde3ea; }
+        tr.cat td.name { cursor: pointer; }
+        tr.sub td:first-child { padding-left: 22px; }
+        tr.total td { font-weight: 700; border-top: 2px solid #333; }
+        .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: #eee; color: #333; white-space: nowrap; }
+        .tag.CES { background: #e3eefb; color: #0052a3; }
+        .tag.Revised { background: #fff3e0; color: #a65c00; }
+        .tag.New { background: #fdecea; color: #b71c1c; }
+        .tag.Extra { background: #e3f2e5; color: #2e7d32; }
+        .tag.Credit { background: #f3e5f5; color: #6a1b9a; }
+        .up { color: #b71c1c; }
+        .down { color: #2e7d32; }
+        .muted { color: #888; font-size: 12px; }
+        @media (max-width: 700px) { .summary { grid-template-columns: 1fr; } .container { padding: 16px; } body { padding: 8px; } .hide-sm { display: none; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">&larr; Dashboard</a>
+        <h1>Job Cost</h1>
+        <p class="subtitle">Freeman Restoration running job cost and GPM after CES signing</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Same Firebase project as the other tools
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Everyone with rights sees Job Cost (decided Oct 27). Supers see only their assigned jobs.
+        const JOBCOST_ROLES = ['owner', 'admin', 'estimator', 'super', 'office'];
+
+        // Company-wide rates, same as GPM
+        const IN_HOUSE_LABOR_PCT = 0.135;
+        const TARGET_GPM = 0.28;
+
+        const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+        const toNumber = (t) => {
+            if (typeof t === 'number') return isNaN(t) ? 0 : t;
+            const s = String(t ?? '').replace(/[^0-9.]/g, '');
+            if (!s) return 0;
+            const n = parseFloat(s);
+            return isNaN(n) ? 0 : n;
+        };
+        const fmtMoney = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const $ = (n) => { const v = round2(n) || 0; return v < 0 ? '($' + fmtMoney(-v) + ')' : '$' + fmtMoney(v); };
+        const pct = (n) => (n * 100).toFixed(1) + '%';
+        const catKey = (c) => String(c || '').trim().toUpperCase() || '(no Cat)';
+        const fmtDate = (t) => { try { const d = t && t.toDate ? t.toDate() : (t ? new Date(t) : null); return d ? `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}` : ''; } catch (e) { return ''; } };
+
+        // ---------- All Job Cost math in one place (decided Oct 25-27) ----------
+        // Starts from the GPM CES lock. One row per PO; extra lines with no PO and credits get their own rows; a subtotal per Cat.
+        //  - PO rows: Original = the PO's amount in the CES lock (0 for POs made after it). Current = today's PO Manager amount.
+        //    POs left out of the CES GPM (excluded) stay left out. Hidden POs are skipped (current 0).
+        //    A CES PO not yet in PO Manager (before the handoff) keeps its locked amount.
+        //  - Extras: Signed Customer/Supplement = income (Total Extra) + cost; Work Done Customer Refused = cost only;
+        //    Internal Approved = cost only; Draft, Sent, Void = nothing.
+        //    Lines on a PO count through that Extra PO's row. Lines with no PO count at their cost (Trade budget and We absorb).
+        //  - Credits: trade budget down by the saved amount per Cat (60%, or 100% for allowance lines); income down by credits less PA fee.
+        //  - Selling price = CES selling price + signed extras - credits less PA fee. In-house labor = 13.5% of the selling price.
+        const COUNTING = { customer: ['Signed', 'Customer refused'], supplement: ['Signed', 'Customer refused'], internal: ['Approved'] };
+        const extraType = (x) => ['supplement', 'internal'].includes(x.type) ? x.type : (x.payBy === 'supplement' ? 'supplement' : 'customer');
+        const extraCounts = (x) => (COUNTING[extraType(x)] || []).includes(x.status);
+        const extraIncome = (x) => extraType(x) !== 'internal' && x.status === 'Signed' ? toNumber(x.total) : 0;
+
+        const buildJobCost = ({ lock, forms, extras, credits }) => {
+            if (!lock) return null;
+            const excluded = new Set(lock.excludedPoIds || []);
+            const lockedPos = (lock.pos || []).filter(p => !excluded.has(p.id));
+            const lockedById = {};
+            lockedPos.forEach(p => { lockedById[p.id] = p; });
+            const formsById = {};
+            (forms || []).forEach(f => { formsById[f.id] = f; });
+            const rows = [];
+            const left = [];
+
+            // POs in PO Manager
+            (forms || []).forEach(f => {
+                if (excluded.has(f.id)) { if (f.deleted !== true) left.push(f.poNumber || f.id); return; }
+                const lp = lockedById[f.id];
+                if (f.deleted === true && !lp) return; // hidden and never in the CES: skip
+                const original = lp ? toNumber(lp.amount) : 0;
+                const current = f.deleted === true ? 0 : toNumber(f.contractAmount);
+                const status = f.status === 'Extra' ? 'Extra' : f.status === 'Revised' ? 'Revised' : lp ? 'CES' : 'New';
+                rows.push({ key: 'po-' + f.id, kind: 'po', id: f.id, cat: catKey(f.category || (lp && lp.category)), poNumber: f.poNumber || (lp && lp.poNumber) || '',
+                            vendor: f.subName || (lp && lp.subName) || '', status, original, current,
+                            note: f.deleted === true ? 'Hidden in PO Manager' : (f.fromExtra ? `From Extra #${f.fromExtra.number}` : '') });
+            });
+            // CES POs not in PO Manager yet (locked before the handoff)
+            lockedPos.forEach(p => {
+                if (formsById[p.id]) return;
+                rows.push({ key: 'po-' + p.id, kind: 'po', id: p.id, cat: catKey(p.category), poNumber: p.poNumber || '', vendor: p.subName || '',
+                            status: 'CES', original: toNumber(p.amount), current: toNumber(p.amount), note: 'Not in PO Manager yet' });
+            });
+
+            // Extras: lines with no PO
+            let extrasIncome = 0;
+            const counted = [];
+            (extras || []).forEach(x => {
+                if (!extraCounts(x)) return;
+                counted.push(x);
+                extrasIncome += extraIncome(x);
+                (x.lines || []).forEach((l, i) => {
+                    if (l.po && l.po.formId) return; // counted through its PO's row
+                    const cost = toNumber(l.cost);
+                    if (!cost) return;
+                    const absorb = l.use === 'absorb';
+                    rows.push({ key: `ex-${x.id}-${i}`, kind: 'extra', cat: catKey(l.cat), poNumber: '', vendor: l.vendor || '',
+                                status: 'Extra', label: `Extra #${x.number} – ${absorb ? 'we absorb' : l.use === 'po' ? 'PO not made yet' : 'budget'}`,
+                                original: 0, current: cost, note: [l.description, x.status === 'Customer refused' ? 'Customer refused' : '', extraType(x) === 'internal' ? 'Internal' : ''].filter(Boolean).join(' · ') });
+                });
+            });
+
+            // Credits, one row per Cat
+            const byCat = (credits && credits.budgetByCat) || {};
+            Object.keys(byCat).forEach(c => {
+                const amt = toNumber(byCat[c]);
+                if (!amt) return;
+                rows.push({ key: 'cr-' + c, kind: 'credit', cat: catKey(c), poNumber: '', vendor: '', status: 'Credit', label: 'Credits',
+                            original: 0, current: -amt, note: '' });
+            });
+
+            // Group by Cat, rows in PO number order, then extras, then credits
+            const order = { po: 0, extra: 1, credit: 2 };
+            rows.sort((a, b) => a.cat.localeCompare(b.cat) || order[a.kind] - order[b.kind] || String(a.poNumber).localeCompare(String(b.poNumber)) || String(a.label || '').localeCompare(String(b.label || '')));
+            const cats = [];
+            rows.forEach(r => {
+                let c = cats[cats.length - 1];
+                if (!c || c.cat !== r.cat) { c = { cat: r.cat, rows: [], original: 0, current: 0 }; cats.push(c); }
+                c.rows.push(r); c.original += r.original; c.current += r.current;
+            });
+            cats.forEach(c => { c.original = round2(c.original); c.current = round2(c.current); });
+
+            const originalBudget = round2(rows.reduce((a, r) => a + r.original, 0));
+            const revisedBudget = round2(rows.reduce((a, r) => a + r.current, 0));
+            const res = lock.results || {};
+            const cesSelling = toNumber(res.sellingPrice);
+            const creditsLessPA = toNumber(credits && credits.lessPA);
+            const sellingPrice = round2(cesSelling + extrasIncome - creditsLessPA);
+            const inHouseLabor = round2(sellingPrice * IN_HOUSE_LABOR_PCT);
+            const jobCost = round2(revisedBudget + inHouseLabor);
+            const grossProfit = round2(sellingPrice - jobCost);
+            const gpm = sellingPrice ? grossProfit / sellingPrice : 0;
+            return { cats, rows, left, counted, cesSelling, extrasIncome: round2(extrasIncome), creditsLessPA, sellingPrice,
+                     originalBudget, revisedBudget, inHouseLabor, jobCost, grossProfit, gpm,
+                     cesGpm: typeof res.gpm === 'number' ? res.gpm : null, cesPoTotal: toNumber(res.poTotal) };
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, 'pending', false = not set up, object = active user
+            const [authError, setAuthError] = useState('');
+            const [jobs, setJobs] = useState([]);
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobId, setJobId] = useState('');
+            const [lock, setLock] = useState(null);       // undefined = no lock, null = loading
+            const [forms, setForms] = useState(null);
+            const [extras, setExtras] = useState(null);
+            const [credits, setCredits] = useState(null);
+            const [errors, setErrors] = useState({});
+            const [open, setOpen] = useState({});         // Cat -> true when its PO rows are shown
+
+            useEffect(() => {
+                auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) { setJobs([]); setJobId(''); return; }
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        if (snap.exists && snap.data().active === true) setProfile({ uid: currentUser.uid, ...snap.data() });
+                        else if (snap.exists && snap.data().role === 'pending') setProfile('pending');
+                        else setProfile(false);
+                    } catch (e) { setProfile(false); }
+                });
+            }, []);
+
+            const allowed = !!profile && typeof profile === 'object' && JOBCOST_ROLES.includes(profile.role);
+            const setErr = (k, m) => setErrors(e => ({ ...e, [k]: m }));
+
+            // Job list: all jobs, or only assigned jobs for Supers
+            useEffect(() => {
+                if (!allowed) return;
+                let q = db.collection('jobs');
+                if (profile.role === 'super') q = q.where('assignedSupers', 'array-contains', profile.uid);
+                return q.onSnapshot(snap => {
+                    const list = [];
+                    snap.forEach(doc => { const d = doc.data(); list.push({ id: doc.id, code: d.code || '', address: d.address || '', archived: d.archived === true }); });
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                }, err => setErr('jobs', 'Error loading jobs: ' + err.message));
+            }, [allowed]);
+
+            // Open from a link with ?job=ID
+            const urlDone = React.useRef(false);
+            useEffect(() => {
+                if (urlDone.current || !jobs.length) return;
+                urlDone.current = true;
+                const id = new URLSearchParams(window.location.search).get('job');
+                if (id && jobs.some(j => j.id === id)) setJobId(id);
+            }, [jobs]);
+
+            // The picked job's records, all live and read-only
+            useEffect(() => {
+                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({});
+                if (!allowed || !jobId) return;
+                const fail = (k, what) => (err) => setErr(k, `Can't read ${what}: ${err.message}`);
+                const u1 = db.collection('gpm').doc(jobId).onSnapshot(doc => {
+                    const l = doc.exists ? doc.data().cesLock : null;
+                    setLock(l && l.locked ? l : undefined);
+                }, (err) => { setLock(undefined); fail('lock', 'the GPM CES lock')(err); });
+                const u2 = db.collection('jobs').doc(jobId).collection('forms').onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setForms(list);
+                }, (err) => { setForms([]); fail('forms', 'the POs')(err); });
+                const u3 = db.collection('extras').doc(jobId).collection('items').onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setExtras(list);
+                }, (err) => { setExtras([]); fail('extras', 'the extras')(err); });
+                const u4 = db.collection('extras').doc(jobId).collection('credits').doc('list').onSnapshot(doc => {
+                    setCredits(doc.exists ? doc.data() : {});
+                }, (err) => { setCredits({}); fail('credits', 'the credits')(err); });
+                return () => { u1(); u2(); u3(); u4(); };
+            }, [allowed, jobId]);
+
+            const login = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (e) { setAuthError(e.message); }
+            };
+
+            // ---------- Screens ----------
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">LOGIN</div>
+                        <button className="btn-primary" style={{ width: '100%' }} onClick={login}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+            if (profile === null) return <div className="section">Loading...</div>;
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">WAITING FOR APPROVAL</div>
+                        <p>Your account is waiting for approval. An admin will set up your access.</p>
+                    </div>
+                );
+            }
+            if (profile === false || !allowed) {
+                return (
+                    <div className="section">
+                        <div className="section-title">JOB COST</div>
+                        <p>No access. Contact an admin.</p>
+                    </div>
+                );
+            }
+
+            const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
+            const loading = jobId && (lock === null || forms === null || extras === null || credits === null);
+            const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits }) : null;
+            const errList = Object.values(errors).filter(Boolean);
+            const allOpen = jc && jc.cats.length > 0 && jc.cats.every(c => open[c.cat]);
+            const chg = (n) => { const v = round2(n); return v === 0 ? <span className="muted">–</span> : <span className={v > 0 ? 'up' : 'down'}>{v > 0 ? '+' : ''}{$(v)}</span>; };
+
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">JOB</div>
+                        <div className="form-group">
+                            <select value={jobId} onChange={e => setJobId(e.target.value)}>
+                                <option value="">-- Pick a job --</option>
+                                {visibleJobs.map(j => (
+                                    <option key={j.id} value={j.id}>{j.code}{j.address ? ' - ' + j.address : ''}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
+                            <label className="radio-line">
+                                <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                                Show archived jobs
+                            </label>
+                        </div>
+                        {errList.map((m, i) => <div key={i} className="error">{m}</div>)}
+                    </div>
+
+                    {jobId && loading && <div className="section"><p>Loading...</p></div>}
+
+                    {jobId && !loading && !lock && !errors.lock && (
+                        <div className="section">
+                            <div className="info">CES not locked yet. Job Cost starts from the GPM CES lock. Lock it in GPM when the customer signs the CES.</div>
+                        </div>
+                    )}
+
+                    {jc && (
+                        <div className="section">
+                            <div className="section-title">RUNNING GPM</div>
+                            <div className="muted" style={{ marginBottom: 10 }}>From the CES locked {fmtDate(lock.at)}{lock.by && lock.by.name ? ' by ' + lock.by.name : ''}, plus extras, credits and PO changes since.</div>
+                            <div className="summary">
+                                <div><span>CES selling price</span><span>{$(jc.cesSelling)}</span></div>
+                                <div><span>Original budget (CES POs)</span><span>{$(jc.originalBudget)}</span></div>
+                                <div><span>+ Signed extras</span><span>{$(jc.extrasIncome)}</span></div>
+                                <div><span>Revised budget</span><span>{$(jc.revisedBudget)}</span></div>
+                                <div><span>− Credits less PA fee</span><span>({$(jc.creditsLessPA)})</span></div>
+                                <div><span>In-house labor ({pct(IN_HOUSE_LABOR_PCT)} of selling price)</span><span>{$(jc.inHouseLabor)}</span></div>
+                                <div className="big"><span>Selling price</span><span>{$(jc.sellingPrice)}</span></div>
+                                <div className="big"><span>Job cost</span><span>{$(jc.jobCost)}</span></div>
+                                <div><span>Gross profit</span><span>{$(jc.grossProfit)}</span></div>
+                                <div className="big"><span>GPM now</span><span className={jc.gpm >= TARGET_GPM ? 'gpm-good' : 'gpm-bad'}>{pct(jc.gpm)}</span></div>
+                                <div><span>Target</span><span>{pct(TARGET_GPM)}</span></div>
+                                <div><span>GPM at CES lock</span><span>{jc.cesGpm === null ? '–' : pct(jc.cesGpm)}</span></div>
+                            </div>
+                            {Math.abs(jc.originalBudget - jc.cesPoTotal) > 0.01 && (
+                                <div className="info" style={{ marginTop: 12 }}>Original budget {$(jc.originalBudget)} doesn't match the CES lock's PO total {$(jc.cesPoTotal)}.</div>
+                            )}
+                        </div>
+                    )}
+
+                    {jc && (
+                        <div className="section">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                <div className="section-title" style={{ marginBottom: 0 }}>TRADE BUDGETS</div>
+                                {jc.cats.length > 0 && (
+                                    <button className="btn-link" onClick={() => setOpen(allOpen ? {} : Object.fromEntries(jc.cats.map(c => [c.cat, true])))}>
+                                        {allOpen ? 'Close all' : 'Open all'}
+                                    </button>
+                                )}
+                            </div>
+                            {jc.cats.length === 0 ? <p>No POs on this job.</p> : (
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Cat / PO</th>
+                                            <th className="hide-sm">Vendor</th>
+                                            <th>Status</th>
+                                            <th className="num">Original</th>
+                                            <th className="num">Current</th>
+                                            <th className="num">Change</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {jc.cats.map(c => (
+                                            <React.Fragment key={c.cat}>
+                                                <tr className="cat">
+                                                    <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
+                                                        {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'line' : 'lines'})</span>
+                                                    </td>
+                                                    <td className="num">{$(c.original)}</td>
+                                                    <td className="num">{$(c.current)}</td>
+                                                    <td className="num">{chg(c.current - c.original)}</td>
+                                                </tr>
+                                                {open[c.cat] && c.rows.map(r => (
+                                                    <tr key={r.key} className="sub">
+                                                        <td>
+                                                            {r.kind === 'po' ? <b>PO {r.poNumber}</b> : r.label}
+                                                            {r.note && <div className="muted">{r.note}</div>}
+                                                        </td>
+                                                        <td className="hide-sm">{r.vendor}</td>
+                                                        <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                        <td className="num">{$(r.original)}</td>
+                                                        <td className="num">{$(r.current)}</td>
+                                                        <td className="num">{chg(r.current - r.original)}</td>
+                                                    </tr>
+                                                ))}
+                                            </React.Fragment>
+                                        ))}
+                                        <tr className="total">
+                                            <td colSpan={3}>All trades</td>
+                                            <td className="num">{$(jc.originalBudget)}</td>
+                                            <td className="num">{$(jc.revisedBudget)}</td>
+                                            <td className="num">{chg(jc.revisedBudget - jc.originalBudget)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            )}
+                            {jc.left.length > 0 && <div className="hint" style={{ marginTop: 8 }}>Left out, as in the CES GPM: PO {jc.left.join(', ')}.</div>}
+                            <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits.</div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('app'));
+    </script>
+</body>
+</html>
 
