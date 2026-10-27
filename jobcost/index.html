@@ -204,6 +204,24 @@
                      cesGpm: typeof res.gpm === 'number' ? res.gpm : null, cesPoTotal: toNumber(res.poTotal) };
         };
 
+        // Before the CES lock (decided Oct 27): show the POs already in PO Manager, such as TMP and DMO #1 POs handed off early.
+        // No GPM yet: that starts from the CES lock.
+        const buildEarly = (forms) => {
+            const cats = [];
+            const byCat = {};
+            (forms || []).filter(f => f.deleted !== true).forEach(f => {
+                const cat = catKey(f.category);
+                if (!byCat[cat]) { byCat[cat] = { cat, rows: [], current: 0 }; cats.push(byCat[cat]); }
+                const current = toNumber(f.contractAmount);
+                byCat[cat].rows.push({ key: 'po-' + f.id, poNumber: f.poNumber || '', vendor: f.subName || '', status: f.status || 'New', current,
+                                       note: f.fromTradesEst && f.fromTradesEst.early ? 'Handed off early from Trades-EST' : '' });
+                byCat[cat].current += current;
+            });
+            cats.sort((a, b) => a.cat.localeCompare(b.cat));
+            cats.forEach(c => { c.current = round2(c.current); c.rows.sort((a, b) => String(a.poNumber).localeCompare(String(b.poNumber))); });
+            return { cats, total: round2(cats.reduce((t, c) => t + c.current, 0)) };
+        };
+
         function App() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', false = not set up, object = active user
@@ -343,11 +361,60 @@
 
                     {jobId && loading && <div className="section"><p>Loading...</p></div>}
 
-                    {jobId && !loading && !lock && !errors.lock && (
-                        <div className="section">
-                            <div className="info">CES not locked yet. Job Cost starts from the GPM CES lock. Lock it in GPM when the customer signs the CES.</div>
-                        </div>
-                    )}
+                    {jobId && !loading && !lock && !errors.lock && (() => {
+                        const early = buildEarly(forms);
+                        const allOpenEarly = early.cats.length > 0 && early.cats.every(c => open[c.cat]);
+                        return (
+                            <div className="section">
+                                <div className="info">CES not locked yet. Showing POs issued so far. GPM shows once the CES is locked in GPM.</div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                    <div className="section-title" style={{ marginBottom: 0 }}>POS ISSUED BEFORE THE CES</div>
+                                    {early.cats.length > 0 && (
+                                        <button className="btn-link" onClick={() => setOpen(allOpenEarly ? {} : Object.fromEntries(early.cats.map(c => [c.cat, true])))}>
+                                            {allOpenEarly ? 'Close all' : 'Open all'}
+                                        </button>
+                                    )}
+                                </div>
+                                {early.cats.length === 0 ? <p>No POs in PO Manager yet.</p> : (
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>Cat / PO</th>
+                                                <th className="hide-sm">Vendor</th>
+                                                <th>Status</th>
+                                                <th className="num">Amount</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {early.cats.map(c => (
+                                                <React.Fragment key={c.cat}>
+                                                    <tr className="cat">
+                                                        <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
+                                                            {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'PO' : 'POs'})</span>
+                                                        </td>
+                                                        <td className="num">{$(c.current)}</td>
+                                                    </tr>
+                                                    {open[c.cat] && c.rows.map(r => (
+                                                        <tr key={r.key} className="sub">
+                                                            <td><b>PO {r.poNumber}</b>{r.note && <div className="muted">{r.note}</div>}</td>
+                                                            <td className="hide-sm">{r.vendor}</td>
+                                                            <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                            <td className="num">{$(r.current)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </React.Fragment>
+                                            ))}
+                                            <tr className="total">
+                                                <td colSpan={3}>All POs</td>
+                                                <td className="num">{$(early.total)}</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                )}
+                                <div className="hint" style={{ marginTop: 6 }}>Hidden POs are left out. Click a trade to see its POs.</div>
+                            </div>
+                        );
+                    })()}
 
                     {jc && (
                         <div className="section">
