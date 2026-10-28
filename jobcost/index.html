@@ -51,6 +51,24 @@
         .up { color: #b71c1c; }
         .down { color: #2e7d32; }
         .muted { color: #888; font-size: 12px; }
+        .nbtn { margin-left: 8px; padding: 1px 8px; font-size: 11px; font-weight: 500; border-radius: 10px; background: #eef2f7; color: #335; border: 1px solid #d5dce6; cursor: pointer; vertical-align: middle; }
+        .nbtn:hover { background: #e2e9f3; }
+        .nbtn.open { background: #fff3e0; color: #8a4b00; border-color: #f0a020; font-weight: 700; }
+        .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 30px 12px; overflow-y: auto; }
+        .modal { background: white; border-radius: 8px; padding: 20px; width: 100%; max-width: 640px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+        .msg { border: 1px solid #e6e6e6; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 14px; }
+        .msg.q { border-color: #f0a020; background: #fffaf0; }
+        .msg.q.done { border-color: #c8e6c9; background: #f6fbf6; }
+        .msg.ponote { background: #f7f9fc; border-style: dashed; }
+        .msg .who { font-size: 12px; color: #666; margin-bottom: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .msg .body { white-space: pre-wrap; color: #222; }
+        .msg .acts { margin-top: 6px; display: flex; gap: 12px; }
+        .qtag { font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 8px; background: #f0a020; color: white; }
+        .qtag.done { background: #2e7d32; }
+        .modal textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-small { padding: 5px 10px; font-size: 13px; }
+        .mic.on { background: #d32f2f; color: white; }
         @media (max-width: 700px) { .summary { grid-template-columns: 1fr; } .container { padding: 16px; } body { padding: 8px; } .hide-sm { display: none; } }
     </style>
 </head>
@@ -204,6 +222,163 @@
                      cesGpm: typeof res.gpm === 'number' ? res.gpm : null, cesPoTotal: toNumber(res.poTotal) };
         };
 
+        // ---------- Notes (Job Cost step 2, decided Oct 27) ----------
+        // A conversation per PO and per Cat, in a pop-up so the table stays clean. Records: jobCost/{jobId}/messages/{id}
+        // { thread: 'po:{formId}' or 'cat:{CAT}', text, question, answered, answeredBy, answeredAt, createdBy {uid, name, role}, createdAt, editedAt, editedBy }.
+        // Owner, Admin, Estimator and Super post; Office reads only. Any message can be a Question; Owner, Admin or the job's Super
+        // marks it Answered (and can reopen it). No deletes; the author can edit for 24 hours and the old text is kept in messages/{id}/versions.
+        const NOTE_POST_ROLES = ['owner', 'admin', 'estimator', 'super'];
+        const NOTE_ANSWER_ROLES = ['owner', 'admin', 'super'];
+        const ROLE_NAMES = { owner: 'Owner', admin: 'Admin', estimator: 'Estimator', super: 'Super', office: 'Office' };
+        const EDIT_HOURS = 24;
+        const tsMillis = (t) => { try { return t && t.toMillis ? t.toMillis() : (t && t.toDate ? t.toDate().getTime() : (t ? new Date(t).getTime() : 0)); } catch (e) { return 0; } };
+        const fmtWhen = (t) => { const ms = tsMillis(t); if (!ms) return ''; const d = new Date(ms); return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }); };
+        const threadStats = (messages, thread) => {
+            const list = (messages || []).filter(m => m.thread === thread);
+            return { count: list.length, open: list.filter(m => m.question && !m.answered).length };
+        };
+        function NotesButton({ messages, thread, onOpen }) {
+            const st = threadStats(messages, thread);
+            return (
+                <button type="button" className={'nbtn' + (st.open ? ' open' : '')} onClick={e => { e.stopPropagation(); onOpen(); }}
+                    title={st.open ? `${st.open} open question${st.open === 1 ? '' : 's'}` : 'Notes'}>
+                    {st.open ? `? ${st.open} open` : `Notes${st.count ? ' (' + st.count + ')' : ''}`}
+                </button>
+            );
+        }
+
+        function NotesModal({ jobId, thread, title, poNotes, messages, profile, onClose }) {
+            const [text, setText] = useState('');
+            const [asQuestion, setAsQuestion] = useState(false);
+            const [busy, setBusy] = useState(false);
+            const [err, setErr] = useState('');
+            const [editId, setEditId] = useState(null);
+            const [editText, setEditText] = useState('');
+            const [listening, setListening] = useState(false);
+            const recRef = React.useRef(null);
+            const canPost = NOTE_POST_ROLES.includes(profile.role);
+            const canAnswer = NOTE_ANSWER_ROLES.includes(profile.role);
+            const me = { uid: profile.uid, name: profile.name || '', role: profile.role };
+            const list = (messages || []).filter(m => m.thread === thread).sort((a, b) => tsMillis(a.createdAt) - tsMillis(b.createdAt));
+            const col = db.collection('jobCost').doc(jobId).collection('messages');
+            const stopVoice = () => { if (recRef.current) { try { recRef.current.stop(); } catch (e) { } recRef.current = null; } setListening(false); };
+            useEffect(() => () => stopVoice(), []);
+            const toggleVoice = () => {
+                if (listening) { stopVoice(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setErr('Voice works in Chrome or Edge.'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let said = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript;
+                    said = said.trim();
+                    if (said) setText(t => (t && !/\s$/.test(t) ? t + ' ' : t) + said.charAt(0).toUpperCase() + said.slice(1));
+                };
+                rec.onend = () => { recRef.current = null; setListening(false); };
+                rec.onerror = () => { recRef.current = null; setListening(false); };
+                recRef.current = rec; rec.start(); setListening(true); setErr('');
+            };
+            const post = async () => {
+                const t = text.trim();
+                if (!t) return;
+                stopVoice(); setBusy(true); setErr('');
+                try {
+                    await col.add({ thread, text: t, question: asQuestion, answered: false, createdBy: me, createdAt: new Date() });
+                    setText(''); setAsQuestion(false);
+                } catch (e) { setErr('Could not post: ' + e.message); }
+                setBusy(false);
+            };
+            const saveEdit = async (m) => {
+                const t = editText.trim();
+                if (!t || t === m.text) { setEditId(null); return; }
+                setBusy(true); setErr('');
+                try {
+                    const now = new Date();
+                    await col.doc(m.id).collection('versions').add({ text: m.text, question: !!m.question, savedAt: m.editedAt || m.createdAt || null, replacedAt: now, replacedBy: me });
+                    await col.doc(m.id).update({ text: t, editedAt: now, editedBy: me });
+                    setEditId(null);
+                } catch (e) { setErr('Could not save the edit: ' + e.message); }
+                setBusy(false);
+            };
+            const setAnswered = async (m, answered) => {
+                setBusy(true); setErr('');
+                try { await col.doc(m.id).update({ answered, answeredBy: me, answeredAt: new Date() }); }
+                catch (e) { setErr('Could not save: ' + e.message); }
+                setBusy(false);
+            };
+            const close = () => {
+                if (text.trim() && !window.confirm('Close and drop the note you typed?')) return;
+                stopVoice(); onClose();
+            };
+            return (
+                <div className="modal-back" onClick={close}>
+                    <div className="modal" onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>Notes · {title}</div>
+                            <button className="btn-link" onClick={close}>Close</button>
+                        </div>
+                        <div className="muted" style={{ margin: '4px 0 12px' }}>{list.length} message{list.length === 1 ? '' : 's'}{list.filter(m => m.question && !m.answered).length ? ` · ${list.filter(m => m.question && !m.answered).length} open question${list.filter(m => m.question && !m.answered).length === 1 ? '' : 's'}` : ''}</div>
+                        {poNotes && (
+                            <div className="msg ponote">
+                                <div className="who">PO note (from Trades-EST / PO Manager)</div>
+                                <div className="body">{poNotes}</div>
+                            </div>
+                        )}
+                        {list.length === 0 && !poNotes && <p className="muted">No notes yet.</p>}
+                        {list.map(m => {
+                            const mine = m.createdBy && m.createdBy.uid === profile.uid;
+                            const canEdit = canPost && mine && (Date.now() - tsMillis(m.createdAt)) < EDIT_HOURS * 3600000;
+                            return (
+                                <div key={m.id} className={'msg' + (m.question ? ' q' : '') + (m.question && m.answered ? ' done' : '')}>
+                                    <div className="who">
+                                        <b style={{ color: '#333' }}>{m.createdBy ? m.createdBy.name : ''}</b>
+                                        <span>({ROLE_NAMES[m.createdBy && m.createdBy.role] || ''})</span>
+                                        <span>{fmtWhen(m.createdAt)}</span>
+                                        {m.editedAt && <span>· edited {fmtWhen(m.editedAt)}</span>}
+                                        {m.question && <span className={'qtag' + (m.answered ? ' done' : '')}>{m.answered ? 'Answered' : 'Question'}</span>}
+                                        {m.question && m.answered && m.answeredBy && <span>by {m.answeredBy.name} {fmtWhen(m.answeredAt)}</span>}
+                                    </div>
+                                    {editId === m.id ? (
+                                        <div>
+                                            <textarea rows={3} value={editText} onChange={e => setEditText(e.target.value)} />
+                                            <div className="acts">
+                                                <button className="btn-primary btn-small" disabled={busy} onClick={() => saveEdit(m)}>Save</button>
+                                                <button className="btn-link" onClick={() => setEditId(null)}>Cancel</button>
+                                            </div>
+                                        </div>
+                                    ) : <div className="body">{m.text}</div>}
+                                    {editId !== m.id && (canEdit || (m.question && canAnswer)) && (
+                                        <div className="acts">
+                                            {canEdit && <button className="btn-link" onClick={() => { setEditId(m.id); setEditText(m.text); }}>Edit</button>}
+                                            {m.question && canAnswer && (m.answered
+                                                ? <button className="btn-link" disabled={busy} onClick={() => setAnswered(m, false)}>Reopen question</button>
+                                                : <button className="btn-link" disabled={busy} onClick={() => setAnswered(m, true)}>Mark answered</button>)}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {canPost ? (
+                            <div style={{ marginTop: 12 }}>
+                                <textarea rows={3} value={text} placeholder="Type a note, or use Voice..." onChange={e => setText(e.target.value)} />
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                                    <button type="button" className={'btn-secondary btn-small mic' + (listening ? ' on' : '')} onClick={toggleVoice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                                    <label className="radio-line" style={{ marginTop: 0 }}>
+                                        <input type="checkbox" checked={asQuestion} onChange={e => setAsQuestion(e.target.checked)} /> This is a question
+                                    </label>
+                                    <div style={{ flex: 1 }} />
+                                    <button className="btn-primary btn-small" disabled={busy || !text.trim()} onClick={post}>{busy ? 'Saving...' : 'Post'}</button>
+                                </div>
+                            </div>
+                        ) : <p className="muted" style={{ marginTop: 10 }}>Office can read notes. Posting is for Owner, Admin, Estimator and Super.</p>}
+                        {err && <div className="error">{err}</div>}
+                        <div className="hint" style={{ marginTop: 8 }}>Notes can't be deleted. You can edit your own note for {EDIT_HOURS} hours; the earlier text is kept.</div>
+                    </div>
+                </div>
+            );
+        }
+
         // Before the CES lock (decided Oct 27): show the POs already in PO Manager, such as TMP and DMO #1 POs handed off early.
         // No GPM yet: that starts from the CES lock.
         const buildEarly = (forms) => {
@@ -213,7 +388,7 @@
                 const cat = catKey(f.category);
                 if (!byCat[cat]) { byCat[cat] = { cat, rows: [], current: 0 }; cats.push(byCat[cat]); }
                 const current = toNumber(f.contractAmount);
-                byCat[cat].rows.push({ key: 'po-' + f.id, poNumber: f.poNumber || '', vendor: f.subName || '', status: f.status || 'New', current,
+                byCat[cat].rows.push({ key: 'po-' + f.id, id: f.id, poNumber: f.poNumber || '', vendor: f.subName || '', status: f.status || 'New', current,
                                        note: f.fromTradesEst && f.fromTradesEst.early ? 'Handed off early from Trades-EST' : '' });
                 byCat[cat].current += current;
             });
@@ -235,6 +410,8 @@
             const [credits, setCredits] = useState(null);
             const [errors, setErrors] = useState({});
             const [open, setOpen] = useState({});         // Cat -> true when its PO rows are shown
+            const [messages, setMessages] = useState([]); // the job's notes (jobCost/{jobId}/messages)
+            const [notesFor, setNotesFor] = useState(null); // { thread, title, poNotes } while the Notes pop-up is open
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -277,7 +454,7 @@
 
             // The picked job's records, all live and read-only
             useEffect(() => {
-                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({});
+                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null);
                 if (!allowed || !jobId) return;
                 const fail = (k, what) => (err) => setErr(k, `Can't read ${what}: ${err.message}`);
                 const u1 = db.collection('gpm').doc(jobId).onSnapshot(doc => {
@@ -293,7 +470,10 @@
                 const u4 = db.collection('extras').doc(jobId).collection('credits').doc('list').onSnapshot(doc => {
                     setCredits(doc.exists ? doc.data() : {});
                 }, (err) => { setCredits({}); fail('credits', 'the credits')(err); });
-                return () => { u1(); u2(); u3(); u4(); };
+                const u5 = db.collection('jobCost').doc(jobId).collection('messages').onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setMessages(list);
+                }, (err) => { setMessages([]); fail('notes', 'the notes')(err); });
+                return () => { u1(); u2(); u3(); u4(); u5(); };
             }, [allowed, jobId]);
 
             const login = async () => {
@@ -338,6 +518,11 @@
             const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits }) : null;
             const errList = Object.values(errors).filter(Boolean);
             const allOpen = jc && jc.cats.length > 0 && jc.cats.every(c => open[c.cat]);
+            const openQuestions = messages.filter(m => m.question && !m.answered).length;
+            const formOf = (id) => (forms || []).find(f => f.id === id);
+            const openPoNotes = (r) => { const f = formOf(r.id); setNotesFor({ thread: 'po:' + r.id, title: `PO ${r.poNumber}${r.vendor ? ' · ' + r.vendor : ''}`, poNotes: (f && f.notes) || '' }); };
+            const openCatNotes = (cat) => setNotesFor({ thread: 'cat:' + cat, title: `${cat} (whole trade)`, poNotes: '' });
+            const qLine = openQuestions > 0 && <div className="info" style={{ background: '#fff3e0', borderColor: '#f0a020' }}><b>Open questions: {openQuestions}</b> · look for the orange "? open" buttons.</div>;
             const chg = (n) => { const v = round2(n); return v === 0 ? <span className="muted">–</span> : <span className={v > 0 ? 'up' : 'down'}>{v > 0 ? '+' : ''}{$(v)}</span>; };
 
             return (
@@ -367,6 +552,7 @@
                         return (
                             <div className="section">
                                 <div className="info">CES not locked yet. Showing POs issued so far. GPM shows once the CES is locked in GPM.</div>
+                                {qLine}
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
                                     <div className="section-title" style={{ marginBottom: 0 }}>POS ISSUED BEFORE THE CES</div>
                                     {early.cats.length > 0 && (
@@ -391,12 +577,13 @@
                                                     <tr className="cat">
                                                         <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
                                                             {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'PO' : 'POs'})</span>
+                                                            <NotesButton messages={messages} thread={'cat:' + c.cat} onOpen={() => openCatNotes(c.cat)} />
                                                         </td>
                                                         <td className="num">{$(c.current)}</td>
                                                     </tr>
                                                     {open[c.cat] && c.rows.map(r => (
                                                         <tr key={r.key} className="sub">
-                                                            <td><b>PO {r.poNumber}</b>{r.note && <div className="muted">{r.note}</div>}</td>
+                                                            <td><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{r.note && <div className="muted">{r.note}</div>}</td>
                                                             <td className="hide-sm">{r.vendor}</td>
                                                             <td><span className={'tag ' + r.status}>{r.status}</span></td>
                                                             <td className="num">{$(r.current)}</td>
@@ -418,6 +605,7 @@
 
                     {jc && (
                         <div className="section">
+                            {qLine}
                             <div className="section-title">RUNNING GPM</div>
                             <div className="muted" style={{ marginBottom: 10 }}>From the CES locked {fmtDate(lock.at)}{lock.by && lock.by.name ? ' by ' + lock.by.name : ''}, plus extras, credits and PO changes since.</div>
                             <div className="summary">
@@ -468,6 +656,7 @@
                                                 <tr className="cat">
                                                     <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
                                                         {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'line' : 'lines'})</span>
+                                                        <NotesButton messages={messages} thread={'cat:' + c.cat} onOpen={() => openCatNotes(c.cat)} />
                                                     </td>
                                                     <td className="num">{$(c.original)}</td>
                                                     <td className="num">{$(c.current)}</td>
@@ -476,7 +665,7 @@
                                                 {open[c.cat] && c.rows.map(r => (
                                                     <tr key={r.key} className="sub">
                                                         <td>
-                                                            {r.kind === 'po' ? <b>PO {r.poNumber}</b> : r.label}
+                                                            {r.kind === 'po' ? <><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} /></> : r.label}
                                                             {r.note && <div className="muted">{r.note}</div>}
                                                         </td>
                                                         <td className="hide-sm">{r.vendor}</td>
@@ -498,8 +687,13 @@
                                 </table>
                             )}
                             {jc.left.length > 0 && <div className="hint" style={{ marginTop: 8 }}>Left out, as in the CES GPM: PO {jc.left.join(', ')}.</div>}
-                            <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits.</div>
+                            <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits. Notes: one conversation per PO, and one per trade for extras and credits.</div>
                         </div>
+                    )}
+
+                    {notesFor && jobId && (
+                        <NotesModal jobId={jobId} thread={notesFor.thread} title={notesFor.title} poNotes={notesFor.poNotes}
+                            messages={messages} profile={profile} onClose={() => setNotesFor(null)} />
                     )}
                 </div>
             );
