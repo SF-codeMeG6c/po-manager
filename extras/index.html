@@ -381,13 +381,27 @@
             };
             const need = (h) => { if (y - h < BOTTOM) { newPage(); text(`Extra #${number} (continued)`, M, y, 10, bold); y -= 20; } };
 
+            // Logo (same file as the PO form). If it can't load, the name is printed instead.
+            let logo = null;
+            try {
+                const res = await fetch('/shared/freeman-logo.png');
+                if (res.ok) logo = await doc.embedPng(await res.arrayBuffer());
+            } catch (e) { logo = null; }
+
             newPage();
-            // Header
-            text('Freeman Restoration', M, y, 16, bold); y -= 14;
-            COMPANY.forEach(l => { text(l, M, y, 9, font, grey); y -= 11; });
-            y -= 14;
+            // Header: logo top left, company address top right
+            const top = H - 36;
+            if (logo) {
+                const lw = 210, lh = lw * logo.height / logo.width;
+                page.drawImage(logo, { x: M, y: top - lh, width: lw, height: lh });
+                y = top - lh;
+            } else {
+                text('Freeman Restoration', M, top - 16, 16, bold); y = top - 20;
+            }
+            COMPANY.forEach((l, i) => text(l, W - M - font.widthOfTextAtSize(plain(l), 9), top - 9 - i * 11, 9, font, grey));
+            y -= 22;
             const title = 'EXTRA CHANGE ORDER';
-            text(title, (W - bold.widthOfTextAtSize(title, 18)) / 2, y, 18, bold); y -= 30;
+            text(title, (W - bold.widthOfTextAtSize(title, 18)) / 2, y, 18, bold); y -= 26;
 
             // Name / address / extra number
             text('Name:', M, y, 10, bold); text(name || '', M + 55, y, 10);
@@ -430,12 +444,14 @@
             text('Sub Total', tl, y, 10); right($(totals.subtotal), colAmt, y, 10); y -= 14;
             text('Overhead and Profit (10 & 10)', tl, y, 10); right($(totals.op), colAmt, y, 10); y -= 6;
             page.drawLine({ start: { x: tl, y }, end: { x: W - M, y }, thickness: 1, color: black }); y -= 13;
-            text('Total Extra', tl, y, 11, bold); right($(totals.total), colAmt, y, 11, bold); y -= 28;
+            text('Total Extra', tl, y, 11, bold); right($(totals.total), colAmt, y, 11, bold); y -= 24;
 
             // Payment, days added, acceptance and signatures (kept on one page)
             const payLines = (t) => wrap(t, font, 10, W - 2 * M - 30);
             const sLines = payLines(SUPPLEMENT_TEXT), cLines = payLines(CUSTOMER_TEXT), aLines = wrap(ACCEPT_TEXT, font, 10, W - 2 * M);
-            const blockH = (sLines.length + cLines.length + aLines.length) * 13 + 200;
+            // Exact height of this block: the two boxes, days line, acceptance, signature space and two signature lines
+            const SIG_GAP = 30, SIG_STEP = 40;
+            const blockH = (sLines.length + cLines.length + aLines.length) * 13 + 20 + 4 + 24 + SIG_GAP + SIG_STEP + 14;
             need(blockH);
             const check = (on, lines) => {
                 page.drawRectangle({ x: M, y: y - 2, width: 11, height: 11, borderColor: black, borderWidth: 1 });
@@ -448,14 +464,14 @@
             y -= 4;
             const days = extra.daysAdded === '' ? '____' : String(extra.daysAdded);
             text(days, M, y, 10, bold);
-            text('Days added to completion date for this extra work, from the date of customer approval', M + 35, y, 10); y -= 26;
+            text('Days added to completion date for this extra work, from the date of customer approval', M + 35, y, 10); y -= 24;
             aLines.forEach(t => { text(t, M, y, 10); y -= 13; });
-            y -= 34;
+            y -= SIG_GAP;
             const sig = (label) => {
                 page.drawLine({ start: { x: M, y }, end: { x: M + 300, y }, thickness: 0.8, color: black });
                 page.drawLine({ start: { x: M + 340, y }, end: { x: W - M, y }, thickness: 0.8, color: black });
                 text(label, M, y - 12, 9, font, grey); text('Date', M + 340, y - 12, 9, font, grey);
-                y -= 44;
+                y -= SIG_STEP;
             };
             sig('Owner Signature');
             sig('Owner Signature');
