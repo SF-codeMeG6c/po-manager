@@ -1,1 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accounts Payable - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .back-link { display: inline-block; font-size: 13px; color: #0066cc; text-decoration: none; margin-bottom: 12px; }
+        .back-link:hover { text-decoration: underline; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        p { margin-bottom: 12px; font-size: 14px; color: #333; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; width: 100%; }
+        .btn-primary:hover { background: #0052a3; }
+        .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        .muted { font-size: 13px; color: #888; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        .form-group { margin-bottom: 12px; }
+        .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; font-weight: normal; margin-bottom: 0; }
+        .check input { width: auto; }
+        .job-head { background: #f9f9f9; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+        .job-code { font-size: 18px; font-weight: 600; color: #333; }
+        .job-addr { font-size: 13px; color: #666; margin-top: 2px; }
+        .job-super { font-size: 13px; color: #333; margin-top: 6px; }
+        .notice { background: #f9f9f9; border-radius: 6px; padding: 14px; font-size: 14px; color: #555; margin-bottom: 18px; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; color: #333; }
+        th { background: #f5f5f5; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; white-space: nowrap; }
+        td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+        td.num, th.num { text-align: right; white-space: nowrap; }
+        tr.total td { font-weight: 600; border-top: 2px solid #ddd; border-bottom: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">&larr; Dashboard</a>
+        <h1>Accounts Payable</h1>
+        <p class="subtitle">Sub and supplier invoices: intake, approval, and hand-off to Bookkeeping</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Same Firebase project as the other tools
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Who can open Accounts Payable (Spencer, Oct 28). Production Admin and Bookkeeping have the Admin role.
+        // Estimator and Office may approve invoices on their own POs. Only Owner and Admin add invoices.
+        const ALLOWED = ['owner', 'admin', 'estimator', 'super', 'office'];
+        const ALLOWED_TEXT = 'Owner, Admin, Estimator, Super and Office';
+
+        // Job from the address: /ap/?job=ID ('' = no job picked). The Dashboard tile opens with no job.
+        const START_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
+
+        // PO amounts are typed text ("12,345.00", "$2,500"). Returns a number, or null if there is none.
+        const amountOf = (v) => {
+            const t = String(v === undefined || v === null ? '' : v).replace(/[^0-9.\-]/g, '');
+            const n = parseFloat(t);
+            return isNaN(n) ? null : n;
+        };
+        const money = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+        // PO status as PO Manager shows it (older records: Complete shows as CES, none as New)
+        const poStatus = (s) => s === 'Extra' ? 'Extra'
+            : ['CES', 'Complete', 'Completed'].includes(s) ? 'CES'
+            : s === 'Revised' ? 'Revised' : 'New';
+
+        function APApp() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null); // null = checking, 'pending', 'notset', 'noaccess', object = can use AP
+            const [authError, setAuthError] = useState('');
+            const [jobs, setJobs] = useState(null);        // null = loading
+            const [jobsError, setJobsError] = useState('');
+            const [showArchived, setShowArchived] = useState(false);
+            const [jobId, setJobId] = useState(START_JOB_ID);
+            const [superInfo, setSuperInfo] = useState(undefined); // undefined = loading, null = none picked
+            const [pos, setPos] = useState(null);          // null = loading
+            const [posError, setPosError] = useState('');
+
+            // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
+            useEffect(() => {
+                return auth.onAuthStateChanged(async currentUser => {
+                    setUser(currentUser);
+                    setProfile(null);
+                    if (!currentUser) return;
+                    try {
+                        const snap = await db.collection('users').doc(currentUser.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && ALLOWED.includes(d.role)) setProfile({ uid: currentUser.uid, ...d });
+                        else if (d && d.role === 'pending') setProfile('pending');
+                        else if (d && d.active === true) setProfile('noaccess');
+                        else setProfile('notset');
+                    } catch (err) {
+                        setProfile('notset');
+                    }
+                });
+            }, []);
+
+            // Job list: all jobs, or only assigned jobs for Supers (the rules require the assignedSupers query)
+            useEffect(() => {
+                setJobs(null);
+                if (!profile || typeof profile !== 'object') return;
+                let query = db.collection('jobs');
+                if (profile.role === 'super') query = query.where('assignedSupers', 'array-contains', profile.uid);
+                return query.onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                    });
+                    list.sort((a, b) => a.code.localeCompare(b.code));
+                    setJobs(list);
+                    setJobsError('');
+                }, error => { setJobs([]); setJobsError('Error loading jobs: ' + error.message); });
+            }, [profile]);
+
+            const job = jobId && jobs ? jobs.find(j => j.id === jobId) : null;
+            const jobReady = !!job;
+
+            // The job's Super, read from Customer Information (team.super)
+            useEffect(() => {
+                setSuperInfo(undefined);
+                if (!jobReady) return;
+                return db.collection('jobs').doc(jobId).collection('notesInfo').doc('contactCard').onSnapshot(doc => {
+                    const t = doc.exists ? (doc.data().team || {}) : {};
+                    setSuperInfo(t.super && t.super.uid ? t.super : null);
+                }, () => setSuperInfo(null));
+            }, [jobId, jobReady]);
+
+            // The job's POs from PO Manager. Read only: AP never changes them. Hidden POs are left out.
+            useEffect(() => {
+                setPos(null);
+                setPosError('');
+                if (!jobReady) return;
+                return db.collection('jobs').doc(jobId).collection('forms').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (d.deleted === true) return;
+                        list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                            status: poStatus(d.status), amount: amountOf(d.contractAmount) });
+                    });
+                    list.sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
+                    setPos(list);
+                }, error => { setPos([]); setPosError('Error loading POs: ' + error.message); });
+            }, [jobId, jobReady]);
+
+            // Pick a job. The address keeps the job, so a refresh stays on it.
+            const pickJob = (id) => {
+                setJobId(id);
+                window.history.replaceState(null, '', id ? '?job=' + encodeURIComponent(id) : window.location.pathname);
+            };
+
+            const handleMicrosoftLogin = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    setAuthError(error.message);
+                }
+            };
+
+            if (!user) {
+                return (
+                    <div className="section">
+                        <div className="section-title">Sign in</div>
+                        <button className="btn-primary" onClick={handleMicrosoftLogin}>Sign in with Microsoft</button>
+                        {authError && <div className="error">{authError}</div>}
+                    </div>
+                );
+            }
+
+            if (profile === null) return <div className="section">Loading...</div>;
+
+            if (profile === 'pending') {
+                return (
+                    <div className="section">
+                        <div className="section-title">Waiting for approval</div>
+                        <p>Your account is waiting for approval. An admin will set up your access.</p>
+                    </div>
+                );
+            }
+
+            if (profile === 'noaccess') {
+                return (
+                    <div className="section">
+                        <div className="section-title">No access</div>
+                        <p>Accounts Payable is for {ALLOWED_TEXT}. Contact an admin if you need access.</p>
+                    </div>
+                );
+            }
+
+            if (profile === 'notset') {
+                return (
+                    <div className="section">
+                        <div className="section-title">Account not set up</div>
+                        <p>Your account doesn't have access. Contact an admin.</p>
+                    </div>
+                );
+            }
+
+            const listed = (jobs || []).filter(j => showArchived || !j.archived || j.id === jobId);
+            const total = (pos || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">Job</div>
+                        <div className="form-group">
+                            <label htmlFor="job-pick">Pick a job</label>
+                            <select id="job-pick" value={jobId} onChange={e => pickJob(e.target.value)}>
+                                <option value="">{jobs === null ? 'Loading jobs...' : '-- Pick a job --'}</option>
+                                {listed.map(j => (
+                                    <option key={j.id} value={j.id}>{j.code} - {j.address}{j.archived ? ' (archived)' : ''}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <label className="check">
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            Show archived jobs
+                        </label>
+                        {jobsError && <div className="error">{jobsError}</div>}
+                    </div>
+
+                    {jobId && jobs && !job && (
+                        <div className="notice">This job wasn't found, or you don't have access to it. Pick a job above.</div>
+                    )}
+
+                    {job && (
+                        <div>
+                            <div className="job-head">
+                                <div className="job-code">{job.code}{job.archived ? ' (archived)' : ''}</div>
+                                <div className="job-addr">{[job.address, job.cityStateZip].filter(Boolean).join(', ') || 'No address on Customer Information.'}</div>
+                                <div className="job-super">
+                                    Super: {superInfo === undefined ? 'Loading...'
+                                        : superInfo ? superInfo.name
+                                        : <span className="muted">not picked. Set it on Customer Information.</span>}
+                                </div>
+                            </div>
+
+                            <div className="section">
+                                <div className="section-title">POs on this job</div>
+                                {posError && <div className="error" style={{ marginBottom: '10px' }}>{posError}</div>}
+                                {pos === null && <p className="muted">Loading POs...</p>}
+                                {pos && pos.length === 0 && !posError && <p className="muted">No POs on this job yet. POs are made in PO Manager.</p>}
+                                {pos && pos.length > 0 && (
+                                    <div className="table-wrap">
+                                        <table>
+                                            <thead>
+                                                <tr><th>PO #</th><th>Category</th><th>Sub</th><th>Status</th><th className="num">PO amount</th></tr>
+                                            </thead>
+                                            <tbody>
+                                                {pos.map(p => (
+                                                    <tr key={p.id}>
+                                                        <td>{p.poNumber || '-'}</td>
+                                                        <td>{p.category}</td>
+                                                        <td>{p.subName}</td>
+                                                        <td>{p.status}</td>
+                                                        <td className="num">{p.amount === null ? '-' : money(p.amount)}</td>
+                                                    </tr>
+                                                ))}
+                                                <tr className="total">
+                                                    <td colSpan="4">Total ({pos.length} PO{pos.length === 1 ? '' : 's'})</td>
+                                                    <td className="num">{money(total)}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="section">
+                                <div className="section-title">Invoices</div>
+                                <p className="muted">No invoices yet.</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<APApp />, document.getElementById('app'));
+    </script>
+</body>
+</html>
 
