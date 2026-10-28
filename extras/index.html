@@ -74,6 +74,9 @@
         .calc .keys button:hover { background: #e0e0e0; }
         .calc .keys button.op { background: #e3eefb; }
         .calc .btn-primary { width: 100%; }
+        .line-move { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .line-move button { font-size: 12px; line-height: 1; padding: 2px 0; }
+        .line-move button:disabled { color: #ccc; cursor: default; text-decoration: none; }
         .mic.sp-on { background: #e3eefb; border-color: #0066cc; color: #0052a3; }
         .sp-row td { background: #f7f9fc; border-bottom: 1px solid #dde3ea; }
         .sp-box { padding: 6px 4px; }
@@ -1216,6 +1219,14 @@
             useEffect(() => { setScratchOpen({}); setCalcFor(null); }, [openId, jobId]); // scratch pads start closed on each extra
             const addLine = () => setForm(f => ({ ...f, lines: [...f.lines, BLANK_LINE()] }));
             const removeLine = (i) => { stopVoice(); setScratchOpen({}); setCalcFor(null); removeLineNow(i); };
+            // Move a line up or down (decided Oct 27). Only while the extra can be edited: once POs are made they record line numbers.
+            const moveLine = (i, dir) => {
+                const j = i + dir;
+                if (!form || j < 0 || j >= form.lines.length) return;
+                stopVoice(); setCalcFor(null);
+                setForm(f => { const ls = [...f.lines]; [ls[i], ls[j]] = [ls[j], ls[i]]; return { ...f, lines: ls }; });
+                setScratchOpen(o => ({ ...o, [i]: o[j], [j]: o[i] })); // an open scratch pad moves with its line
+            };
             const removeLineNow = (i) => setForm(f => ({ ...f, lines: f.lines.length > 1 ? f.lines.filter((_, j) => j !== i) : [BLANK_LINE()] }));
 
             const stamp = () => firebase.firestore.Timestamp.now();
@@ -1680,7 +1691,13 @@
                                                 </select>
                                                 {l.po && l.po.poNumber && <div className="po-tag">PO {l.po.poNumber}</div>}
                                             </td>
-                                            <td>{!ro && <button className="btn-link" title="Remove line" onClick={() => removeLine(i)}>✕</button>}</td>
+                                            <td>{!ro && (
+                                                <div className="line-move">
+                                                    <button className="btn-link" title="Move line up" disabled={i === 0} onClick={() => moveLine(i, -1)}>▲</button>
+                                                    <button className="btn-link" title="Remove line" onClick={() => removeLine(i)}>✕</button>
+                                                    <button className="btn-link" title="Move line down" disabled={i === form.lines.length - 1} onClick={() => moveLine(i, 1)}>▼</button>
+                                                </div>
+                                            )}</td>
                                         </tr>
                                         {scratchOpen[i] && (
                                             <tr className="sp-row">
