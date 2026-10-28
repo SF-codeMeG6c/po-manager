@@ -200,8 +200,8 @@
         const BLANK_LINE = () => ({ cat: '', description: '', vendor: '', cost: '', margin: String(DEFAULT_MARGIN), allowance: false, use: 'budget' });
         const BLANK_FORM = () => ({ type: 'customer', title: '', description: '', daysAdded: '', lines: [BLANK_LINE()] });
 
-        // Scratch pad per line (decided Oct 27): notes and amounts that show how a cost was reached. Notes only: the total does
-        // not fill Cost (Cost stays typed by hand). Not on the change order PDF. Saved with the line, so every version keeps it.
+        // Scratch pad per line (decided Oct 27): notes and amounts that show how a cost was reached. The total fills Cost only
+        // when "Use total as cost" is clicked (asks first when Cost already has a different amount); otherwise Cost is typed by hand. Not on the change order PDF. Saved with the line, so every version keeps it.
         // An amount box takes a sum like 2*480+150; it is worked out when you leave the box.
         const signedNum = (t) => { const s = String(t ?? '').replace(/[,$\s]/g, ''); const n = parseFloat(s); return isNaN(n) ? 0 : n; };
         const calcText = (t) => {
@@ -1704,7 +1704,7 @@
                                                 <td></td>
                                                 <td colSpan={7}>
                                                     <div className="sp-box">
-                                                        <div className="sp-head">Scratch pad · {l.cat || 'line ' + (i + 1)}{l.description ? ' · ' + String(l.description).split('\n')[0].slice(0, 60) : ''} <span>How the cost was reached. Not on the change order, and it does not change Cost.</span></div>
+                                                        <div className="sp-head">Scratch pad · {l.cat || 'line ' + (i + 1)}{l.description ? ' · ' + String(l.description).split('\n')[0].slice(0, 60) : ''} <span>How the cost was reached. Not on the change order. Cost changes only when you click "Use total as cost".</span></div>
                                                         {sp.length === 0 && <div className="hint">No scratch pad lines yet.</div>}
                                                         {sp.map((x, k) => (
                                                             <div key={k} className="sp-line">
@@ -1718,9 +1718,25 @@
                                                         ))}
                                                         <div className="sp-foot">
                                                             {!ro ? <button className="btn-secondary btn-small" onClick={() => setScratch(i, [...sp, { note: '', amount: '' }])}>+ Add line</button> : <span />}
-                                                            <span>Total <b>{$(scratchTotal(sp))}</b>{toNumber(l.cost) ? <span style={{ color: '#888' }}> · line cost {$(toNumber(l.cost))}</span> : null}</span>
+                                                            <span>Total <b>{$(scratchTotal(sp))}</b>{toNumber(l.cost) ? <span style={{ color: '#888' }}> · line cost {$(toNumber(l.cost))}</span> : null}
+                                                                {!ro && (() => {
+                                                                    const tot = scratchTotal(sp);
+                                                                    const same = round2(toNumber(l.cost)) === tot;
+                                                                    return (
+                                                                        <button type="button" className="btn-primary btn-small" style={{ marginLeft: 10 }} disabled={tot <= 0 || same}
+                                                                            title={tot <= 0 ? 'The total must be more than $0.00.' : same ? 'Cost already matches the total.' : 'Put this total in the line\'s Cost'}
+                                                                            onClick={() => {
+                                                                                const old = round2(toNumber(l.cost));
+                                                                                if (old && !window.confirm(`Replace the cost ${$(old)} with the scratch pad total ${$(tot)}?`)) return;
+                                                                                setLine(i, 'cost', fmtMoney(tot));
+                                                                            }}>
+                                                                            Use total as cost
+                                                                        </button>
+                                                                    );
+                                                                })()}
+                                                            </span>
                                                         </div>
-                                                        {!ro && <div className="hint">An amount can be a sum, like 2*480+150, or use Calc. Minus amounts are fine. Saved with the extra when you click Save.</div>}
+                                                        {!ro && <div className="hint">An amount can be a sum, like 2*480+150, or use Calc. Minus amounts are fine. "Use total as cost" puts the total in the line's Cost. Saved with the extra when you click Save.</div>}
                                                     </div>
                                                 </td>
                                             </tr>
