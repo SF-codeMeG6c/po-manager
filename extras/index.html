@@ -527,10 +527,24 @@
                 y = H - M;
                 if (pageNo > 1) { text(`Credits - ${name || code || ''} (continued)`, M, y, 9, bold); y -= 18; header(); }
             };
+            // Logo (same file as the PO form and the change order). If it can't load, the name is printed instead.
+            let logo = null;
+            try {
+                const res = await fetch('/shared/freeman-logo.png');
+                if (res.ok) logo = await doc.embedPng(await res.arrayBuffer());
+            } catch (e) { logo = null; }
             newPage();
-            text('Freeman Restoration', M, y, 15, bold); y -= 13;
-            COMPANY.forEach(l => { text(l, M, y, 8.5, font, grey); y -= 10; });
-            y -= 10;
+            // Header: logo top left, company address top right (same as the change order)
+            const top = H - 36;
+            if (logo) {
+                const lw = 210, lh = lw * logo.height / logo.width;
+                page.drawImage(logo, { x: M, y: top - lh, width: lw, height: lh });
+                y = top - lh;
+            } else {
+                text('Freeman Restoration', M, top - 15, 15, bold); y = top - 19;
+            }
+            COMPANY.forEach((l, i) => text(l, W - M - font.widthOfTextAtSize(plain(l), 8.5), top - 9 - i * 10, 8.5, font, grey));
+            y -= 22;
             const title = 'CREDITS';
             text(title, (W - bold.widthOfTextAtSize(title, 17)) / 2, y, 17, bold); y -= 26;
             text('Name:', M, y, 9.5, bold); text(name || '', M + 50, y, 9.5);
