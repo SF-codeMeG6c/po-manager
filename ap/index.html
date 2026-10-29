@@ -15,15 +15,24 @@
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .section:last-child { border-bottom: none; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 15px; }
+        .section-head .section-title { margin-bottom: 0; }
         p { margin-bottom: 12px; font-size: 14px; color: #333; }
         button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; width: 100%; }
         .btn-primary:hover { background: #0052a3; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .btn-auto { width: auto; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
         .error { color: #d32f2f; font-size: 12px; margin-top: 5px; }
+        .ok { color: #388e3c; font-size: 13px; margin-top: 5px; }
+        .warn { color: #b36b00; font-size: 12px; margin-top: 5px; font-weight: 600; }
         .muted { font-size: 13px; color: #888; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
-        select { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
-        select:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        select, input[type=text], input[type=date] { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; background: white; }
+        select:focus, input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
         .form-group { margin-bottom: 12px; }
         .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; font-weight: normal; margin-bottom: 0; }
         .check input { width: auto; }
@@ -38,6 +47,19 @@
         td { padding: 8px 10px; border-bottom: 1px solid #eee; }
         td.num, th.num { text-align: right; white-space: nowrap; }
         tr.total td { font-weight: 600; border-top: 2px solid #ddd; border-bottom: none; }
+        td small { display: block; font-size: 11px; color: #888; }
+        .add-box { border: 1px solid #ddd; border-radius: 6px; background: #fafcff; padding: 16px; margin-bottom: 18px; }
+        .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+        .kinds { display: flex; gap: 16px; margin-bottom: 12px; }
+        .balance { background: white; border: 1px solid #eee; border-radius: 4px; padding: 8px 10px; font-size: 13px; color: #333; margin: -4px 0 12px; }
+        .balance div { display: flex; justify-content: space-between; }
+        .balance .left { font-weight: 600; border-top: 1px solid #eee; margin-top: 4px; padding-top: 4px; }
+        .drop { border: 2px dashed #ccc; border-radius: 6px; padding: 18px; text-align: center; font-size: 13px; color: #666; background: white; cursor: pointer; }
+        .drop.over { border-color: #0066cc; background: #f3f8fd; }
+        .drop strong { color: #333; word-break: break-all; }
+        .fname { font-size: 12px; color: #555; background: #f5f5f5; border-radius: 4px; padding: 6px 8px; word-break: break-all; margin-bottom: 12px; }
+        .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+        @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } .container { padding: 18px; } }
     </style>
 </head>
 <body>
@@ -54,6 +76,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
@@ -70,11 +93,21 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+        const storage = firebase.storage();
 
         // Who can open Accounts Payable (Spencer, Oct 28). Production Admin and Bookkeeping have the Admin role.
         // Estimator and Office may approve invoices on their own POs. Only Owner and Admin add invoices.
         const ALLOWED = ['owner', 'admin', 'estimator', 'super', 'office'];
         const ALLOWED_TEXT = 'Owner, Admin, Estimator, Super and Office';
+        // Who can be picked to approve an invoice (Owner adds notes only, so isn't listed)
+        const APPROVER_ROLES = ['admin', 'estimator', 'super', 'office'];
+
+        // Supplier pick list (Spencer, Oct 28). Names must match the QuickBooks vendor names exactly.
+        // Saved in apSettings/vendors (list). Owner and Admin add names; nobody removes them. These five start the list.
+        const SUPPLIERS = ['Home Depot', "Lowe's", 'Ganahl Lumber', 'Katella Lumber', 'L&M'];
+        const vendorsDoc = () => db.collection('apSettings').doc('vendors');
+        const OTHER = '__other__';
+        const MAX_MB = 20; // same limit as the Storage rule
 
         // Job from the address: /ap/?job=ID ('' = no job picked). The Dashboard tile opens with no job.
         const START_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
@@ -92,6 +125,35 @@
             : ['CES', 'Complete', 'Completed'].includes(s) ? 'CES'
             : s === 'Revised' ? 'Revised' : 'New';
 
+        // A trade's General PO (for supplier bills): sub name "General Material", Cat is the trade
+        const isGeneralPO = (p) => p.subName.trim().toLowerCase() === 'general material';
+
+        const pad = (n) => String(n).padStart(2, '0');
+        const todayText = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+        const shortDate = (ymd) => { const [y, m, d] = String(ymd || '').split('-'); return y && m && d ? `${+m}/${+d}/${y.slice(-2)}` : ''; };
+
+        // File name: Trade_Vendor-Name_$Amount_PO#_MM-DD-YY.ext (handoff, Oct 21)
+        const cleanPart = (t) => String(t || '').trim().replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '-');
+        const amountForName = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
+        const extOf = (file) => {
+            const m = /\.[a-z0-9]{2,5}$/i.exec(file.name || '');
+            if (m) return m[0].toLowerCase();
+            return file.type === 'application/pdf' ? '.pdf' : file.type === 'image/png' ? '.png' : '.jpg';
+        };
+        const buildFileName = ({ category, vendor, amount, poNumber, dateReceived, file }) => {
+            const [y, m, d] = dateReceived.split('-');
+            const trade = cleanPart(String(category || '').split('/')[0]);
+            return `${trade}_${cleanPart(vendor)}_${amountForName(amount)}_${cleanPart(poNumber)}_${m}-${d}-${y.slice(-2)}${extOf(file)}`;
+        };
+        // Stored files get a time stamp in front so no save overwrites another; viewing still offers the clean name (same as PO Manager)
+        const cleanSaveName = (name, type) => {
+            const nm = String(name || 'file').replace(/["\r\n]/g, '');
+            return { contentType: type || undefined, contentDisposition: `inline; filename="${nm.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(nm)}` };
+        };
+
+        const blankForm = () => ({ kind: 'sub', formId: '', vendorPick: '', vendorOther: '', addVendor: false, invoiceNumber: '', amount: '',
+            dateReceived: todayText(), previousPayment: '', approverUid: '' });
+
         function APApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', 'notset', 'noaccess', object = can use AP
@@ -103,6 +165,18 @@
             const [superInfo, setSuperInfo] = useState(undefined); // undefined = loading, null = none picked
             const [pos, setPos] = useState(null);          // null = loading
             const [posError, setPosError] = useState('');
+            const [jobInvoices, setJobInvoices] = useState(null); // Owner/Admin: all invoices on the job (null = loading)
+            const [myInvoices, setMyInvoices] = useState(null);   // everyone else: invoices assigned to them, all jobs
+            const [invError, setInvError] = useState('');
+            const [vendorList, setVendorList] = useState(SUPPLIERS); // the saved supplier list (Owner/Admin)
+            const [showAdd, setShowAdd] = useState(false);
+            const [form, setForm] = useState(blankForm());
+            const [file, setFile] = useState(null);
+            const [dragOver, setDragOver] = useState(false);
+            const [approvers, setApprovers] = useState(null); // active users who can approve (Owner/Admin only)
+            const [saving, setSaving] = useState(false);
+            const [formMsg, setFormMsg] = useState(null);   // { text, ok } inside the Add box
+            const [listMsg, setListMsg] = useState('');     // after a save
 
             // Sign-in and role check. This page never creates user records (new people sign in on the Dashboard).
             useEffect(() => {
@@ -122,6 +196,8 @@
                     }
                 });
             }, []);
+
+            const isAdmin = !!profile && typeof profile === 'object' && ['owner', 'admin'].includes(profile.role);
 
             // Job list: all jobs, or only assigned jobs for Supers (the rules require the assignedSupers query)
             useEffect(() => {
@@ -172,10 +248,87 @@
                 }, error => { setPos([]); setPosError('Error loading POs: ' + error.message); });
             }, [jobId, jobReady]);
 
+            // Invoices, newest received first. Hidden ones are left out.
+            const toList = (snapshot) => {
+                const list = [];
+                snapshot.forEach(doc => { const d = doc.data(); if (d.deleted !== true) list.push({ id: doc.id, ...d }); });
+                const ms = (t) => t && t.toMillis ? t.toMillis() : 0;
+                return list.sort((a, b) => (b.dateReceived || '').localeCompare(a.dateReceived || '') || ms(b.createdAt) - ms(a.createdAt));
+            };
+
+            // Owner/Admin: all invoices on the picked job
+            useEffect(() => {
+                setJobInvoices(null);
+                setInvError('');
+                if (!jobReady || !isAdmin) return;
+                return db.collection('apInvoices').where('jobId', '==', jobId).onSnapshot(
+                    snapshot => setJobInvoices(toList(snapshot)),
+                    error => { setJobInvoices([]); setInvError('Error loading invoices: ' + error.message); });
+            }, [jobId, jobReady, isAdmin]);
+
+            // Everyone else: the invoices assigned to them, on any job (Spencer, Oct 29: an approver may be on a job they aren't
+            // assigned to). The rules refuse any other list, so the query asks by approver.
+            useEffect(() => {
+                setMyInvoices(null);
+                if (!profile || typeof profile !== 'object' || isAdmin) return;
+                return db.collection('apInvoices').where('approver.uid', '==', profile.uid).onSnapshot(
+                    snapshot => setMyInvoices(toList(snapshot)),
+                    error => { setMyInvoices([]); setInvError('Error loading invoices: ' + error.message); });
+            }, [profile, isAdmin]);
+
+            // The saved supplier list (Owner/Admin). Until the first name is added, it's the five starting names.
+            useEffect(() => {
+                if (!isAdmin) return;
+                return vendorsDoc().onSnapshot(doc => {
+                    const saved = doc.exists && Array.isArray(doc.data().list) ? doc.data().list : [];
+                    const all = [...SUPPLIERS, ...saved.filter(n => !SUPPLIERS.includes(n))];
+                    setVendorList(all);
+                }, () => setVendorList(SUPPLIERS));
+            }, [isAdmin]);
+
+            const invoices = isAdmin ? jobInvoices : (myInvoices ? myInvoices.filter(i => i.jobId === jobId) : null);
+
+            // People who can be picked as approver (read only when Owner/Admin opens Add invoice)
+            useEffect(() => {
+                if (!showAdd || !isAdmin || approvers) return;
+                db.collection('users').get().then(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (d.active === true && APPROVER_ROLES.includes(d.role)) list.push({ uid: doc.id, name: d.name || d.email || '', role: d.role });
+                    });
+                    list.sort((a, b) => a.name.localeCompare(b.name));
+                    setApprovers(list);
+                }).catch(error => { setApprovers([]); setFormMsg({ text: 'Error loading people to approve: ' + error.message, ok: false }); });
+            }, [showAdd, isAdmin, approvers]);
+
+            // The approver starts as the job's Super (Spencer, Oct 28). Production Admin can change it.
+            useEffect(() => {
+                if (showAdd && !form.approverUid && superInfo && superInfo.uid) setForm(f => f.approverUid ? f : { ...f, approverUid: superInfo.uid });
+            }, [showAdd, superInfo]);
+
             // Pick a job. The address keeps the job, so a refresh stays on it.
             const pickJob = (id) => {
+                if (showAdd && formTouched() && !window.confirm('Switch jobs and drop the invoice you started?')) return;
+                closeAdd(true);
+                setListMsg('');
                 setJobId(id);
                 window.history.replaceState(null, '', id ? '?job=' + encodeURIComponent(id) : window.location.pathname);
+            };
+
+            const formTouched = () => !!file || ['formId', 'vendorPick', 'vendorOther', 'invoiceNumber', 'amount', 'previousPayment'].some(k => String(form[k] || '').trim());
+            const openAdd = () => { setForm(blankForm()); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true); };
+            const closeAdd = (force) => {
+                if (!force && formTouched() && !window.confirm('Close and drop what you typed?')) return;
+                setShowAdd(false); setForm(blankForm()); setFile(null); setFormMsg(null);
+            };
+            const setField = (k, v) => { setForm(f => ({ ...f, [k]: v })); setFormMsg(null); };
+
+            const takeFile = (f) => {
+                if (!f) return;
+                if (!(f.type === 'application/pdf' || f.type.startsWith('image/'))) { setFormMsg({ text: 'Only a PDF or a photo can be added.', ok: false }); return; }
+                if (f.size > MAX_MB * 1024 * 1024) { setFormMsg({ text: `That file is over ${MAX_MB} MB. Scan it smaller or split it.`, ok: false }); return; }
+                setFile(f); setFormMsg(null);
             };
 
             const handleMicrosoftLogin = async () => {
@@ -231,8 +384,112 @@
             const listed = (jobs || []).filter(j => showArchived || !j.archived || j.id === jobId);
             const total = (pos || []).reduce((sum, p) => sum + (p.amount || 0), 0);
 
+            // Add invoice: what's picked and typed so far
+            const poChoices = (pos || []).filter(p => form.kind === 'supplier' ? isGeneralPO(p) : !isGeneralPO(p));
+            const po = (pos || []).find(p => p.id === form.formId) || null;
+            // A typed "Other" name already on the list (any capitals) uses the list's spelling
+            const otherTyped = form.vendorOther.trim().replace(/\s+/g, ' ');
+            const otherOnList = otherTyped ? vendorList.find(n => n.toLowerCase() === otherTyped.toLowerCase()) : null;
+            const vendor = form.kind === 'sub' ? (po ? po.subName : '')
+                : form.vendorPick === OTHER ? (otherOnList || otherTyped) : form.vendorPick;
+            const amount = amountOf(form.amount);
+            const prevPay = form.previousPayment.trim() ? amountOf(form.previousPayment) : null;
+            const approvedSoFar = 0; // approvals start in step 2
+            const waitingOnPo = po ? (invoices || []).filter(i => i.po && i.po.formId === po.id).reduce((s, i) => s + (i.amount || 0), 0) : 0;
+            const balance = po && po.amount !== null ? po.amount - approvedSoFar : null;
+            const approverList = (() => {
+                const list = [...(approvers || [])];
+                if (superInfo && superInfo.uid && !list.some(a => a.uid === superInfo.uid)) list.unshift({ uid: superInfo.uid, name: superInfo.name || 'Job Super', role: 'super' });
+                return list;
+            })();
+            const approver = approverList.find(a => a.uid === form.approverUid) || null;
+            const fileName = po && vendor && amount && file && /^\d{4}-\d{2}-\d{2}$/.test(form.dateReceived)
+                ? buildFileName({ category: po.category, vendor, amount, poNumber: po.poNumber, dateReceived: form.dateReceived, file }) : '';
+
+            const handleSave = async () => {
+                const missing = !po ? 'Pick the PO.' : !vendor ? 'Pick or type the vendor.' : !form.invoiceNumber.trim() ? 'Type the invoice #.'
+                    : !(amount > 0) ? 'Type the invoice amount.' : !/^\d{4}-\d{2}-\d{2}$/.test(form.dateReceived) ? 'Pick the date received.'
+                    : prevPay === null && form.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
+                    : !approver ? 'Pick who approves it.' : !file ? 'Add the invoice file (PDF or photo).' : '';
+                if (missing) { setFormMsg({ text: missing, ok: false }); return; }
+                setSaving(true); setFormMsg(null);
+                try {
+                    // 1. The file, in apInvoices/{jobId}/{invoiceId}/ (the invoice id lets the Storage rule check its approver)
+                    const invRef = db.collection('apInvoices').doc();
+                    const path = `apInvoices/${jobId}/${invRef.id}/${Date.now()}_${fileName}`;
+                    const ref = storage.ref(path);
+                    await ref.put(file, cleanSaveName(fileName, file.type));
+                    const url = await ref.getDownloadURL();
+                    // 2. The invoice record, its first history line and any new supplier name, saved together
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const batch = db.batch();
+                    const newVendor = form.kind === 'supplier' && form.vendorPick === OTHER && form.addVendor && !otherOnList;
+                    if (newVendor) {
+                        batch.set(vendorsDoc(), {
+                            list: firebase.firestore.FieldValue.arrayUnion(...SUPPLIERS, vendor),
+                            added: firebase.firestore.FieldValue.arrayUnion({ name: vendor, at: now, by })
+                        }, { merge: true });
+                    }
+                    batch.set(invRef, {
+                        jobId, jobCode: job.code, kind: form.kind, vendor,
+                        invoiceNumber: form.invoiceNumber.trim(), amount, previousPayment: form.kind === 'sub' ? prevPay : null,
+                        dateReceived: form.dateReceived,
+                        po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
+                        approver: { uid: approver.uid, name: approver.name },
+                        file: { url, name: fileName, path, type: file.type },
+                        createdAt: now, createdBy: by, deleted: false
+                    });
+                    batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by });
+                    await batch.commit();
+                    setListMsg(`Invoice added: ${fileName}${newVendor ? `. ${vendor} added to the supplier list.` : ''}`);
+                    closeAdd(true);
+                } catch (error) {
+                    setFormMsg({ text: 'Error saving the invoice: ' + error.message, ok: false });
+                }
+                setSaving(false);
+            };
+
+            // Invoice table. showJob adds the job code (the all-jobs list).
+            const invoiceTable = (list, showJob) => (
+                <div className="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>{showJob && <th>Job</th>}<th>Received</th><th>Vendor</th><th>Invoice #</th><th>PO</th><th className="num">Amount</th><th>Approver</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            {list.map(i => (
+                                <tr key={i.id}>
+                                    {showJob && <td>{(jobs || []).some(j => j.id === i.jobId)
+                                        ? <a href={'?job=' + encodeURIComponent(i.jobId)} onClick={e => { e.preventDefault(); pickJob(i.jobId); }}>{i.jobCode}</a>
+                                        : i.jobCode}</td>}
+                                    <td>{shortDate(i.dateReceived)}</td>
+                                    <td>{i.vendor}<small>{i.kind === 'supplier' ? 'Supplier bill' : 'Sub invoice'}</small></td>
+                                    <td>{i.invoiceNumber}</td>
+                                    <td>{i.po ? i.po.poNumber : ''}<small>{i.po ? i.po.category : ''}</small></td>
+                                    <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}
+                                        {typeof i.previousPayment === 'number' && <small>Prev. paid {money(i.previousPayment)}</small>}</td>
+                                    <td>{i.approver ? i.approver.name : ''}</td>
+                                    <td>{i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+
             return (
                 <div>
+                    {!isAdmin && !job && (
+                        <div className="section">
+                            <div className="section-title">Invoices assigned to you (all jobs)</div>
+                            {invError && <div className="error" style={{ marginBottom: '10px' }}>{invError}</div>}
+                            {myInvoices === null && <p className="muted">Loading invoices...</p>}
+                            {myInvoices && myInvoices.length === 0 && !invError && <p className="muted">No invoices are assigned to you.</p>}
+                            {myInvoices && myInvoices.length > 0 && invoiceTable(myInvoices, true)}
+                        </div>
+                    )}
+
                     <div className="section">
                         <div className="section-title">Job</div>
                         <div className="form-group">
@@ -299,8 +556,140 @@
                             </div>
 
                             <div className="section">
-                                <div className="section-title">Invoices</div>
-                                <p className="muted">No invoices yet.</p>
+                                <div className="section-head">
+                                    <div className="section-title">{isAdmin ? 'Invoices' : 'Invoices assigned to you'}</div>
+                                    {isAdmin && !showAdd && <button className="btn-primary btn-auto btn-sm" onClick={openAdd}>+ Add invoice</button>}
+                                </div>
+
+                                {showAdd && (
+                                    <div className="add-box">
+                                        <div className="section-title" style={{ marginBottom: '10px' }}>Add an invoice to {job.code}</div>
+                                        <div className="kinds">
+                                            {[['sub', 'Sub invoice'], ['supplier', 'Supplier bill']].map(([k, label]) => (
+                                                <label key={k} className="check">
+                                                    <input type="radio" name="kind" checked={form.kind === k}
+                                                        onChange={() => setForm(f => ({ ...f, kind: k, formId: '', vendorPick: '', vendorOther: '', previousPayment: '' }))} />
+                                                    {label}
+                                                </label>
+                                            ))}
+                                        </div>
+
+                                        <div className="form-group">
+                                            <label htmlFor="inv-po">{form.kind === 'supplier' ? 'General PO (trade)' : 'PO'}</label>
+                                            <select id="inv-po" value={form.formId} onChange={e => setField('formId', e.target.value)}>
+                                                <option value="">-- Pick the PO --</option>
+                                                {poChoices.map(p => (
+                                                    <option key={p.id} value={p.id}>
+                                                        {form.kind === 'supplier' ? `${p.category} - ${p.poNumber}` : `${p.poNumber} - ${p.category} - ${p.subName}`}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {poChoices.length === 0 && pos && (
+                                                <div className="warn">
+                                                    {form.kind === 'supplier'
+                                                        ? 'This job has no General POs (sub name "General Material"). They are made in Trades-EST with the CES.'
+                                                        : 'This job has no sub POs yet. POs are made in PO Manager.'}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {po && (
+                                            <div className="balance">
+                                                <div><span>PO amount</span><span>{po.amount === null ? 'none on the PO' : money(po.amount)}</span></div>
+                                                <div><span>Approved so far</span><span>{money(approvedSoFar)}</span></div>
+                                                {waitingOnPo > 0 && <div className="muted"><span>Invoices added, not yet approved</span><span>{money(waitingOnPo)}</span></div>}
+                                                <div className="left"><span>Balance left</span><span>{balance === null ? '-' : money(balance)}</span></div>
+                                            </div>
+                                        )}
+
+                                        <div className="grid2">
+                                            <div className="form-group">
+                                                <label htmlFor="inv-vendor">{form.kind === 'sub' ? 'Sub (from the PO)' : 'Supplier'}</label>
+                                                {form.kind === 'sub' ? (
+                                                    <input id="inv-vendor" type="text" value={vendor} readOnly placeholder="Pick the PO first" style={{ background: '#f5f5f5' }} />
+                                                ) : (
+                                                    <select id="inv-vendor" value={form.vendorPick} onChange={e => setField('vendorPick', e.target.value)}>
+                                                        <option value="">-- Pick the supplier --</option>
+                                                        {vendorList.map(s => <option key={s} value={s}>{s}</option>)}
+                                                        <option value={OTHER}>Other (type it)</option>
+                                                    </select>
+                                                )}
+                                                {form.kind === 'supplier' && form.vendorPick === OTHER && (
+                                                    <div>
+                                                        <input type="text" style={{ marginTop: '6px' }} value={form.vendorOther} placeholder="Name as it is in QuickBooks"
+                                                            onChange={e => setField('vendorOther', e.target.value)} />
+                                                        {otherOnList ? (
+                                                            <div className="muted" style={{ marginTop: '4px' }}>Already on the list as "{otherOnList}". That spelling is used.</div>
+                                                        ) : otherTyped && (
+                                                            <label className="check" style={{ marginTop: '6px' }}>
+                                                                <input type="checkbox" checked={form.addVendor} onChange={e => setField('addVendor', e.target.checked)} />
+                                                                Add "{otherTyped}" to the supplier list
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="form-group">
+                                                <label htmlFor="inv-num">Invoice #</label>
+                                                <input id="inv-num" type="text" value={form.invoiceNumber} onChange={e => setField('invoiceNumber', e.target.value)} />
+                                            </div>
+                                            <div className="form-group">
+                                                <label htmlFor="inv-amt">Invoice amount</label>
+                                                <input id="inv-amt" type="text" inputMode="decimal" value={form.amount} placeholder="$0.00" onChange={e => setField('amount', e.target.value)} />
+                                                {amount > 0 && balance !== null && amount > balance && (
+                                                    <div className="warn">Over the PO balance by {money(amount - balance)}. It can be added, but it won't pass approval until a revised PO or a supplement covers it.</div>
+                                                )}
+                                            </div>
+                                            <div className="form-group">
+                                                <label htmlFor="inv-date">Date received</label>
+                                                <input id="inv-date" type="date" value={form.dateReceived} onChange={e => setField('dateReceived', e.target.value)} />
+                                            </div>
+                                            {form.kind === 'sub' && (
+                                                <div className="form-group">
+                                                    <label htmlFor="inv-prev">Previous payment (as written on the form)</label>
+                                                    <input id="inv-prev" type="text" inputMode="decimal" value={form.previousPayment} placeholder="Leave blank if none" onChange={e => setField('previousPayment', e.target.value)} />
+                                                </div>
+                                            )}
+                                            <div className="form-group">
+                                                <label htmlFor="inv-appr">Approver</label>
+                                                <select id="inv-appr" value={form.approverUid} onChange={e => setField('approverUid', e.target.value)}>
+                                                    <option value="">{approvers === null ? 'Loading people...' : '-- Pick who approves it --'}</option>
+                                                    {approverList.map(a => (
+                                                        <option key={a.uid} value={a.uid}>{a.name}{superInfo && a.uid === superInfo.uid ? ' (job Super)' : ` (${a.role})`}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div className="form-group">
+                                            <label>Invoice file</label>
+                                            <label className={'drop' + (dragOver ? ' over' : '')}
+                                                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                                                onDragLeave={() => setDragOver(false)}
+                                                onDrop={e => { e.preventDefault(); setDragOver(false); takeFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}>
+                                                {file ? <span><strong>{file.name}</strong><br />Click or drop another file to replace it.</span>
+                                                    : <span>Drop the PDF or photo here, or click to pick it.</span>}
+                                                <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
+                                                    onChange={e => { takeFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
+                                            </label>
+                                        </div>
+
+                                        {fileName && <div className="fname">Saved as: {fileName}</div>}
+                                        {formMsg && <div className={formMsg.ok ? 'ok' : 'error'}>{formMsg.text}</div>}
+                                        <div className="actions">
+                                            <button className="btn-secondary btn-auto" onClick={() => closeAdd(false)} disabled={saving}>Cancel</button>
+                                            <button className="btn-primary btn-auto" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Add invoice'}</button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {listMsg && <div className="ok" style={{ marginBottom: '10px' }}>{listMsg}</div>}
+                                {invError && <div className="error" style={{ marginBottom: '10px' }}>{invError}</div>}
+                                {invoices === null && <p className="muted">Loading invoices...</p>}
+                                {invoices && invoices.length === 0 && !invError && (
+                                    <p className="muted">{isAdmin ? 'No invoices on this job yet.' : 'No invoices on this job are assigned to you.'}</p>
+                                )}
+                                {invoices && invoices.length > 0 && invoiceTable(invoices, false)}
                             </div>
                         </div>
                     )}
@@ -312,4 +701,3 @@
     </script>
 </body>
 </html>
-
