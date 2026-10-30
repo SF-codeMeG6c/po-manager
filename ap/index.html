@@ -59,7 +59,16 @@
         .drop strong { color: #333; word-break: break-all; }
         .fname { font-size: 12px; color: #555; background: #f5f5f5; border-radius: 4px; padding: 6px 8px; word-break: break-all; margin-bottom: 12px; }
         .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-        @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } .container { padding: 18px; } }
+        tr.hidden-row td { color: #aaa; background: #fafafa; }
+        tr.editing-row td { background: #fffbe6; }
+        .row-btns { display: flex; gap: 6px; justify-content: flex-end; white-space: nowrap; }
+        .btn-link { background: none; color: #0066cc; padding: 5px 4px; font-size: 12px; }
+        .btn-link:hover { text-decoration: underline; }
+        .filters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+        .filters select, .filters input[type=text] { padding: 6px 8px; font-size: 13px; }
+        .list-sum { font-size: 13px; color: #555; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .dup { color: #d32f2f; font-size: 12px; margin-top: 5px; font-weight: 600; }
+        @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } .container { padding: 18px; } .filters { grid-template-columns: 1fr 1fr; } }
     </style>
 </head>
 <body>
@@ -108,6 +117,19 @@
         const vendorsDoc = () => db.collection('apSettings').doc('vendors');
         const OTHER = '__other__';
         const MAX_MB = 20; // same limit as the Storage rule
+
+        // Duplicate check (1c): same vendor + same invoice #, ignoring capitals, spaces, dashes and other punctuation
+        const normKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const dupKeyOf = (vendor, number) => normKey(vendor) + '|' + normKey(number);
+        // Firestore Timestamp or Date -> Date
+        const asDate = (t) => t && t.toDate ? t.toDate() : t instanceof Date ? t : null;
+        const dateOnly = (t) => { const d = asDate(t); return d ? `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}` : ''; };
+        // Compare saved values without caring about key order
+        const stable = (v) => v && typeof v === 'object' && !Array.isArray(v)
+            ? Object.keys(v).sort().reduce((o, k) => { o[k] = stable(v[k]); return o; }, {}) : (v === undefined ? null : v);
+        const same = (a, b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
+        const FIELD_LABELS = { kind: 'kind', vendor: 'vendor', invoiceNumber: 'invoice #', amount: 'amount', previousPayment: 'previous payment',
+            dateReceived: 'date received', po: 'PO', approver: 'approver', file: 'file' };
 
         // Job from the address: /ap/?job=ID ('' = no job picked). The Dashboard tile opens with no job.
         const START_JOB_ID = new URLSearchParams(window.location.search).get('job') || '';
@@ -165,7 +187,7 @@
             const [superInfo, setSuperInfo] = useState(undefined); // undefined = loading, null = none picked
             const [pos, setPos] = useState(null);          // null = loading
             const [posError, setPosError] = useState('');
-            const [jobInvoices, setJobInvoices] = useState(null); // Owner/Admin: all invoices on the job (null = loading)
+            const [allInvoices, setAllInvoices] = useState(null); // Owner/Admin: every invoice on every job, hidden ones included (null = loading)
             const [myInvoices, setMyInvoices] = useState(null);   // everyone else: invoices assigned to them, all jobs
             const [invError, setInvError] = useState('');
             const [vendorList, setVendorList] = useState(SUPPLIERS); // the saved supplier list (Owner/Admin)
@@ -173,7 +195,12 @@
             const [form, setForm] = useState(blankForm());
             const [file, setFile] = useState(null);
             const [dragOver, setDragOver] = useState(false);
-            const [approvers, setApprovers] = useState(null); // active users who can approve (Owner/Admin only)
+            const [people, setPeople] = useState(null);       // all users (Owner/Admin only): approver pick list and names for filters
+            const [peopleError, setPeopleError] = useState('');
+            const [showHidden, setShowHidden] = useState(false); // Owner/Admin: show hidden invoices (greyed, with Restore)
+            const [editId, setEditId] = useState(null);       // the invoice being edited (null = adding a new one)
+            const [editOrig, setEditOrig] = useState(null);   // the form as it was when Edit opened (to tell if anything changed)
+            const [filters, setFilters] = useState({ superUid: '', approverUid: '', kind: '', text: '' }); // all-invoices list
             const [saving, setSaving] = useState(false);
             const [formMsg, setFormMsg] = useState(null);   // { text, ok } inside the Add box
             const [listMsg, setListMsg] = useState('');     // after a save
@@ -209,7 +236,8 @@
                     const list = [];
                     snapshot.forEach(doc => {
                         const d = doc.data();
-                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true });
+                        list.push({ id: doc.id, code: d.code || '', address: d.address || '', cityStateZip: d.cityStateZip || '', archived: d.archived === true,
+                            assignedSupers: Array.isArray(d.assignedSupers) ? d.assignedSupers : [] });
                     });
                     list.sort((a, b) => a.code.localeCompare(b.code));
                     setJobs(list);
@@ -248,23 +276,24 @@
                 }, error => { setPos([]); setPosError('Error loading POs: ' + error.message); });
             }, [jobId, jobReady]);
 
-            // Invoices, newest received first. Hidden ones are left out.
-            const toList = (snapshot) => {
+            // Invoices, newest received first. Hidden ones are left out unless keepHidden.
+            const toList = (snapshot, keepHidden) => {
                 const list = [];
-                snapshot.forEach(doc => { const d = doc.data(); if (d.deleted !== true) list.push({ id: doc.id, ...d }); });
+                snapshot.forEach(doc => { const d = doc.data(); if (keepHidden || d.deleted !== true) list.push({ id: doc.id, ...d }); });
                 const ms = (t) => t && t.toMillis ? t.toMillis() : 0;
                 return list.sort((a, b) => (b.dateReceived || '').localeCompare(a.dateReceived || '') || ms(b.createdAt) - ms(a.createdAt));
             };
 
-            // Owner/Admin: all invoices on the picked job
+            // Owner/Admin: every invoice on every job, hidden ones included. One live list feeds the all-invoices list,
+            // the job's list and the duplicate check (1c).
             useEffect(() => {
-                setJobInvoices(null);
+                setAllInvoices(null);
+                if (!isAdmin) return;
                 setInvError('');
-                if (!jobReady || !isAdmin) return;
-                return db.collection('apInvoices').where('jobId', '==', jobId).onSnapshot(
-                    snapshot => setJobInvoices(toList(snapshot)),
-                    error => { setJobInvoices([]); setInvError('Error loading invoices: ' + error.message); });
-            }, [jobId, jobReady, isAdmin]);
+                return db.collection('apInvoices').onSnapshot(
+                    snapshot => setAllInvoices(toList(snapshot, true)),
+                    error => { setAllInvoices([]); setInvError('Error loading invoices: ' + error.message); });
+            }, [isAdmin]);
 
             // Everyone else: the invoices assigned to them, on any job (Spencer, Oct 29: an approver may be on a job they aren't
             // assigned to). The rules refuse any other list, so the query asks by approver.
@@ -286,21 +315,30 @@
                 }, () => setVendorList(SUPPLIERS));
             }, [isAdmin]);
 
-            const invoices = isAdmin ? jobInvoices : (myInvoices ? myInvoices.filter(i => i.jobId === jobId) : null);
+            // The picked job's invoices. Owner/Admin: from the all-invoices list (hidden ones too, shown only with Show hidden).
+            // Everyone else: the invoices assigned to them on this job.
+            const jobAll = !jobId ? null
+                : isAdmin ? (allInvoices ? allInvoices.filter(i => i.jobId === jobId) : null)
+                : (myInvoices ? myInvoices.filter(i => i.jobId === jobId) : null);
+            const invoices = jobAll ? jobAll.filter(i => showHidden || i.deleted !== true) : null;
+            const activeJob = (jobAll || []).filter(i => i.deleted !== true); // for the PO balance: hidden invoices never count
+            const editInv = editId ? (jobAll || []).find(i => i.id === editId) || null : null;
 
-            // People who can be picked as approver (read only when Owner/Admin opens Add invoice)
+            // Users (Owner/Admin): the approver pick list and the names in the filters
             useEffect(() => {
-                if (!showAdd || !isAdmin || approvers) return;
+                if (!isAdmin || people) return;
                 db.collection('users').get().then(snapshot => {
                     const list = [];
                     snapshot.forEach(doc => {
                         const d = doc.data();
-                        if (d.active === true && APPROVER_ROLES.includes(d.role)) list.push({ uid: doc.id, name: d.name || d.email || '', role: d.role });
+                        list.push({ uid: doc.id, name: d.name || d.email || '', role: d.role || '', active: d.active === true });
                     });
                     list.sort((a, b) => a.name.localeCompare(b.name));
-                    setApprovers(list);
-                }).catch(error => { setApprovers([]); setFormMsg({ text: 'Error loading people to approve: ' + error.message, ok: false }); });
-            }, [showAdd, isAdmin, approvers]);
+                    setPeople(list);
+                }).catch(error => { setPeople([]); setPeopleError('Error loading people: ' + error.message); });
+            }, [isAdmin, people]);
+            // People who can be picked as approver: active Admin, Estimator, Super and Office users
+            const approvers = people ? people.filter(p => p.active && APPROVER_ROLES.includes(p.role)) : null;
 
             // The approver starts as the job's Super (Spencer, Oct 28). Production Admin can change it.
             useEffect(() => {
@@ -316,11 +354,69 @@
                 window.history.replaceState(null, '', id ? '?job=' + encodeURIComponent(id) : window.location.pathname);
             };
 
-            const formTouched = () => !!file || ['formId', 'vendorPick', 'vendorOther', 'invoiceNumber', 'amount', 'previousPayment'].some(k => String(form[k] || '').trim());
-            const openAdd = () => { setForm(blankForm()); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true); };
+            const formTouched = () => editId
+                ? !!file || !same(form, editOrig)
+                : !!file || ['formId', 'vendorPick', 'vendorOther', 'invoiceNumber', 'amount', 'previousPayment'].some(k => String(form[k] || '').trim());
+            const openAdd = () => { setForm(blankForm()); setEditId(null); setEditOrig(null); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true); };
             const closeAdd = (force) => {
-                if (!force && formTouched() && !window.confirm('Close and drop what you typed?')) return;
-                setShowAdd(false); setForm(blankForm()); setFile(null); setFormMsg(null);
+                if (!force && formTouched() && !window.confirm(editId ? 'Close and drop your changes?' : 'Close and drop what you typed?')) return;
+                setShowAdd(false); setForm(blankForm()); setEditId(null); setEditOrig(null); setFile(null); setFormMsg(null);
+            };
+            // Edit (Owner/Admin): the same form, filled in from the saved invoice
+            const openEdit = (inv) => {
+                if (showAdd && formTouched() && !window.confirm(`Drop what you typed and edit invoice ${inv.invoiceNumber} instead?`)) return;
+                const sup = inv.kind === 'supplier';
+                const onList = sup ? vendorList.find(n => n === inv.vendor) : null;
+                const f = {
+                    kind: sup ? 'supplier' : 'sub', formId: inv.po ? inv.po.formId : '',
+                    vendorPick: sup ? (onList || OTHER) : '', vendorOther: sup && !onList ? (inv.vendor || '') : '', addVendor: false,
+                    invoiceNumber: inv.invoiceNumber || '', amount: typeof inv.amount === 'number' ? String(inv.amount) : '',
+                    dateReceived: inv.dateReceived || '', previousPayment: typeof inv.previousPayment === 'number' ? String(inv.previousPayment) : '',
+                    approverUid: inv.approver ? inv.approver.uid : ''
+                };
+                setForm(f); setEditOrig(f); setEditId(inv.id); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true);
+            };
+
+            // Hide (Owner/Admin). Nothing is deleted: the record is marked hidden and a history line is added.
+            const hideInvoice = async (inv) => {
+                const reason = window.prompt(`Hide invoice ${inv.invoiceNumber} from ${inv.vendor} (${typeof inv.amount === 'number' ? money(inv.amount) : ''})?\n`
+                    + 'It drops out of every list and out of the PO balance. Owner or Admin can restore it.\n\nWhy is it being hidden? (optional)', '');
+                if (reason === null) return;
+                try {
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const batch = db.batch();
+                    batch.update(ref, { deleted: true, deletedAt: now, deletedBy: by, deletedReason: reason.trim() });
+                    batch.set(ref.collection('history').doc(), { action: 'Hidden', at: now, by, reason: reason.trim() });
+                    await batch.commit();
+                    if (editId === inv.id) closeAdd(true);
+                    setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor} hidden. Tick "Show hidden" to see or restore it.`);
+                } catch (error) {
+                    window.alert('Error hiding the invoice: ' + error.message);
+                }
+            };
+            // Restore (Owner/Admin). Blocked if the same vendor + invoice # was added again while this one was hidden.
+            const restoreInvoice = async (inv) => {
+                const key = dupKeyOf(inv.vendor, inv.invoiceNumber);
+                const other = (allInvoices || []).find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === key);
+                if (other) {
+                    window.alert(`It can't be restored: invoice ${other.invoiceNumber} from ${other.vendor} is already in AP on ${other.jobCode}. Hide that one first if this is the one to keep.`);
+                    return;
+                }
+                if (!window.confirm(`Restore invoice ${inv.invoiceNumber} from ${inv.vendor}? It counts against the PO balance again.`)) return;
+                try {
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const batch = db.batch();
+                    batch.update(ref, { deleted: false, restoredAt: now, restoredBy: by });
+                    batch.set(ref.collection('history').doc(), { action: 'Restored', at: now, by });
+                    await batch.commit();
+                    setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor} restored.`);
+                } catch (error) {
+                    window.alert('Error restoring the invoice: ' + error.message);
+                }
             };
             const setField = (k, v) => { setForm(f => ({ ...f, [k]: v })); setFormMsg(null); };
 
@@ -395,11 +491,21 @@
             const amount = amountOf(form.amount);
             const prevPay = form.previousPayment.trim() ? amountOf(form.previousPayment) : null;
             const approvedSoFar = 0; // approvals start in step 2
-            const waitingOnPo = po ? (invoices || []).filter(i => i.po && i.po.formId === po.id).reduce((s, i) => s + (i.amount || 0), 0) : 0;
+            const waitingOnPo = po ? activeJob.filter(i => i.id !== editId && i.po && i.po.formId === po.id).reduce((s, i) => s + (i.amount || 0), 0) : 0;
+            // Same vendor + invoice # already in AP (any job, not hidden) = blocked. Same PO + same amount = a warning only.
+            const typedKey = vendor && form.invoiceNumber.trim() ? dupKeyOf(vendor, form.invoiceNumber) : '';
+            const dupOf = typedKey && allInvoices
+                ? allInvoices.find(i => i.id !== editId && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === typedKey) : null;
+            const sameAmount = po && amount > 0
+                ? activeJob.filter(i => i.id !== editId && i.po && i.po.formId === po.id && typeof i.amount === 'number' && Math.abs(i.amount - amount) < 0.005) : [];
             const balance = po && po.amount !== null ? po.amount - approvedSoFar : null;
             const approverList = (() => {
                 const list = [...(approvers || [])];
                 if (superInfo && superInfo.uid && !list.some(a => a.uid === superInfo.uid)) list.unshift({ uid: superInfo.uid, name: superInfo.name || 'Job Super', role: 'super' });
+                // Editing: keep the saved approver in the list even if they're no longer active
+                if (editInv && editInv.approver && editInv.approver.uid && !list.some(a => a.uid === editInv.approver.uid)) {
+                    list.push({ uid: editInv.approver.uid, name: editInv.approver.name || '', role: 'no longer active' });
+                }
                 return list;
             })();
             const approver = approverList.find(a => a.uid === form.approverUid) || null;
@@ -410,8 +516,11 @@
                 const missing = !po ? 'Pick the PO.' : !vendor ? 'Pick or type the vendor.' : !form.invoiceNumber.trim() ? 'Type the invoice #.'
                     : !(amount > 0) ? 'Type the invoice amount.' : !/^\d{4}-\d{2}-\d{2}$/.test(form.dateReceived) ? 'Pick the date received.'
                     : prevPay === null && form.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
-                    : !approver ? 'Pick who approves it.' : !file ? 'Add the invoice file (PDF or photo).' : '';
+                    : !approver ? 'Pick who approves it.' : !file && !editId ? 'Add the invoice file (PDF or photo).'
+                    : allInvoices === null ? 'Still loading the invoice list. Try again in a moment.'
+                    : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode}. The same invoice can't be added twice.` : '';
                 if (missing) { setFormMsg({ text: missing, ok: false }); return; }
+                if (editId) { await saveEdit(); return; }
                 setSaving(true); setFormMsg(null);
                 try {
                     // 1. The file, in apInvoices/{jobId}/{invoiceId}/ (the invoice id lets the Storage rule check its approver)
@@ -450,8 +559,66 @@
                 setSaving(false);
             };
 
-            // Invoice table. showJob adds the job code (the all-jobs list).
-            const invoiceTable = (list, showJob) => (
+            // Save an edit (Owner/Admin). Only changed fields are written; the old values go in the invoice's history.
+            // A new file is stored next to the old one; the old file is kept (oldFiles) and named in the history.
+            const saveEdit = async () => {
+                const inv = editInv;
+                if (!inv) { setFormMsg({ text: 'This invoice is no longer on the list.', ok: false }); return; }
+                const next = {
+                    kind: form.kind, vendor, invoiceNumber: form.invoiceNumber.trim(), amount,
+                    previousPayment: form.kind === 'sub' ? prevPay : null, dateReceived: form.dateReceived,
+                    po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
+                    approver: { uid: approver.uid, name: approver.name }
+                };
+                const before = {};
+                Object.keys(next).forEach(k => { before[k] = inv[k] === undefined ? null : inv[k]; });
+                const changed = Object.keys(next).filter(k => !same(next[k], before[k]));
+                if (!changed.length && !file) { setFormMsg({ text: 'Nothing changed.', ok: false }); return; }
+                setSaving(true); setFormMsg(null);
+                try {
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    let newFile = null;
+                    if (file) {
+                        const path = `apInvoices/${inv.jobId}/${inv.id}/${Date.now()}_${fileName}`;
+                        const sref = storage.ref(path);
+                        await sref.put(file, cleanSaveName(fileName, file.type));
+                        newFile = { url: await sref.getDownloadURL(), name: fileName, path, type: file.type };
+                    }
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const update = { editedAt: now, editedBy: by };
+                    changed.forEach(k => { update[k] = next[k]; });
+                    const hist = { action: 'Edited', at: now, by, fields: changed.slice(), before: {}, after: {} };
+                    changed.forEach(k => { hist.before[k] = before[k]; hist.after[k] = next[k]; });
+                    if (newFile) {
+                        update.file = newFile;
+                        if (inv.file) update.oldFiles = firebase.firestore.FieldValue.arrayUnion({ ...inv.file, replacedAt: now });
+                        hist.fields.push('file');
+                        hist.before.file = inv.file || null;
+                        hist.after.file = newFile;
+                    }
+                    const batch = db.batch();
+                    const newVendor = form.kind === 'supplier' && form.vendorPick === OTHER && form.addVendor && !otherOnList;
+                    if (newVendor) {
+                        batch.set(vendorsDoc(), {
+                            list: firebase.firestore.FieldValue.arrayUnion(...SUPPLIERS, vendor),
+                            added: firebase.firestore.FieldValue.arrayUnion({ name: vendor, at: now, by })
+                        }, { merge: true });
+                    }
+                    batch.update(ref, update);
+                    batch.set(ref.collection('history').doc(), hist);
+                    await batch.commit();
+                    setListMsg(`Invoice ${next.invoiceNumber} saved. Changed: ${hist.fields.map(k => FIELD_LABELS[k] || k).join(', ')}.`
+                        + (newVendor ? ` ${vendor} added to the supplier list.` : ''));
+                    closeAdd(true);
+                } catch (error) {
+                    setFormMsg({ text: 'Error saving the changes: ' + error.message, ok: false });
+                }
+                setSaving(false);
+            };
+
+            // Invoice table. showJob adds the job code (the all-jobs lists). canEdit shows Edit (job view only, Owner/Admin).
+            const invoiceTable = (list, showJob, canEdit) => (
                 <div className="table-wrap">
                     <table>
                         <thead>
@@ -459,18 +626,24 @@
                         </thead>
                         <tbody>
                             {list.map(i => (
-                                <tr key={i.id}>
+                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : i.id === editId ? 'editing-row' : ''}>
                                     {showJob && <td>{(jobs || []).some(j => j.id === i.jobId)
                                         ? <a href={'?job=' + encodeURIComponent(i.jobId)} onClick={e => { e.preventDefault(); pickJob(i.jobId); }}>{i.jobCode}</a>
                                         : i.jobCode}</td>}
                                     <td>{shortDate(i.dateReceived)}</td>
-                                    <td>{i.vendor}<small>{i.kind === 'supplier' ? 'Supplier bill' : 'Sub invoice'}</small></td>
-                                    <td>{i.invoiceNumber}</td>
+                                    <td>{i.vendor}<small>{i.kind === 'supplier' ? 'Supplier bill' : 'Sub invoice'}</small>
+                                        {i.deleted === true && <small>Hidden {dateOnly(i.deletedAt)}{i.deletedBy ? ' by ' + i.deletedBy.name : ''}{i.deletedReason ? ': ' + i.deletedReason : ''}</small>}</td>
+                                    <td>{i.invoiceNumber}{i.editedAt && <small>Edited {dateOnly(i.editedAt)}</small>}</td>
                                     <td>{i.po ? i.po.poNumber : ''}<small>{i.po ? i.po.category : ''}</small></td>
                                     <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}
                                         {typeof i.previousPayment === 'number' && <small>Prev. paid {money(i.previousPayment)}</small>}</td>
                                     <td>{i.approver ? i.approver.name : ''}</td>
-                                    <td>{i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}</td>
+                                    <td><div className="row-btns">
+                                        {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
+                                        {isAdmin && canEdit && i.deleted !== true && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
+                                        {isAdmin && i.deleted !== true && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
+                                        {isAdmin && i.deleted === true && <button className="btn-link" onClick={() => restoreInvoice(i)}>Restore</button>}
+                                    </div></td>
                                 </tr>
                             ))}
                         </tbody>
@@ -478,8 +651,74 @@
                 </div>
             );
 
+            // All-invoices list (Owner/Admin): filters by the job's Super, approver, kind and a search box
+            const jobById = {};
+            (jobs || []).forEach(j => { jobById[j.id] = j; });
+            const nameOf = (uid) => { const p = (people || []).find(x => x.uid === uid); return p ? p.name : ''; };
+            const superChoices = (() => {
+                const uids = new Set();
+                (jobs || []).forEach(j => j.assignedSupers.forEach(u => uids.add(u)));
+                return [...uids].map(uid => ({ uid, name: nameOf(uid) || 'Unknown user' })).sort((a, b) => a.name.localeCompare(b.name));
+            })();
+            const approverChoices = (() => {
+                const map = {};
+                (allInvoices || []).forEach(i => { if (i.approver && i.approver.uid) map[i.approver.uid] = i.approver.name || nameOf(i.approver.uid); });
+                return Object.keys(map).map(uid => ({ uid, name: map[uid] })).sort((a, b) => a.name.localeCompare(b.name));
+            })();
+            const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
+            const searchText = filters.text.trim().toLowerCase();
+            const filtered = (allInvoices || []).filter(i =>
+                (showHidden || i.deleted !== true)
+                && (!filters.superUid || (jobById[i.jobId] && jobById[i.jobId].assignedSupers.includes(filters.superUid)))
+                && (!filters.approverUid || (i.approver && i.approver.uid === filters.approverUid))
+                && (!filters.kind || i.kind === filters.kind)
+                && (!searchText || [i.vendor, i.invoiceNumber, i.jobCode, i.po && i.po.poNumber].join(' ').toLowerCase().includes(searchText)));
+            const filteredTotal = filtered.filter(i => i.deleted !== true).reduce((s, i) => s + (typeof i.amount === 'number' ? i.amount : 0), 0);
+            const filtersOn = filters.superUid || filters.approverUid || filters.kind || searchText;
+            const showHiddenBox = (
+                <label className="check">
+                    <input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />
+                    Show hidden
+                </label>
+            );
+
             return (
                 <div>
+                    {isAdmin && !job && (
+                        <div className="section">
+                            <div className="section-title">All invoices (all jobs)</div>
+                            <div className="filters">
+                                <select value={filters.superUid} onChange={e => setFilter('superUid', e.target.value)} aria-label="Job's Super">
+                                    <option value="">All Supers</option>
+                                    {superChoices.map(s => <option key={s.uid} value={s.uid}>{s.name}</option>)}
+                                </select>
+                                <select value={filters.approverUid} onChange={e => setFilter('approverUid', e.target.value)} aria-label="Approver">
+                                    <option value="">All approvers</option>
+                                    {approverChoices.map(a => <option key={a.uid} value={a.uid}>{a.name}</option>)}
+                                </select>
+                                <select value={filters.kind} onChange={e => setFilter('kind', e.target.value)} aria-label="Kind">
+                                    <option value="">Subs and suppliers</option>
+                                    <option value="sub">Sub invoices</option>
+                                    <option value="supplier">Supplier bills</option>
+                                </select>
+                                <input type="text" value={filters.text} placeholder="Search vendor, invoice #, job, PO" onChange={e => setFilter('text', e.target.value)} />
+                            </div>
+                            <div className="list-sum">
+                                <span>{allInvoices === null ? '' : `${filtered.length} invoice${filtered.length === 1 ? '' : 's'} · ${money(filteredTotal)}${showHidden ? ' (hidden ones not counted)' : ''}`}
+                                    {filtersOn && <button className="btn-link" onClick={() => setFilters({ superUid: '', approverUid: '', kind: '', text: '' })}>Clear filters</button>}</span>
+                                {showHiddenBox}
+                            </div>
+                            {peopleError && <div className="error" style={{ marginBottom: '10px' }}>{peopleError}</div>}
+                            {invError && <div className="error" style={{ marginBottom: '10px' }}>{invError}</div>}
+                            {listMsg && <div className="ok" style={{ marginBottom: '10px' }}>{listMsg}</div>}
+                            {allInvoices === null && <p className="muted">Loading invoices...</p>}
+                            {allInvoices && filtered.length === 0 && !invError && (
+                                <p className="muted">{allInvoices.length === 0 ? 'No invoices in AP yet.' : 'No invoices match.'}</p>
+                            )}
+                            {filtered.length > 0 && invoiceTable(filtered, true, false)}
+                        </div>
+                    )}
+
                     {!isAdmin && !job && (
                         <div className="section">
                             <div className="section-title">Invoices assigned to you (all jobs)</div>
@@ -558,12 +797,20 @@
                             <div className="section">
                                 <div className="section-head">
                                     <div className="section-title">{isAdmin ? 'Invoices' : 'Invoices assigned to you'}</div>
-                                    {isAdmin && !showAdd && <button className="btn-primary btn-auto btn-sm" onClick={openAdd}>+ Add invoice</button>}
+                                    <div className="row-btns" style={{ alignItems: 'center', gap: '14px' }}>
+                                        {isAdmin && showHiddenBox}
+                                        {isAdmin && !showAdd && <button className="btn-primary btn-auto btn-sm" onClick={openAdd}>+ Add invoice</button>}
+                                    </div>
                                 </div>
 
                                 {showAdd && (
                                     <div className="add-box">
-                                        <div className="section-title" style={{ marginBottom: '10px' }}>Add an invoice to {job.code}</div>
+                                        <div className="section-title" style={{ marginBottom: editId ? '2px' : '10px' }}>
+                                            {editId ? `Edit invoice ${editOrig ? editOrig.invoiceNumber : ''} on ${job.code}` : `Add an invoice to ${job.code}`}
+                                        </div>
+                                        {editInv && <p className="muted" style={{ marginBottom: '10px' }}>
+                                            Added {dateOnly(editInv.createdAt)}{editInv.createdBy ? ' by ' + editInv.createdBy.name : ''}. The old values are kept in the invoice's history.
+                                        </p>}
                                         <div className="kinds">
                                             {[['sub', 'Sub invoice'], ['supplier', 'Supplier bill']].map(([k, label]) => (
                                                 <label key={k} className="check">
@@ -632,6 +879,10 @@
                                             <div className="form-group">
                                                 <label htmlFor="inv-num">Invoice #</label>
                                                 <input id="inv-num" type="text" value={form.invoiceNumber} onChange={e => setField('invoiceNumber', e.target.value)} />
+                                                {dupOf && (
+                                                    <div className="dup">Already in AP: invoice {dupOf.invoiceNumber} from {dupOf.vendor} on {dupOf.jobCode}
+                                                        {dupOf.dateReceived ? `, received ${shortDate(dupOf.dateReceived)}` : ''}. The same invoice can't be added twice.</div>
+                                                )}
                                             </div>
                                             <div className="form-group">
                                                 <label htmlFor="inv-amt">Invoice amount</label>
@@ -641,6 +892,9 @@
                                                 )}
                                                 {amount > 0 && balance !== null && waitingOnPo > 0 && amount + waitingOnPo > balance && (
                                                     <div className="warn">With the {money(waitingOnPo)} already added and not yet approved, this PO would be over by {money(amount + waitingOnPo - balance)}.</div>
+                                                )}
+                                                {sameAmount.length > 0 && (
+                                                    <div className="warn">Same amount as invoice {sameAmount.map(i => i.invoiceNumber).join(', ')} on this PO. Check it isn't the same bill.</div>
                                                 )}
                                             </div>
                                             <div className="form-group">
@@ -665,13 +919,16 @@
                                         </div>
 
                                         <div className="form-group">
-                                            <label>Invoice file</label>
+                                            <label>{editId ? 'Replace the file (optional)' : 'Invoice file'}</label>
+                                            {editId && editInv && editInv.file && !file && (
+                                                <div className="muted" style={{ marginBottom: '6px' }}>Now: {editInv.file.name}. It keeps that name unless a new file is picked; a replaced file is kept in the history.</div>
+                                            )}
                                             <label className={'drop' + (dragOver ? ' over' : '')}
                                                 onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                                                 onDragLeave={() => setDragOver(false)}
                                                 onDrop={e => { e.preventDefault(); setDragOver(false); takeFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}>
                                                 {file ? <span><strong>{file.name}</strong><br />Click or drop another file to replace it.</span>
-                                                    : <span>Drop the PDF or photo here, or click to pick it.</span>}
+                                                    : <span>{editId ? 'Drop a new PDF or photo here, or click to pick it.' : 'Drop the PDF or photo here, or click to pick it.'}</span>}
                                                 <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
                                                     onChange={e => { takeFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
                                             </label>
@@ -681,7 +938,7 @@
                                         {formMsg && <div className={formMsg.ok ? 'ok' : 'error'}>{formMsg.text}</div>}
                                         <div className="actions">
                                             <button className="btn-secondary btn-auto" onClick={() => closeAdd(false)} disabled={saving}>Cancel</button>
-                                            <button className="btn-primary btn-auto" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Add invoice'}</button>
+                                            <button className="btn-primary btn-auto" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : editId ? 'Save changes' : 'Add invoice'}</button>
                                         </div>
                                     </div>
                                 )}
@@ -690,9 +947,10 @@
                                 {invError && <div className="error" style={{ marginBottom: '10px' }}>{invError}</div>}
                                 {invoices === null && <p className="muted">Loading invoices...</p>}
                                 {invoices && invoices.length === 0 && !invError && (
-                                    <p className="muted">{isAdmin ? 'No invoices on this job yet.' : 'No invoices on this job are assigned to you.'}</p>
+                                    <p className="muted">{!isAdmin ? 'No invoices on this job are assigned to you.'
+                                        : jobAll && jobAll.length > 0 ? 'Every invoice on this job is hidden. Tick "Show hidden" to see them.' : 'No invoices on this job yet.'}</p>
                                 )}
-                                {invoices && invoices.length > 0 && invoiceTable(invoices, false)}
+                                {invoices && invoices.length > 0 && invoiceTable(invoices, false, true)}
                             </div>
                         </div>
                     )}
