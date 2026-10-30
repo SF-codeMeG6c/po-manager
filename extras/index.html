@@ -737,11 +737,10 @@
         function CreditCalc({ line, pick, onUse, onFull, onClose }) {
             const typed = !!(line.priceNote || !line.unitCost);
             const saved = (pick && pick.calc) || {};
-            const suggest = (q) => typed ? '' : `Credit ${fmtNum(toNumber(q))} of ${fmtNum(line.qty)} ${line.unit || ''} @ ${$(line.unitCost)}`.replace(/\s+@/, ' @');
-            const [qty, setQty] = useState(saved.qty || (typed ? '' : String(line.qty)));
-            const [sum, setSum] = useState(saved.sum || (typed ? (pick && pick.amount) || '' : `${line.qty}*${line.unitCost}`));
-            const [note, setNote] = useState(saved.note || (pick && pick.note) || suggest(saved.qty || line.qty));
-            const [noteTouched, setNoteTouched] = useState(!!(saved.note || (pick && pick.note)));
+            // Opens blank (decided Oct 30); a line that already has saved working shows that working
+            const [qty, setQty] = useState(saved.qty || '');
+            const [sum, setSum] = useState(saved.sum || '');
+            const [note, setNote] = useState(saved.note || '');
             const [listening, setListening] = useState(false);
             const recRef = useRef(null);
             const box = useRef(null);
@@ -750,7 +749,6 @@
                 const c = q.replace(/[^0-9.]/g, '');
                 setQty(c);
                 if (!typed) setSum(c ? `${c}*${line.unitCost}` : '');
-                if (!noteTouched) setNote(c ? suggest(c) : '');
             };
             const tap = (k) => {
                 if (k === 'C') setSum('');
@@ -764,7 +762,7 @@
                 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SR) return;
                 const rec = new SR(); rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = false;
-                rec.onresult = (e) => { let t = ''; for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript; t = t.trim(); if (t) { setNote(n => n.trim() ? n.replace(/\s*$/, ' ') + t : t); setNoteTouched(true); } };
+                rec.onresult = (e) => { let t = ''; for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript; t = t.trim(); if (t) setNote(n => n.trim() ? n.replace(/\s*$/, ' ') + t : t); };
                 rec.onend = () => setListening(false);
                 recRef.current = rec; rec.start(); setListening(true);
             };
@@ -793,7 +791,7 @@
                             {CALC_KEYS.map(k => <button key={k} className={/[0-9.]/.test(k) ? '' : 'op'} onClick={() => tap(k)}>{k}</button>)}
                         </div>
                         <label style={{ margin: 0 }}>Note (replaces the line's note)</label>
-                        <textarea rows={2} value={note} onChange={e => { setNote(e.target.value); setNoteTouched(true); }} />
+                        <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} />
                         <button type="button" className={'mic' + (listening ? ' on' : '')} onClick={voice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
                         <button className="btn-primary" style={{ marginTop: 10 }} disabled={!(value > 0)}
                             onClick={() => onUse(value, note.trim(), { qty, sum, note: note.trim() })}>
