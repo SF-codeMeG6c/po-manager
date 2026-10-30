@@ -639,6 +639,9 @@
                                                 {amount > 0 && balance !== null && amount > balance && (
                                                     <div className="warn">Over the PO balance by {money(amount - balance)}. It can be added, but it won't pass approval until a revised PO or a supplement covers it.</div>
                                                 )}
+                                                {amount > 0 && balance !== null && waitingOnPo > 0 && amount + waitingOnPo > balance && (
+                                                    <div className="warn">With the {money(waitingOnPo)} already added and not yet approved, this PO would be over by {money(amount + waitingOnPo - balance)}.</div>
+                                                )}
                                             </div>
                                             <div className="form-group">
                                                 <label htmlFor="inv-date">Date received</label>
