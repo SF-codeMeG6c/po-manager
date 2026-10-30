@@ -73,6 +73,11 @@
         .pill.pa-pending { background: #fff3e0; color: #b36b00; }
         .pill.pa-supplement { background: #f3e8fb; color: #7b1fa2; }
         .pill.passed { background: #e6f4ea; color: #2e7d32; }
+        .pill.ready { background: #2e7d32; color: white; }
+        .pill.appr-pending { background: #fff3e0; color: #b36b00; }
+        .pill.appr-supplement { background: #f3e8fb; color: #7b1fa2; }
+        .appr-box { border: 1px solid #b7dcc0; border-radius: 6px; background: #f6fbf7; padding: 16px; margin-bottom: 20px; }
+        .wait-title { font-weight: 600; color: #2e7d32; font-size: 14px; margin-bottom: 8px; }
         .pill.hidden { background: #eee; color: #888; }
         .review-box { border: 1px solid #c8daf0; border-radius: 6px; background: #f7fafe; padding: 16px; margin-bottom: 18px; }
         .review-facts { font-size: 13px; color: #333; margin-bottom: 10px; line-height: 1.6; }
@@ -142,12 +147,24 @@
         const PA_CHOICES = ['Pass', 'Pending', 'Supplement'];
         const isPassed = (i) => !!(i.pa && i.pa.status === 'Pass');
         // Status key saved on the invoice (status) and shown as a pill. Hidden invoices show Hidden.
-        const statusKeyOf = (pa) => !pa || !pa.status ? 'waiting-pa' : pa.status === 'Pass' ? 'passed' : pa.status === 'Pending' ? 'pa-pending' : 'pa-supplement';
+        // Step 2b: the approver's decision once passed: appr = { status: 'Pay' | 'Pending' | 'Supplement', note, at, by }
+        const APPR_CHOICES = ['Pay', 'Pending', 'Supplement'];
+        const apprKeyOf = (appr) => appr.status === 'Pay' ? 'ready' : appr.status === 'Pending' ? 'appr-pending' : 'appr-supplement';
+        const statusKeyOf = (pa, appr) => !pa || !pa.status ? 'waiting-pa'
+            : pa.status === 'Pass' ? (appr && appr.status ? apprKeyOf(appr) : 'passed')
+            : pa.status === 'Pending' ? 'pa-pending' : 'pa-supplement';
+        const isReady = (i) => i.deleted !== true && isPassed(i) && !!(i.appr && i.appr.status === 'Pay');
+        // Passed and waiting on this person's Pay / Pending / Supplement
+        const waitingOn = (i, uid) => i.deleted !== true && isPassed(i) && !(i.appr && i.appr.status) && i.approver && i.approver.uid === uid;
         const statusOf = (i) => {
             if (i.deleted === true) return { key: 'hidden', text: 'Hidden' };
-            const key = statusKeyOf(i.pa);
+            const key = statusKeyOf(i.pa, i.appr);
+            const who = i.approver && i.approver.name ? i.approver.name : 'the approver';
             const text = key === 'waiting-pa' ? 'Waiting on Production Admin'
-                : key === 'passed' ? `Passed, waiting on ${i.approver && i.approver.name ? i.approver.name : 'the approver'}`
+                : key === 'passed' ? `Passed, waiting on ${who}`
+                : key === 'ready' ? 'Ready to pay'
+                : key === 'appr-pending' ? `Pending (${who})`
+                : key === 'appr-supplement' ? `Supplement (${who})`
                 : key === 'pa-pending' ? 'Pending (Production Admin)' : 'Supplement (Production Admin)';
             return { key, text };
         };
@@ -228,6 +245,11 @@
             const [review, setReview] = useState({ status: '', note: '' });
             const [reviewMsg, setReviewMsg] = useState(null);
             const [reviewSaving, setReviewSaving] = useState(false);
+            const [apprId, setApprId] = useState(null);       // the invoice the approver is deciding on (2b)
+            const [apprForm, setApprForm] = useState({ status: '', note: '' });
+            const [apprMsg, setApprMsg] = useState(null);
+            const [apprSaving, setApprSaving] = useState(false);
+            const [apprDone, setApprDone] = useState('');     // message after the approver saves
             const [saving, setSaving] = useState(false);
             const [formMsg, setFormMsg] = useState(null);   // { text, ok } inside the Add box
             const [listMsg, setListMsg] = useState('');     // after a save
@@ -467,15 +489,20 @@
                     : st === 'Pass' && (inv.amount || 0) > room + 0.005 ? `Over the PO balance by ${money((inv.amount || 0) - room)}. It can't pass until a revised PO or a supplement covers it.`
                     : '';
                 if (problem) { setReviewMsg({ text: problem, ok: false }); return; }
+                // Leaving Pass clears the approver's decision (2b); it stays in the history line
+                const clearsAppr = st !== 'Pass' && !!(inv.appr && inv.appr.status);
+                if (clearsAppr && !window.confirm(`${inv.appr.by ? inv.appr.by.name : 'The approver'} already marked it ${inv.appr.status}. Changing it to ${st} clears their decision. Go ahead?`)) return;
                 setReviewSaving(true); setReviewMsg(null);
                 try {
                     const now = new Date();
                     const by = { uid: user.uid, name: profile.name || user.email };
                     const pa = { status: st, note, at: now, by };
+                    const keepAppr = st === 'Pass' && inv.appr && inv.appr.status ? inv.appr : null;
                     const ref = db.collection('apInvoices').doc(inv.id);
                     const batch = db.batch();
-                    batch.update(ref, { pa, status: statusKeyOf(pa) });
-                    batch.set(ref.collection('history').doc(), { action: 'Production Admin', status: st, note, before: inv.pa || null, at: now, by });
+                    batch.update(ref, { pa, appr: keepAppr, status: statusKeyOf(pa, keepAppr) });
+                    batch.set(ref.collection('history').doc(), { action: 'Production Admin', status: st, note, before: inv.pa || null,
+                        apprCleared: clearsAppr ? inv.appr : null, at: now, by });
                     await batch.commit();
                     setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor}: ${st === 'Pass' ? 'Passed' : st}${st === now0 ? ' (note added)' : ''}.`);
                     setReviewId(null); setReview({ status: '', note: '' });
@@ -483,6 +510,51 @@
                     setReviewMsg({ text: 'Error saving: ' + error.message, ok: false });
                 }
                 setReviewSaving(false);
+            };
+
+            // Approver step (2b): the invoice's approver picks Pay / Pending / Supplement once Production Admin passed it.
+            // The rule lets them change only appr and status, and add their own history line.
+            const apprAll = isAdmin ? (allInvoices || []) : (myInvoices || []);
+            const apprInv = apprId ? apprAll.find(i => i.id === apprId) || null : null;
+            const apprTouched = () => !!(apprForm.note.trim() || (apprInv && apprForm.status !== ((apprInv.appr && apprInv.appr.status) || '')));
+            const openApprove = (inv) => {
+                if (apprId && apprId !== inv.id && apprTouched() && !window.confirm('Drop the decision you started?')) return;
+                setApprId(inv.id); setApprForm({ status: (inv.appr && inv.appr.status) || '', note: '' }); setApprMsg(null); setApprDone('');
+                try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { /* older browsers */ }
+            };
+            const closeApprove = (force) => {
+                if (!force && apprTouched() && !window.confirm('Close and drop your decision?')) return;
+                setApprId(null); setApprForm({ status: '', note: '' }); setApprMsg(null);
+            };
+            const saveApprove = async () => {
+                const inv = apprInv;
+                if (!inv) { setApprMsg({ text: 'This invoice is no longer on your list.', ok: false }); return; }
+                const st = apprForm.status;
+                const note = apprForm.note.trim();
+                const now0 = (inv.appr && inv.appr.status) || '';
+                const problem = !isPassed(inv) || inv.deleted === true ? 'Production Admin has changed this invoice. It is no longer passed.'
+                    : !inv.approver || inv.approver.uid !== user.uid ? 'This invoice is assigned to someone else now.'
+                    : !st ? 'Pick Pay, Pending or Supplement.'
+                    : st === now0 && !note ? 'Nothing changed.'
+                    : (st === 'Pending' || st === 'Supplement') && !note ? `Type a note saying why it's ${st === 'Pending' ? 'pending' : 'a supplement'}.`
+                    : '';
+                if (problem) { setApprMsg({ text: problem, ok: false }); return; }
+                setApprSaving(true); setApprMsg(null);
+                try {
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const appr = { status: st, note, at: now, by };
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const batch = db.batch();
+                    batch.update(ref, { appr, status: statusKeyOf(inv.pa, appr) });
+                    batch.set(ref.collection('history').doc(), { action: 'Approver', status: st, note, before: inv.appr || null, at: now, by });
+                    await batch.commit();
+                    setApprDone(`Invoice ${inv.invoiceNumber} from ${inv.vendor}: ${st === 'Pay' ? 'Pay (ready to pay)' : st}${st === now0 ? ' (note added)' : ''}.`);
+                    setApprId(null); setApprForm({ status: '', note: '' });
+                } catch (error) {
+                    setApprMsg({ text: 'Error saving: ' + error.message, ok: false });
+                }
+                setApprSaving(false);
             };
 
             const restoreInvoice = async (inv) => {
@@ -715,7 +787,7 @@
                         </thead>
                         <tbody>
                             {list.map(i => (
-                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : (i.id === editId || i.id === reviewId) ? 'editing-row' : ''}>
+                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : (i.id === editId || i.id === reviewId || i.id === apprId) ? 'editing-row' : ''}>
                                     {showJob && <td>{(jobs || []).some(j => j.id === i.jobId)
                                         ? <a href={'?job=' + encodeURIComponent(i.jobId)} onClick={e => { e.preventDefault(); pickJob(i.jobId); }}>{i.jobCode}</a>
                                         : i.jobCode}</td>}
@@ -727,10 +799,14 @@
                                     <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}
                                         {typeof i.previousPayment === 'number' && <small>Prev. paid {money(i.previousPayment)}</small>}</td>
                                     <td>{(() => { const s = statusOf(i); return <span className={'pill ' + s.key}>{s.text}</span>; })()}
-                                        {i.deleted !== true && i.pa && i.pa.note && <small title={i.pa.note}>"{i.pa.note.length > 60 ? i.pa.note.slice(0, 60) + '...' : i.pa.note}"</small>}
+                                        {i.deleted !== true && i.pa && i.pa.note && <small title={i.pa.note}>PA: "{i.pa.note.length > 60 ? i.pa.note.slice(0, 60) + '...' : i.pa.note}"</small>}
+                                        {i.deleted !== true && isPassed(i) && i.appr && i.appr.note && <small title={i.appr.note}>{i.appr.by ? i.appr.by.name : 'Approver'}: "{i.appr.note.length > 60 ? i.appr.note.slice(0, 60) + '...' : i.appr.note}"</small>}
                                         <small>Approver: {i.approver ? i.approver.name : '-'}</small></td>
                                     <td><div className="row-btns">
                                         {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
+                                        {i.deleted !== true && isPassed(i) && i.approver && i.approver.uid === user.uid && i.id !== apprId && (
+                                            <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
+                                                {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
                                         {isPA && canEdit && i.deleted !== true && i.id !== reviewId && <button className="btn-secondary btn-sm" onClick={() => openReview(i)}>Review</button>}
                                         {isAdmin && canEdit && i.deleted !== true && !isPassed(i) && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
                                         {isAdmin && i.deleted !== true && !isPassed(i) && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
@@ -774,8 +850,52 @@
                 </label>
             );
 
+            const myWaiting = (isAdmin ? (allInvoices || []) : (myInvoices || [])).filter(i => waitingOn(i, user.uid));
+
             return (
                 <div>
+                    {apprDone && <div className="ok" style={{ marginBottom: '14px' }}>{apprDone}</div>}
+                    {apprInv && (
+                        <div className="appr-box">
+                            <div className="section-title" style={{ marginBottom: '6px' }}>Your approval: invoice {apprInv.invoiceNumber} from {apprInv.vendor}</div>
+                            <div className="review-facts">
+                                {apprInv.jobCode} · {apprInv.kind === 'supplier' ? 'Supplier bill' : 'Sub invoice'} · {typeof apprInv.amount === 'number' ? money(apprInv.amount) : '-'}
+                                {' '}· received {shortDate(apprInv.dateReceived)} · PO {apprInv.po ? `${apprInv.po.poNumber} (${apprInv.po.category})` : '-'}
+                                {typeof apprInv.previousPayment === 'number' ? ` · previous payment on the form ${money(apprInv.previousPayment)}` : ''}
+                                {apprInv.file && apprInv.file.url && <button className="btn-link" onClick={() => window.open(apprInv.file.url)}>View file</button>}
+                            </div>
+                            <div className="review-now">
+                                Production Admin: <span className="pill passed">Passed</span>
+                                {apprInv.pa && apprInv.pa.by && <span className="muted"> by {apprInv.pa.by.name}, {dateOnly(apprInv.pa.at)}{apprInv.pa.note ? `: "${apprInv.pa.note}"` : ''}</span>}
+                                {apprInv.appr && apprInv.appr.status && <div className="muted" style={{ marginTop: '4px' }}>Your decision now: {apprInv.appr.status}, {dateOnly(apprInv.appr.at)}{apprInv.appr.note ? `: "${apprInv.appr.note}"` : ''}</div>}
+                            </div>
+                            <div className="kinds">
+                                {APPR_CHOICES.map(c => (
+                                    <label key={c} className="check">
+                                        <input type="radio" name="appr-status" checked={apprForm.status === c} onChange={() => { setApprForm(v => ({ ...v, status: c })); setApprMsg(null); }} />
+                                        {c}
+                                    </label>
+                                ))}
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="appr-note">Note {apprForm.status === 'Pending' || apprForm.status === 'Supplement' ? '(required: say why)' : '(optional)'}</label>
+                                <textarea id="appr-note" value={apprForm.note} onChange={e => { setApprForm(v => ({ ...v, note: e.target.value })); setApprMsg(null); }} />
+                            </div>
+                            {apprMsg && <div className={apprMsg.ok ? 'ok' : 'error'}>{apprMsg.text}</div>}
+                            <div className="actions">
+                                <button className="btn-secondary btn-auto" onClick={() => closeApprove(false)} disabled={apprSaving}>Cancel</button>
+                                <button className="btn-primary btn-auto" onClick={saveApprove} disabled={apprSaving}>{apprSaving ? 'Saving...' : 'Save'}</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {myWaiting.length > 0 && !job && (
+                        <div className="section">
+                            <div className="wait-title">Waiting on you ({myWaiting.length})</div>
+                            {invoiceTable(myWaiting, true, false)}
+                        </div>
+                    )}
+
                     {isAdmin && !job && (
                         <div className="section">
                             <div className="section-title">All invoices (all jobs)</div>
@@ -1053,6 +1173,7 @@
                                             <div className="review-now">
                                                 Now: <span className={'pill ' + s.key}>{s.text}</span>
                                                 {r.pa && r.pa.by && <span className="muted"> by {r.pa.by.name}, {dateOnly(r.pa.at)}{r.pa.note ? `: "${r.pa.note}"` : ''}</span>}
+                                                {r.appr && r.appr.status && <div className="muted" style={{ marginTop: '4px' }}>Approver: {r.appr.status} by {r.appr.by ? r.appr.by.name : ''}, {dateOnly(r.appr.at)}{r.appr.note ? `: "${r.appr.note}"` : ''}. Changing Pass to Pending or Supplement clears it.</div>}
                                             </div>
                                             <div className="balance">
                                                 <div><span>PO amount</span><span>{!poNow ? 'PO not on the job' : poNow.amount === null ? 'none on the PO' : money(poNow.amount)}</span></div>
