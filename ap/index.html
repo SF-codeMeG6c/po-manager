@@ -68,6 +68,16 @@
         .filters select, .filters input[type=text] { padding: 6px 8px; font-size: 13px; }
         .list-sum { font-size: 13px; color: #555; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
         .dup { color: #d32f2f; font-size: 12px; margin-top: 5px; font-weight: 600; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+        .pill.waiting-pa { background: #e8f0fb; color: #0052a3; }
+        .pill.pa-pending { background: #fff3e0; color: #b36b00; }
+        .pill.pa-supplement { background: #f3e8fb; color: #7b1fa2; }
+        .pill.passed { background: #e6f4ea; color: #2e7d32; }
+        .pill.hidden { background: #eee; color: #888; }
+        .review-box { border: 1px solid #c8daf0; border-radius: 6px; background: #f7fafe; padding: 16px; margin-bottom: 18px; }
+        .review-facts { font-size: 13px; color: #333; margin-bottom: 10px; line-height: 1.6; }
+        .review-now { font-size: 13px; background: white; border: 1px solid #eee; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; }
+        textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; min-height: 60px; }
         @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } .container { padding: 18px; } .filters { grid-template-columns: 1fr 1fr; } }
     </style>
 </head>
@@ -128,6 +138,19 @@
         const stable = (v) => v && typeof v === 'object' && !Array.isArray(v)
             ? Object.keys(v).sort().reduce((o, k) => { o[k] = stable(v[k]); return o; }, {}) : (v === undefined ? null : v);
         const same = (a, b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
+        // Step 2a: Production Admin decision on an invoice: pa = { status: 'Pass' | 'Pending' | 'Supplement', note, at, by }
+        const PA_CHOICES = ['Pass', 'Pending', 'Supplement'];
+        const isPassed = (i) => !!(i.pa && i.pa.status === 'Pass');
+        // Status key saved on the invoice (status) and shown as a pill. Hidden invoices show Hidden.
+        const statusKeyOf = (pa) => !pa || !pa.status ? 'waiting-pa' : pa.status === 'Pass' ? 'passed' : pa.status === 'Pending' ? 'pa-pending' : 'pa-supplement';
+        const statusOf = (i) => {
+            if (i.deleted === true) return { key: 'hidden', text: 'Hidden' };
+            const key = statusKeyOf(i.pa);
+            const text = key === 'waiting-pa' ? 'Waiting on Production Admin'
+                : key === 'passed' ? `Passed, waiting on ${i.approver && i.approver.name ? i.approver.name : 'the approver'}`
+                : key === 'pa-pending' ? 'Pending (Production Admin)' : 'Supplement (Production Admin)';
+            return { key, text };
+        };
         const FIELD_LABELS = { kind: 'kind', vendor: 'vendor', invoiceNumber: 'invoice #', amount: 'amount', previousPayment: 'previous payment',
             dateReceived: 'date received', po: 'PO', approver: 'approver', file: 'file' };
 
@@ -201,6 +224,10 @@
             const [editId, setEditId] = useState(null);       // the invoice being edited (null = adding a new one)
             const [editOrig, setEditOrig] = useState(null);   // the form as it was when Edit opened (to tell if anything changed)
             const [filters, setFilters] = useState({ superUid: '', approverUid: '', kind: '', text: '' }); // all-invoices list
+            const [reviewId, setReviewId] = useState(null);   // the invoice Production Admin is reviewing (2a)
+            const [review, setReview] = useState({ status: '', note: '' });
+            const [reviewMsg, setReviewMsg] = useState(null);
+            const [reviewSaving, setReviewSaving] = useState(false);
             const [saving, setSaving] = useState(false);
             const [formMsg, setFormMsg] = useState(null);   // { text, ok } inside the Add box
             const [listMsg, setListMsg] = useState('');     // after a save
@@ -225,6 +252,8 @@
             }, []);
 
             const isAdmin = !!profile && typeof profile === 'object' && ['owner', 'admin'].includes(profile.role);
+            // Production Admin step: any user with the Admin role (decided Oct 30). Owner adds notes only, so can't pass (Spencer).
+            const isPA = !!profile && typeof profile === 'object' && profile.role === 'admin';
 
             // Job list: all jobs, or only assigned jobs for Supers (the rules require the assignedSupers query)
             useEffect(() => {
@@ -323,6 +352,12 @@
             const invoices = jobAll ? jobAll.filter(i => showHidden || i.deleted !== true) : null;
             const activeJob = (jobAll || []).filter(i => i.deleted !== true); // for the PO balance: hidden invoices never count
             const editInv = editId ? (jobAll || []).find(i => i.id === editId) || null : null;
+            const reviewInv = reviewId ? (jobAll || []).find(i => i.id === reviewId) || null : null;
+            // Passed invoices count against the PO balance right away (decided Oct 30), hidden ones never
+            const passedOn = (formId, exceptId) => activeJob.filter(i => i.id !== exceptId && i.po && i.po.formId === formId && isPassed(i))
+                .reduce((s, i) => s + (i.amount || 0), 0);
+            const notPassedOn = (formId, exceptId) => activeJob.filter(i => i.id !== exceptId && i.po && i.po.formId === formId && !isPassed(i))
+                .reduce((s, i) => s + (i.amount || 0), 0);
 
             // Users (Owner/Admin): the approver pick list and the names in the filters
             useEffect(() => {
@@ -348,7 +383,9 @@
             // Pick a job. The address keeps the job, so a refresh stays on it.
             const pickJob = (id) => {
                 if (showAdd && formTouched() && !window.confirm('Switch jobs and drop the invoice you started?')) return;
+                if (reviewId && reviewTouched() && !window.confirm('Switch jobs and drop the review you started?')) return;
                 closeAdd(true);
+                closeReview(true);
                 setListMsg('');
                 setJobId(id);
                 window.history.replaceState(null, '', id ? '?job=' + encodeURIComponent(id) : window.location.pathname);
@@ -357,13 +394,16 @@
             const formTouched = () => editId
                 ? !!file || !same(form, editOrig)
                 : !!file || ['formId', 'vendorPick', 'vendorOther', 'invoiceNumber', 'amount', 'previousPayment'].some(k => String(form[k] || '').trim());
-            const openAdd = () => { setForm(blankForm()); setEditId(null); setEditOrig(null); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true); };
+            const openAdd = () => { if (reviewId) { if (reviewTouched() && !window.confirm('Drop the review you started?')) return; setReviewId(null); }
+                setForm(blankForm()); setEditId(null); setEditOrig(null); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true); };
             const closeAdd = (force) => {
                 if (!force && formTouched() && !window.confirm(editId ? 'Close and drop your changes?' : 'Close and drop what you typed?')) return;
                 setShowAdd(false); setForm(blankForm()); setEditId(null); setEditOrig(null); setFile(null); setFormMsg(null);
             };
             // Edit (Owner/Admin): the same form, filled in from the saved invoice
             const openEdit = (inv) => {
+                if (isPassed(inv)) { window.alert('This invoice has passed. Production Admin sets it back to Pending before it can be edited.'); return; }
+                if (reviewId) closeReview(true);
                 if (showAdd && formTouched() && !window.confirm(`Drop what you typed and edit invoice ${inv.invoiceNumber} instead?`)) return;
                 const sup = inv.kind === 'supplier';
                 const onList = sup ? vendorList.find(n => n === inv.vendor) : null;
@@ -379,6 +419,7 @@
 
             // Hide (Owner/Admin). Nothing is deleted: the record is marked hidden and a history line is added.
             const hideInvoice = async (inv) => {
+                if (isPassed(inv)) { window.alert('This invoice has passed. Production Admin sets it back to Pending before it can be hidden.'); return; }
                 const reason = window.prompt(`Hide invoice ${inv.invoiceNumber} from ${inv.vendor} (${typeof inv.amount === 'number' ? money(inv.amount) : ''})?\n`
                     + 'It drops out of every list and out of the PO balance. Owner or Admin can restore it.\n\nWhy is it being hidden? (optional)', '');
                 if (reason === null) return;
@@ -397,6 +438,53 @@
                 }
             };
             // Restore (Owner/Admin). Blocked if the same vendor + invoice # was added again while this one was hidden.
+            // Production Admin review (2a): Pass / Pending / Supplement with a note. Pass is blocked over the PO balance.
+            const reviewTouched = () => !!(review.note.trim() || (reviewInv && review.status !== ((reviewInv.pa && reviewInv.pa.status) || '')));
+            const openReview = (inv) => {
+                if (showAdd && formTouched() && !window.confirm('Drop what you typed and review this invoice instead?')) return;
+                if (reviewId && reviewId !== inv.id && reviewTouched() && !window.confirm('Drop the review you started?')) return;
+                if (showAdd) closeAdd(true);
+                setReviewId(inv.id); setReview({ status: (inv.pa && inv.pa.status) || '', note: '' }); setReviewMsg(null); setListMsg('');
+            };
+            const closeReview = (force) => {
+                if (!force && reviewTouched() && !window.confirm('Close and drop the review?')) return;
+                setReviewId(null); setReview({ status: '', note: '' }); setReviewMsg(null);
+            };
+            const saveReview = async () => {
+                const inv = reviewInv;
+                if (!inv) { setReviewMsg({ text: 'This invoice is no longer on the list.', ok: false }); return; }
+                const st = review.status;
+                const note = review.note.trim();
+                const now0 = (inv.pa && inv.pa.status) || '';
+                const poNow = (pos || []).find(p => p.id === (inv.po && inv.po.formId)) || null;
+                const passedOther = poNow ? passedOn(poNow.id, inv.id) : 0;
+                const room = poNow && poNow.amount !== null ? poNow.amount - passedOther : null;
+                const problem = !st ? 'Pick Pass, Pending or Supplement.'
+                    : st === now0 && !note ? 'Nothing changed.'
+                    : (st === 'Pending' || st === 'Supplement') && !note ? `Type a note saying why it's ${st === 'Pending' ? 'pending' : 'a supplement'}.`
+                    : st === 'Pass' && !poNow ? "This invoice's PO isn't on the job any more (hidden in PO Manager?). Edit the invoice to pick its PO first."
+                    : st === 'Pass' && room === null ? 'This PO has no amount, so it can\'t pass. Fix the PO in PO Manager first.'
+                    : st === 'Pass' && (inv.amount || 0) > room + 0.005 ? `Over the PO balance by ${money((inv.amount || 0) - room)}. It can't pass until a revised PO or a supplement covers it.`
+                    : '';
+                if (problem) { setReviewMsg({ text: problem, ok: false }); return; }
+                setReviewSaving(true); setReviewMsg(null);
+                try {
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const pa = { status: st, note, at: now, by };
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const batch = db.batch();
+                    batch.update(ref, { pa, status: statusKeyOf(pa) });
+                    batch.set(ref.collection('history').doc(), { action: 'Production Admin', status: st, note, before: inv.pa || null, at: now, by });
+                    await batch.commit();
+                    setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor}: ${st === 'Pass' ? 'Passed' : st}${st === now0 ? ' (note added)' : ''}.`);
+                    setReviewId(null); setReview({ status: '', note: '' });
+                } catch (error) {
+                    setReviewMsg({ text: 'Error saving: ' + error.message, ok: false });
+                }
+                setReviewSaving(false);
+            };
+
             const restoreInvoice = async (inv) => {
                 const key = dupKeyOf(inv.vendor, inv.invoiceNumber);
                 const other = (allInvoices || []).find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === key);
@@ -490,8 +578,8 @@
                 : form.vendorPick === OTHER ? (otherOnList || otherTyped) : form.vendorPick;
             const amount = amountOf(form.amount);
             const prevPay = form.previousPayment.trim() ? amountOf(form.previousPayment) : null;
-            const approvedSoFar = 0; // approvals start in step 2
-            const waitingOnPo = po ? activeJob.filter(i => i.id !== editId && i.po && i.po.formId === po.id).reduce((s, i) => s + (i.amount || 0), 0) : 0;
+            const approvedSoFar = po ? passedOn(po.id, editId) : 0; // passed invoices on this PO (2a); approver Pay comes in 2b
+            const waitingOnPo = po ? notPassedOn(po.id, editId) : 0;
             // Same vendor + invoice # already in AP (any job, not hidden) = blocked. Same PO + same amount = a warning only.
             const typedKey = vendor && form.invoiceNumber.trim() ? dupKeyOf(vendor, form.invoiceNumber) : '';
             const dupOf = typedKey && allInvoices
@@ -564,6 +652,7 @@
             const saveEdit = async () => {
                 const inv = editInv;
                 if (!inv) { setFormMsg({ text: 'This invoice is no longer on the list.', ok: false }); return; }
+                if (isPassed(inv)) { setFormMsg({ text: 'This invoice has passed meanwhile. Production Admin sets it back to Pending before it can be edited.', ok: false }); return; }
                 const next = {
                     kind: form.kind, vendor, invoiceNumber: form.invoiceNumber.trim(), amount,
                     previousPayment: form.kind === 'sub' ? prevPay : null, dateReceived: form.dateReceived,
@@ -622,11 +711,11 @@
                 <div className="table-wrap">
                     <table>
                         <thead>
-                            <tr>{showJob && <th>Job</th>}<th>Received</th><th>Vendor</th><th>Invoice #</th><th>PO</th><th className="num">Amount</th><th>Approver</th><th></th></tr>
+                            <tr>{showJob && <th>Job</th>}<th>Received</th><th>Vendor</th><th>Invoice #</th><th>PO</th><th className="num">Amount</th><th>Status</th><th></th></tr>
                         </thead>
                         <tbody>
                             {list.map(i => (
-                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : i.id === editId ? 'editing-row' : ''}>
+                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : (i.id === editId || i.id === reviewId) ? 'editing-row' : ''}>
                                     {showJob && <td>{(jobs || []).some(j => j.id === i.jobId)
                                         ? <a href={'?job=' + encodeURIComponent(i.jobId)} onClick={e => { e.preventDefault(); pickJob(i.jobId); }}>{i.jobCode}</a>
                                         : i.jobCode}</td>}
@@ -637,11 +726,14 @@
                                     <td>{i.po ? i.po.poNumber : ''}<small>{i.po ? i.po.category : ''}</small></td>
                                     <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}
                                         {typeof i.previousPayment === 'number' && <small>Prev. paid {money(i.previousPayment)}</small>}</td>
-                                    <td>{i.approver ? i.approver.name : ''}</td>
+                                    <td>{(() => { const s = statusOf(i); return <span className={'pill ' + s.key}>{s.text}</span>; })()}
+                                        {i.deleted !== true && i.pa && i.pa.note && <small title={i.pa.note}>"{i.pa.note.length > 60 ? i.pa.note.slice(0, 60) + '...' : i.pa.note}"</small>}
+                                        <small>Approver: {i.approver ? i.approver.name : '-'}</small></td>
                                     <td><div className="row-btns">
                                         {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
-                                        {isAdmin && canEdit && i.deleted !== true && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
-                                        {isAdmin && i.deleted !== true && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
+                                        {isPA && canEdit && i.deleted !== true && i.id !== reviewId && <button className="btn-secondary btn-sm" onClick={() => openReview(i)}>Review</button>}
+                                        {isAdmin && canEdit && i.deleted !== true && !isPassed(i) && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
+                                        {isAdmin && i.deleted !== true && !isPassed(i) && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
                                         {isAdmin && i.deleted === true && <button className="btn-link" onClick={() => restoreInvoice(i)}>Restore</button>}
                                     </div></td>
                                 </tr>
@@ -843,8 +935,8 @@
                                         {po && (
                                             <div className="balance">
                                                 <div><span>PO amount</span><span>{po.amount === null ? 'none on the PO' : money(po.amount)}</span></div>
-                                                <div><span>Approved so far</span><span>{money(approvedSoFar)}</span></div>
-                                                {waitingOnPo > 0 && <div className="muted"><span>Invoices added, not yet approved</span><span>{money(waitingOnPo)}</span></div>}
+                                                <div><span>Passed so far</span><span>{money(approvedSoFar)}</span></div>
+                                                {waitingOnPo > 0 && <div className="muted"><span>Invoices added, not yet passed</span><span>{money(waitingOnPo)}</span></div>}
                                                 <div className="left"><span>Balance left</span><span>{balance === null ? '-' : money(balance)}</span></div>
                                             </div>
                                         )}
@@ -888,10 +980,10 @@
                                                 <label htmlFor="inv-amt">Invoice amount</label>
                                                 <input id="inv-amt" type="text" inputMode="decimal" value={form.amount} placeholder="$0.00" onChange={e => setField('amount', e.target.value)} />
                                                 {amount > 0 && balance !== null && amount > balance && (
-                                                    <div className="warn">Over the PO balance by {money(amount - balance)}. It can be added, but it won't pass approval until a revised PO or a supplement covers it.</div>
+                                                    <div className="warn">Over the PO balance by {money(amount - balance)}. It can be added, but it can't pass until a revised PO or a supplement covers it.</div>
                                                 )}
                                                 {amount > 0 && balance !== null && waitingOnPo > 0 && amount + waitingOnPo > balance && (
-                                                    <div className="warn">With the {money(waitingOnPo)} already added and not yet approved, this PO would be over by {money(amount + waitingOnPo - balance)}.</div>
+                                                    <div className="warn">With the {money(waitingOnPo)} already added and not yet passed, this PO would be over by {money(amount + waitingOnPo - balance)}.</div>
                                                 )}
                                                 {sameAmount.length > 0 && (
                                                     <div className="warn">Same amount as invoice {sameAmount.map(i => i.invoiceNumber).join(', ')} on this PO. Check it isn't the same bill.</div>
@@ -942,6 +1034,53 @@
                                         </div>
                                     </div>
                                 )}
+
+                                {reviewInv && (() => {
+                                    const r = reviewInv;
+                                    const poNow = (pos || []).find(p => p.id === (r.po && r.po.formId)) || null;
+                                    const passedOther = poNow ? passedOn(poNow.id, r.id) : 0;
+                                    const room = poNow && poNow.amount !== null ? poNow.amount - passedOther : null;
+                                    const over = room !== null && (r.amount || 0) > room + 0.005;
+                                    const s = statusOf(r);
+                                    return (
+                                        <div className="review-box">
+                                            <div className="section-title" style={{ marginBottom: '6px' }}>Production Admin review: invoice {r.invoiceNumber} from {r.vendor}</div>
+                                            <div className="review-facts">
+                                                {r.kind === 'supplier' ? 'Supplier bill' : 'Sub invoice'} · {typeof r.amount === 'number' ? money(r.amount) : '-'} · received {shortDate(r.dateReceived)} · PO {r.po ? r.po.poNumber : '-'}
+                                                {typeof r.previousPayment === 'number' ? ` · previous payment on the form ${money(r.previousPayment)}` : ''} · approver {r.approver ? r.approver.name : '-'}
+                                                {r.file && r.file.url && <button className="btn-link" onClick={() => window.open(r.file.url)}>View file</button>}
+                                            </div>
+                                            <div className="review-now">
+                                                Now: <span className={'pill ' + s.key}>{s.text}</span>
+                                                {r.pa && r.pa.by && <span className="muted"> by {r.pa.by.name}, {dateOnly(r.pa.at)}{r.pa.note ? `: "${r.pa.note}"` : ''}</span>}
+                                            </div>
+                                            <div className="balance">
+                                                <div><span>PO amount</span><span>{!poNow ? 'PO not on the job' : poNow.amount === null ? 'none on the PO' : money(poNow.amount)}</span></div>
+                                                <div><span>Passed so far (other invoices)</span><span>{money(passedOther)}</span></div>
+                                                <div><span>This invoice</span><span>{typeof r.amount === 'number' ? money(r.amount) : '-'}</span></div>
+                                                <div className="left"><span>Balance after passing it</span><span>{room === null ? '-' : money(room - (r.amount || 0))}</span></div>
+                                            </div>
+                                            {over && <div className="dup" style={{ marginBottom: '10px' }}>Over the PO balance by {money((r.amount || 0) - room)}. It can't pass until a revised PO or a supplement covers it. Pending or Supplement can still be picked.</div>}
+                                            <div className="kinds">
+                                                {PA_CHOICES.map(c => (
+                                                    <label key={c} className="check">
+                                                        <input type="radio" name="pa-status" checked={review.status === c} onChange={() => { setReview(v => ({ ...v, status: c })); setReviewMsg(null); }} />
+                                                        {c}
+                                                    </label>
+                                                ))}
+                                            </div>
+                                            <div className="form-group">
+                                                <label htmlFor="pa-note">Note {review.status === 'Pending' || review.status === 'Supplement' ? '(required: say why)' : '(optional)'}</label>
+                                                <textarea id="pa-note" value={review.note} onChange={e => { setReview(v => ({ ...v, note: e.target.value })); setReviewMsg(null); }} />
+                                            </div>
+                                            {reviewMsg && <div className={reviewMsg.ok ? 'ok' : 'error'}>{reviewMsg.text}</div>}
+                                            <div className="actions">
+                                                <button className="btn-secondary btn-auto" onClick={() => closeReview(false)} disabled={reviewSaving}>Cancel</button>
+                                                <button className="btn-primary btn-auto" onClick={saveReview} disabled={reviewSaving}>{reviewSaving ? 'Saving...' : 'Save'}</button>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
 
                                 {listMsg && <div className="ok" style={{ marginBottom: '10px' }}>{listMsg}</div>}
                                 {invError && <div className="error" style={{ marginBottom: '10px' }}>{invError}</div>}
