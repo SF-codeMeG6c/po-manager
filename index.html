@@ -162,12 +162,12 @@ ${from || ''}`;
             { key: 'notes',   name: 'Customer Information & Contact Notes', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/notes/' },
             { key: 'extras',  name: 'Extras & Credits', roles: ['owner', 'admin', 'estimator', 'super'],     url: '/extras/' },
             { key: 'cost',    name: 'Job Cost',       roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/jobcost/' }, // everyone sees it (decided Oct 27)
+            { key: 'approve', name: 'Accounts Payable', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/ap/' }, // was "PO Approval - Coming soon" (Oct 30); in Job tools so Supers see it
             { key: 'stmt',    name: 'Statement',      url: null }
         ];
 
         // Reports across all jobs (not shown to Supers)
         const COMPANY_TOOLS = [
-            { key: 'approve', name: 'PO Approval',         url: null },
             { key: 'ar',      name: 'Accounts Receivable', url: null },
             { key: 'wip',     name: 'WIP',                 url: null }
         ];
