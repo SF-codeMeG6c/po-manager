@@ -1285,7 +1285,7 @@
         // The quote requests for one trade. The title and "+ New request" button show at the top of its worksheet
         // (headSlot); the edit box opens further down, under the Xactimate lines.
         function Requests({ line, ws, c, po, headSlot }) {
-            const { jobId, jobCode, me, requests, requestsError, templates, savedIds } = po;
+            const { jobId, jobCode, me, requests, requestsError, templates, savedIds, startLines } = po;
             const act = useRequestActions(po);            // this section only needs its message line and the request records
             const { note, setNote, reqRef } = act;
             const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
@@ -1394,10 +1394,11 @@
                 const f = {};
                 ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'scope'].forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
                 if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required to save a template.'); return; }
+                f.description = String(line.name || '').trim(); // the trade's description, shown in the template list
                 if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
                 const key = (t) => (t || '').trim().toLowerCase();
                 const old = (templates || []).find(t => key(t.subName) === key(f.subName) && key(t.category) === key(f.category));
-                if (old && !old.deleted && !window.confirm(`A template for ${old.category} | ${old.subName} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
+                if (old && !old.deleted && !window.confirm(`A template for ${tplLabel(old)} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
                 setBusy(true);
                 setNote('');
                 try {
@@ -1406,7 +1407,7 @@
                     // A deleted (hidden) template with the same sub and category comes back with these details
                     if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now, ...(old.deleted ? { deleted: false, restoredBy: me, restoredAt: now } : {}) });
                     else await db.collection('formLibrary').add({ ...f, userId: me.uid, contractAmount: '', dateCreated: now, dateUpdated: now });
-                    setNote(`Template ${old && !old.deleted ? 'updated' : 'saved'}: ${f.category} | ${f.subName}. The request itself is not saved until you click Save request.`);
+                    setNote(`Template ${old && !old.deleted ? 'updated' : 'saved'}: ${[f.category, f.description, f.subName].filter(Boolean).join(' - ')}. The request itself is not saved until you click Save request.`);
                 } catch (err) {
                     setNote('Error saving the template: ' + err.message);
                 }
@@ -1496,7 +1497,7 @@
             };
             // Delete a template = hide it (kept for records, with who and when); hidden ones show in neither Trades-EST nor PO Manager
             const deleteTemplate = async (t) => {
-                if (!window.confirm(`Delete template ${t.category} | ${t.subName}? It will no longer show in Trades-EST or PO Manager.`)) return;
+                if (!window.confirm(`Delete template ${tplLabel(t)}? It will no longer show in Trades-EST or PO Manager.`)) return;
                 setBusy(true);
                 try {
                     await db.collection('formLibrary').doc(t.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
@@ -1506,6 +1507,12 @@
                 }
                 setBusy(false);
             };
+            // Template list reads "Trade - Description - Vendor" (decided Oct 31). Description = the template's own (saved from the
+            // request's trade from now on), else the start list's name for that trade code, else left out.
+            const codeKey = (c) => String(c || '').toUpperCase().replace(/\s+/g, '');
+            const tplDesc = (t) => String(t.description || '').trim()
+                || String(((startLines || []).find(l => !l.deleted && codeKey(l.code) === codeKey(t.category)) || {}).name || '').trim();
+            const tplLabel = (t) => [t.category, tplDesc(t), t.subName].filter(x => String(x || '').trim()).join(' - ');
             const sortedTemplates = [...(templates || [])].filter(t => !t.deleted).sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
             const wsNow = draft ? wsAmount(draft.part) : 0;
             const byHand = draft ? whyByHand() : '';
@@ -1548,7 +1555,7 @@
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                                 <select value="" onChange={e => loadTemplate(e.target.value)} style={{ flex: 1 }}>
                                     <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved yet.'}</option>
-                                    {sortedTemplates.map(t => <option key={t.id} value={t.id}>{t.category} | {t.subName}</option>)}
+                                    {sortedTemplates.map(t => <option key={t.id} value={t.id}>{tplLabel(t)}</option>)}
                                 </select>
                                 <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', marginTop: 0 }} onClick={() => setTplDelete(!tplDelete)} disabled={!sortedTemplates.length}>{tplDelete ? 'Close list' : 'Delete a template'}</button>
                             </div>
@@ -1557,6 +1564,7 @@
                                     {sortedTemplates.length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates saved yet.</div> : sortedTemplates.map(t => (
                                         <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
                                             <span style={{ width: '90px' }}>{t.category}</span>
+                                            <span style={{ flex: 1 }}>{tplDesc(t)}</span>
                                             <span style={{ flex: 1 }}>{t.subName}</span>
                                             <button type="button" className="btn-x" style={{ marginTop: 0 }} onClick={() => deleteTemplate(t)} disabled={busy}>Delete</button>
                                         </div>
@@ -2611,7 +2619,7 @@
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
             // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
             const po = {
-                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates,
+                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates, startLines,
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
