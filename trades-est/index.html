@@ -842,7 +842,11 @@
         // back to Pending starts it again.
         const partOf = (l, r) => l.method === 'allowance' ? (r.part === 'material' ? 'material' : 'labor') : '';
         // The amount (as text) a PO should have, or null when it does not follow
+        // Nov 1 (decided, option b): PO amounts no longer follow the worksheet. A PO keeps the amount it was made with (from the
+        // start-list template) or what is typed on it. followAmount always answers null, so job Save and back-to-Pending move nothing.
+        const FOLLOW_WORKSHEET = false;
         const followAmount = (r, lines, requests) => {
+            if (!FOLLOW_WORKSHEET) return null;
             if (!r || r.deleted || r.status === 'Complete') return null;
             const l = (lines || []).find(x => x.id === r.lineId && !x.deleted);
             if (!l || !hasWorksheet(l.method)) return null;
@@ -1176,7 +1180,7 @@
                                             ))}
                                         </td>
                                         <td style={{ whiteSpace: 'nowrap' }}>
-                                            <button className="btn-secondary btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => act.preview(r)} disabled={!!act.previewId}>{act.previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
+                                            <button className="btn-blue btn-sm" title="Build the form and open it in a new tab. Nothing is sent." onClick={() => act.preview(r)} disabled={!!act.previewId}>{act.previewId === r.id ? 'Building...' : 'Preview'}</button>{' '}
                                             <button className="btn-secondary btn-sm" onClick={() => onEdit(r)} disabled={lk} title={fzTip || (lock ? 'Save or cancel the request that is open first.' : '')} style={fz ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}>Edit</button>{' '}
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
                                             <button className="btn-x" onClick={() => act.hide(r)} disabled={lk} title={fzTip} style={fz ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}>Delete</button>
@@ -1290,7 +1294,7 @@
         // The quote requests for one trade. The title and "+ New request" button show at the top of its worksheet
         // (headSlot); the edit box opens further down, under the Xactimate lines.
         function Requests({ line, ws, c, po, headSlot }) {
-            const { jobId, jobCode, me, requests, requestsError, templates, savedIds, startLines } = po;
+            const { jobId, jobCode, me, requests, requestsError, templates, savedIds, startLines, vendors } = po;
             const act = useRequestActions(po);            // this section only needs its message line and the request records
             const { note, setNote, reqRef } = act;
             const [draft, setDraft] = useState(null);     // request on screen: its fields + id ('' = new)
@@ -1298,7 +1302,6 @@
             const [listening, setListening] = useState(false);
             const recRef = React.useRef(null);
             const scopeRef = React.useRef(null);
-            const [tplDelete, setTplDelete] = useState(false); // "Delete a template" list open
             const [fit, setFit] = useState(null);         // scope counter: { left, right, per, fits } from POForm.scopeFit
             const scopeNow = draft ? draft.scope : null;
             useEffect(() => {
@@ -1319,15 +1322,21 @@
             const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
 
             const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
+            // The line's template PO (decided Oct 31): saved on the job's line, or (jobs started before) the start list's line
+            const tplPO = line.po || ((findStart(startLines, line) || {}).po) || null;
             const startNew = () => {
                 // Allowance: the second request starts on material when labor already has one
                 const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
+                const t = tplPO || {};
+                const kind = KINDS.some(k => k[0] === t.kind) ? t.kind : kindFor(line.method);
+                const fixed = n(t.amount) > 0 ? amountText(n(t.amount)) : '';
                 setDraft({
-                    id: '', subName: wsVendor(part), contact: '', phone: '', email: '', subCode: '', category: (line.code || '').trim(),
-                    kind: kindFor(line.method), part, contractAmount: amountText(wsAmount(part)), scope: withFirstLine('', kindFor(line.method)),
+                    id: '', subName: vName(t) || wsVendor(part), contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
+                    category: String(t.category || line.code || '').trim(),
+                    kind, part, contractAmount: fixed || amountText(wsAmount(part)), scope: withFirstLine(t.scope || '', kind),
                     attachments: []
                 });
-                setNote('');
+                setNote(tplPO ? '' : 'This line has no template PO yet. Set one in Edit start list (PO button).');
             };
             const startEdit = (r) => {
                 const d = { id: r.id };
@@ -1352,16 +1361,15 @@
                 po.clearJump();
             }, [po.jump, requests === null]);
             const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
-            const loadTemplate = (id) => {
-                const t = (templates || []).find(x => x.id === id && !x.deleted);
-                if (!t) return;
-                const body = (t.scope || '').replace(REQUEST_FIRST_LINE, '').trim(); // templates saved here already carry the first line
-                const typed = (draft.scope || '').replace(REQUEST_FIRST_LINE, '').trim();
-                const swap = body && (!typed || window.confirm("Replace the scope wording with this template's wording?"));
-                setDraft(d => ({
-                    ...d, subName: t.subName || '', contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '',
-                    scope: swap ? withFirstLine(body, d.kind) : d.scope
-                }));
+            const vendorOpts = vendorChoices(vendors, templates);
+            const pickVendor = (name) => {
+                const v = vendorOpts.find(x => x.subName === name);
+                if (v) setDraft(d => ({ ...d, subName: v.subName, contact: v.contact, phone: v.phone, email: v.email, subCode: v.subCode }));
+            };
+            const saveVendor = async () => {
+                setBusy(true); setNote('');
+                try { setNote(await saveVendorToList(vendors, draft, me)); } catch (err) { setNote('Error saving the vendor: ' + err.message); }
+                setBusy(false);
             };
 
             // Attachments: new ones are { name, type, file } until Save request stores them; saved ones are { name, type, url }
@@ -1393,32 +1401,6 @@
                 return out;
             };
 
-            // Save this vendor to PO Manager's template list (company-wide). Does not save the request.
-            // The scope wording goes with it, first line included: templates are where estimating starts.
-            const saveTemplate = async () => {
-                const f = {};
-                ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'scope'].forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
-                if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required to save a template.'); return; }
-                f.description = String(line.name || '').trim(); // the trade's description, shown in the template list
-                if (!f.scope.includes(REQUEST_FIRST_LINE)) f.scope = (REQUEST_FIRST_LINE + '\n\n' + f.scope).trim();
-                const key = (t) => (t || '').trim().toLowerCase();
-                const old = (templates || []).find(t => key(t.subName) === key(f.subName) && key(t.category) === key(f.category));
-                if (old && !old.deleted && !window.confirm(`A template for ${tplLabel(old)} is already saved. Replace its vendor details and scope wording with what is on this request?`)) return;
-                setBusy(true);
-                setNote('');
-                try {
-                    const now = new Date();
-                    // An existing template keeps its amount; a new one starts with none (a request's amount belongs to one job)
-                    // A deleted (hidden) template with the same sub and category comes back with these details
-                    if (old) await db.collection('formLibrary').doc(old.id).update({ ...f, dateUpdated: now, ...(old.deleted ? { deleted: false, restoredBy: me, restoredAt: now } : {}) });
-                    else await db.collection('formLibrary').add({ ...f, userId: me.uid, contractAmount: '', dateCreated: now, dateUpdated: now });
-                    setNote(`Template ${old && !old.deleted ? 'updated' : 'saved'}: ${[f.category, f.description, f.subName].filter(Boolean).join(' - ')}. The request itself is not saved until you click Save request.`);
-                } catch (err) {
-                    setNote('Error saving the template: ' + err.message);
-                }
-                setBusy(false);
-            };
-
             // Voice to text into the scope box (Chrome or Edge)
             const toggleVoice = () => {
                 if (listening) { stopVoice(); return; }
@@ -1446,6 +1428,7 @@
 
             // Does the request on screen take its amount from the worksheet? '' = yes; otherwise why it is typed by hand
             const whyByHand = () => {
+                if (!FOLLOW_WORKSHEET) return 'typed';
                 const status = draft.id ? ((mine.find(r => r.id === draft.id) || {}).status || 'Pending') : 'Pending';
                 if (status === 'Complete') return 'This PO is Complete, so its amount no longer follows the worksheet.';
                 const part = partOf(line, draft);
@@ -1500,25 +1483,6 @@
                 }
                 setBusy(false);
             };
-            // Delete a template = hide it (kept for records, with who and when); hidden ones show in neither Trades-EST nor PO Manager
-            const deleteTemplate = async (t) => {
-                if (!window.confirm(`Delete template ${tplLabel(t)}? It will no longer show in Trades-EST or PO Manager.`)) return;
-                setBusy(true);
-                try {
-                    await db.collection('formLibrary').doc(t.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
-                    setNote(`Template deleted: ${t.category} | ${t.subName}.`);
-                } catch (err) {
-                    setNote('Error deleting the template: ' + err.message);
-                }
-                setBusy(false);
-            };
-            // Template list reads "Trade - Description - Vendor" (decided Oct 31). Description = the template's own (saved from the
-            // request's trade from now on), else the start list's name for that trade code, else left out.
-            const codeKey = (c) => String(c || '').toUpperCase().replace(/\s+/g, '');
-            const tplDesc = (t) => String(t.description || '').trim()
-                || String(((startLines || []).find(l => !l.deleted && codeKey(l.code) === codeKey(t.category)) || {}).name || '').trim();
-            const tplLabel = (t) => [t.category, tplDesc(t), t.subName].filter(x => String(x || '').trim()).join(' - ');
-            const sortedTemplates = [...(templates || [])].filter(t => !t.deleted).sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''));
             const wsNow = draft ? wsAmount(draft.part) : 0;
             const byHand = draft ? whyByHand() : '';
             const radio = { display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'normal', margin: 0, color: '#333', cursor: 'pointer' };
@@ -1556,26 +1520,15 @@
                             <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>{draft.kind === 'none' ? 'This PO is not sent, so it has no REQUEST FOR PRICING line.' : 'The first line stays on every request and comes off at the handoff to PO Manager.'}</div>
                         </div>
                         <div className="form-group">
-                            <label>Load vendor from a template</label>
+                            <label>Change vendor (only if needed)</label>
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <select value="" onChange={e => loadTemplate(e.target.value)} style={{ flex: 1 }}>
-                                    <option value="">{templates === null ? 'Loading...' : sortedTemplates.length ? '-- Pick a template --' : 'No templates saved yet.'}</option>
-                                    {sortedTemplates.map(t => <option key={t.id} value={t.id}>{tplLabel(t)}</option>)}
+                                <select value="" onChange={e => pickVendor(e.target.value)} style={{ flex: 1 }}>
+                                    <option value="">{vendorOpts.length ? '-- Pick a vendor --' : 'No vendors saved yet.'}</option>
+                                    {vendorOpts.map(v => <option key={v.subName} value={v.subName}>{v.subName}{v.contact ? ' · ' + v.contact : ''}</option>)}
                                 </select>
-                                <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', marginTop: 0 }} onClick={() => setTplDelete(!tplDelete)} disabled={!sortedTemplates.length}>{tplDelete ? 'Close list' : 'Delete a template'}</button>
+                                <button type="button" className="btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', marginTop: 0 }} onClick={saveVendor} disabled={busy}>Save vendor to list</button>
                             </div>
-                            {tplDelete && (
-                                <div style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '6px 8px', marginTop: '6px', maxHeight: '240px', overflowY: 'auto', background: '#fafafa' }}>
-                                    {sortedTemplates.length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates saved yet.</div> : sortedTemplates.map(t => (
-                                        <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #eee', fontSize: '13px' }}>
-                                            <span style={{ width: '90px' }}>{t.category}</span>
-                                            <span style={{ flex: 1 }}>{tplDesc(t)}</span>
-                                            <span style={{ flex: 1 }}>{t.subName}</span>
-                                            <button type="button" className="btn-x" style={{ marginTop: 0 }} onClick={() => deleteTemplate(t)} disabled={busy}>Delete</button>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>Changes only the vendor name and contact information. The scope stays.</div>
                         </div>
                         <div className="req-grid">
                             <div><label>Subcontractor</label><input value={draft.subName} onChange={e => setF('subName', e.target.value)} /></div>
@@ -1604,7 +1557,7 @@
                                 ? <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
                                 : <input className="num" style={{ width: '130px', background: '#f0f0f0' }} value={amountText(wsNow)} disabled title="From the worksheet" />}
                             <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : 'The sub sees this as the Contract Amount.'}</span>
-                            <span style={{ fontSize: '13px', color: '#666' }}>{byHand || 'Follows the worksheet until this PO is marked Complete.'}</span>
+                            {FOLLOW_WORKSHEET && <span style={{ fontSize: '13px', color: '#666' }}>{byHand || 'Follows the worksheet until this PO is marked Complete.'}</span>}
                             {byHand && wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
                                 <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
                                 <button className="btn-secondary btn-sm" onClick={() => setF('contractAmount', amountText(wsNow))}>Use it</button>
@@ -1631,7 +1584,6 @@
                         <div className="inline">
                             <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
                             <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={closeDraft} disabled={busy}>Cancel</button>
-                            <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={saveTemplate} disabled={busy || templates === null} title="Add this vendor and scope wording to the template list used here and in PO Manager">Save vendor as template</button>
                             {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>Saving takes the next PO number on this job.</span>}
                         </div>
                     </div>
@@ -2187,6 +2139,23 @@
             (vendors || []).filter(v => !v.deleted && vName(v)).forEach(v => by.set(vName(v).toLowerCase(), { id: v.id, subName: vName(v), contact: v.contact || '', phone: v.phone || '', email: v.email || '', subCode: v.subCode || '', from: 'list' }));
             return [...by.values()].sort((a, b) => a.subName.localeCompare(b.subName));
         };
+        // Save a vendor (name and contact information) to the Pick a vendor list. Returns the message to show.
+        const saveVendorToList = async (vendors, src, me) => {
+            const v = {};
+            PO_VENDOR.forEach(([k]) => { v[k] = String(src[k] || '').trim(); });
+            if (!v.subName) return 'Error: type the Subcontractor name first.';
+            const old = (vendors || []).find(x => !x.deleted && vName(x).toLowerCase() === v.subName.toLowerCase());
+            if (old && !window.confirm(`${old.subName} is already on the vendor list. Replace its contact information with what is here?`)) return '';
+            const now = new Date();
+            if (old) {
+                const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null };
+                PO_VENDOR.forEach(([k]) => { prev[k] = old[k] || ''; });
+                await db.collection('vendors').doc(old.id).update({ ...v, updatedAt: now, updatedBy: me, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+            } else {
+                await db.collection('vendors').add({ ...v, createdAt: now, createdBy: me, updatedAt: now, updatedBy: me, deleted: false });
+            }
+            return `${v.subName} ${old ? 'updated on' : 'saved to'} the vendor list.`;
+        };
         const blankPO = (line) => ({ subName: '', contact: '', phone: '', email: '', subCode: '', category: line.code || '', kind: 'ask', amount: '', scope: '' });
 
         function StartPO({ line, onChange, vendors, templates, me }) {
@@ -2234,23 +2203,8 @@
             };
             // Save the vendor typed here to the Pick a vendor list (name and contact information only)
             const saveVendor = async () => {
-                const v = {};
-                PO_VENDOR.forEach(([k]) => { v[k] = String(t[k] || '').trim(); });
-                if (!v.subName) { setNote('Error: type the Subcontractor name first.'); return; }
-                const old = (vendors || []).find(x => !x.deleted && vName(x).toLowerCase() === v.subName.toLowerCase());
-                if (old && !window.confirm(`${old.subName} is already on the vendor list. Replace its contact information with what is here?`)) return;
                 setBusy(true); setNote('');
-                try {
-                    const now = new Date();
-                    if (old) {
-                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null };
-                        PO_VENDOR.forEach(([k]) => { prev[k] = old[k] || ''; });
-                        await db.collection('vendors').doc(old.id).update({ ...v, updatedAt: now, updatedBy: me, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
-                    } else {
-                        await db.collection('vendors').add({ ...v, createdAt: now, createdBy: me, updatedAt: now, updatedBy: me, deleted: false });
-                    }
-                    setNote(`${v.subName} ${old ? 'updated on' : 'saved to'} the vendor list.`);
-                } catch (err) { setNote('Error saving the vendor: ' + err.message); }
+                try { setNote(await saveVendorToList(vendors, t, me)); } catch (err) { setNote('Error saving the vendor: ' + err.message); }
                 setBusy(false);
             };
             const preview = async () => {
@@ -2304,7 +2258,7 @@
                         </div>
                     )}
                     <div className="inline" style={{ marginTop: '8px' }}>
-                        <button type="button" className="btn-secondary btn-sm" style={{ marginTop: 0 }} onClick={preview}>Preview</button>
+                        <button type="button" className="btn-blue btn-sm" style={{ marginTop: 0 }} onClick={preview}>Preview</button>
                         <span style={{ fontSize: '12px', color: '#888' }}>Saved with the start list when you click Save start list.</span>
                     </div>
                     {note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: note.startsWith('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
@@ -2790,7 +2744,7 @@
             const visibleJobs = jobs.filter(j => showArchived || j.archived !== true);
             // What a trade's quote requests need. savedIds = trades in the saved trade list (a request can only hang on one of those).
             const po = {
-                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates, startLines,
+                jobId, jobCode: job ? job.code || '' : '', job, superPick, me, isAdmin: canRestore, requests, requestsError, templates, startLines, vendors,
                 savedIds: new Set(((record && record.lines) || []).map(l => l.id)),
                 savedLines: new Map(((record && record.lines) || []).map(l => [l.id, l])),
                 jump, clearJump: () => setJump(null), editRequest: (r) => setJump({ lineId: r.lineId, requestId: r.id }),
