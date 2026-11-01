@@ -877,7 +877,14 @@
         // (board up, temp items, demo). One PO goes to PO Manager as CES right away; the Super sends it from there.
         // It locks here for good: the full handoff skips it and Unlock does not reopen it, so the Super's changes are never overwritten.
         // Owner, Admin and Estimator (everyone who uses Trades-EST).
-        const earlyTrade = (r) => { const c = String((r && (r.tradeCode || r.category)) || '').toUpperCase().replace(/\s+/g, ''); return c.startsWith('TMP') || c === 'DMO#1'; };
+        // Nov 1: the start list now has interior demo as "DMO" + "Interior" (renamed for QuickBooks); "DMO #1" kept for older jobs
+        const earlyTrade = (r) => {
+            const c = String((r && (r.tradeCode || r.category)) || '').toUpperCase().replace(/\s+/g, '');
+            return c.startsWith('TMP') || c === 'DMO#1' || (c === 'DMO' && /interior/i.test(String((r && r.tradeName) || '')));
+        };
+        // PO numbers are taken when a PO is first marked Complete (decided Oct 31). Until then it shows this label.
+        const poLabel = (r) => (r && r.poNumber) || 'PO (no number yet)';
+        const byPoNumber = (a, b) => (a.poNumber || '~').localeCompare(b.poNumber || '~');
         const handoffKey = (r) => JSON.stringify([...REQ_FIELDS.map(k => String(r[k] == null ? '' : r[k])), r.notes || '', attKey(r.attachments)]);
 
         // Scope box helpers (same behavior as PO Manager): capitalize line starts, put spoken text at the cursor
@@ -930,13 +937,13 @@
             // Replies go to the job's estimator, or to whoever clicks this when none is picked (the function decides and reports back).
             const send = async (r) => {
                 if (!r.email || frozen(r)) return;
-                if (r.kind === 'none') { setNote(`Error: ${r.poNumber} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
+                if (r.kind === 'none') { setNote(`Error: ${poLabel(r)} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
                 if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
                 const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
-                if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${r.poNumber} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
+                if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${poLabel(r)} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
                 const ask = r.lastEmail
-                    ? `Already sent on ${fmtTime(r.lastEmail.sentAt)} to ${r.lastEmail.to}. Send ${r.poNumber} again to ${r.email}?`
-                    : `Send ${r.poNumber} for pricing to ${r.subName} at ${r.email}?`;
+                    ? `Already sent on ${fmtTime(r.lastEmail.sentAt)} to ${r.lastEmail.to}. Send ${poLabel(r)} again to ${r.email}?`
+                    : `Send ${poLabel(r)} for pricing to ${r.subName} at ${r.email}?`;
                 if (!window.confirm(ask)) return;
                 setSendingId(r.id);
                 setNote('');
@@ -958,7 +965,7 @@
                     // What was sent is this saved version: an edit after this shows "Changed since sent"
                     await reqRef(r.id).update({ sentUpdatedAt: r.updatedAt || null });
                     const toMe = !reply.replyTo || reply.replyTo.toLowerCase() === ((auth.currentUser && auth.currentUser.email) || '').toLowerCase();
-                    setNote(`Request ${r.poNumber} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
+                    setNote(`Request ${poLabel(r)} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
                 } catch (err) {
                     setNote('Error sending the request: ' + err.message);
                 }
@@ -1036,16 +1043,16 @@
             // Delete hides the request (kept for records); Owner/Admin can restore it
             const hide = async (r) => {
                 if (frozen(r)) return;
-                if (!window.confirm(`Delete request ${r.poNumber}? It will be hidden from the list. The record is kept.`)) return;
+                if (!window.confirm(`Delete request ${poLabel(r)}? It will be hidden from the list. The record is kept.`)) return;
                 try {
                     await reqRef(r.id).update({ deleted: true, deletedBy: me, deletedAt: new Date() });
-                    setNote(`Request ${r.poNumber} deleted.`);
+                    setNote(`Request ${poLabel(r)} deleted.`);
                 } catch (err) { setNote('Error deleting the request: ' + err.message); }
             };
             const restore = async (r) => {
                 try {
                     await reqRef(r.id).update({ deleted: false, restoredBy: me, restoredAt: new Date() });
-                    setNote(`Request ${r.poNumber} restored.`);
+                    setNote(`Request ${poLabel(r)} restored.`);
                 } catch (err) { setNote('Error restoring the request: ' + err.message); }
             };
 
@@ -1058,6 +1065,21 @@
                     // Back to Pending: the amount follows the saved worksheet again
                     const amount = status === 'Pending' && po && po.follow ? po.follow({ ...r, status }) : null;
                     if (amountDiffers(r, amount)) Object.assign(data, followUpdate(r, amount, me, now));
+                    if (status === 'Complete' && !r.poNumber) {
+                        // First time Complete: take the next PO number from the job's counter (the one PO Manager uses), in one step
+                        const jobRef = db.collection('jobs').doc(jobId);
+                        const num = await db.runTransaction(async tx => {
+                            const snap = await tx.get(jobRef);
+                            if (!snap.exists) throw new Error('Job not found.');
+                            const next = (snap.data().poCounter || 0) + 1;
+                            const n3 = `${snap.data().code || jobCode}-${String(next).padStart(3, '0')}`;
+                            tx.update(jobRef, { poCounter: next });
+                            tx.update(reqRef(r.id), { ...data, poNumber: n3, poNumberAt: now, poNumberBy: me });
+                            return n3;
+                        });
+                        setNote(`Complete. PO number ${num}.`);
+                        return;
+                    }
                     await reqRef(r.id).update(data);
                     setNote('');
                 } catch (err) { setNote('Error saving the status: ' + err.message); }
@@ -1156,7 +1178,7 @@
                                     <tr>
                                         <td>
                                             <div>{titleOf(r)}</div>
-                                            <div style={{ marginTop: '2px' }}><span className="po-num">{r.poNumber}</span> <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
+                                            <div style={{ marginTop: '2px' }}>{r.poNumber ? <span className="po-num">{r.poNumber}</span> : <span style={{ color: '#888', fontStyle: 'italic' }}>No PO # yet (given when marked Complete)</span>} <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
                                             {r.handedOffAt && (
                                                 <div style={{ fontSize: '11px', marginTop: '2px', fontWeight: 600, color: '#388e3c' }}>
@@ -1237,7 +1259,7 @@
                         })}
                     </tbody>
                 </table>
-                {noteFor && <NoteModal title={`${noteFor.poNumber} · ${titleOf(noteFor)}`} start={noteFor.notes || ''} onSave={text => act.saveNotes(noteFor, text)} onClose={() => setNoteId(null)} />}
+                {noteFor && <NoteModal title={`${poLabel(noteFor)} · ${titleOf(noteFor)}`} start={noteFor.notes || ''} onSave={text => act.saveNotes(noteFor, text)} onClose={() => setNoteId(null)} />}
             </>);
         }
 
@@ -1248,7 +1270,7 @@
                     <tbody>
                         {rows.map(r => (
                             <tr key={r.id} className="gone">
-                                <td style={{ width: '150px' }}>{r.poNumber}</td>
+                                <td style={{ width: '150px' }}>{poLabel(r)}</td>
                                 <td>{r.category} | {r.subName}</td>
                                 <td>Deleted by {r.deletedBy ? r.deletedBy.name : ''} {fmtDay(r.deletedAt)}</td>
                                 <td style={{ width: '80px' }}><button className="btn-secondary btn-sm" onClick={() => act.restore(r)}>Restore</button></td>
@@ -1265,7 +1287,7 @@
             const act = useRequestActions(po);
             // Editing happens in the trade's worksheet, where the pricing is: open it with this request ready to edit
             const edit = (r) => {
-                if (!line) { act.setNote(`Error: the trade for ${r.poNumber} is no longer on the trade list. Restore the trade to edit this request.`); return; }
+                if (!line) { act.setNote(`Error: the trade for ${poLabel(r)} is no longer on the trade list. Restore the trade to edit this request.`); return; }
                 if (!hasWorksheet(line.method)) { act.setNote(`Error: ${line.code} has no Method picked, so its worksheet cannot open. Pick a Method on that trade, then click Edit again.`); return; }
                 act.setNote('');
                 po.editRequest(r);
@@ -1314,7 +1336,7 @@
 
             const isAllow = line.method === 'allowance';
             const saved = savedIds.has(line.id);          // the trade is in the saved trade list
-            const mine = (requests || []).filter(r => r.lineId === line.id).sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+            const mine = (requests || []).filter(r => r.lineId === line.id).sort(byPoNumber);
             const live = mine.filter(r => !r.deleted);
             // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
             const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
@@ -1448,23 +1470,13 @@
                 try {
                     const now = new Date();
                     if (!draft.id) {
-                        f.attachments = await storeFiles(draft.attachments); // files first: if one fails, no PO number is used
-                        // New: take the next PO number from the job's counter (the one PO Manager uses) and save, as one step
-                        const jobRef = db.collection('jobs').doc(jobId);
-                        const ref = reqRef();
-                        const poNumber = await db.runTransaction(async tx => {
-                            const snap = await tx.get(jobRef);
-                            if (!snap.exists) throw new Error('Job not found.');
-                            const next = (snap.data().poCounter || 0) + 1;
-                            const num = `${snap.data().code || jobCode}-${String(next).padStart(3, '0')}`;
-                            tx.update(jobRef, { poCounter: next });
-                            tx.set(ref, {
-                                ...f, lineId: line.id, tradeCode: line.code || '', tradeName: line.name || '', poNumber: num,
-                                status: 'Pending', deleted: false, createdBy: me, createdAt: now, updatedBy: me, updatedAt: now
-                            });
-                            return num;
+                        f.attachments = await storeFiles(draft.attachments);
+                        // New (decided Oct 31): saved with no PO number; the number is taken when it is first marked Complete
+                        await reqRef().set({
+                            ...f, lineId: line.id, tradeCode: line.code || '', tradeName: line.name || '', poNumber: '',
+                            status: 'Pending', deleted: false, createdBy: me, createdAt: now, updatedBy: me, updatedAt: now
                         });
-                        setNote(`Request saved as ${poNumber}.`);
+                        setNote('Request saved. It gets its PO number when you mark it Complete.');
                     } else {
                         const old = mine.find(r => r.id === draft.id);
                         if (!old) throw new Error('This request is no longer on the list.');
@@ -1475,7 +1487,7 @@
                         const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me, attachments: old.attachments || [] };
                         REQ_FIELDS.forEach(k => { prev[k] = old[k] || ''; });
                         await reqRef(draft.id).update({ ...f, updatedBy: me, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
-                        setNote(`Request ${old.poNumber} saved. The earlier version is kept.`);
+                        setNote(`Request ${poLabel(old)} saved. The earlier version is kept.`);
                     }
                     setDraft(null);
                 } catch (err) {
@@ -1503,7 +1515,7 @@
                 {headSlot && ReactDOM.createPortal(head, headSlot)}
                 {draft && (
                     <div className="req" id="req-editor">
-                        <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}` : 'New request'}</div>
+                        <div style={{ fontWeight: 700, marginBottom: '10px' }}>{draft.id ? `Edit request ${(mine.find(r => r.id === draft.id) || {}).poNumber || ''}`.trim() : 'New request'}</div>
                         {/* Scope first: the box sits right under the Xactimate lines, so they are on screen while the scope is written */}
                         <div className="form-group">
                             <label>Scope of Work
@@ -1584,7 +1596,7 @@
                         <div className="inline">
                             <button className="btn-primary" style={{ width: 'auto', marginTop: 0, padding: '8px 18px' }} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save request'}</button>
                             <button className="btn-secondary" style={{ padding: '8px 18px' }} onClick={closeDraft} disabled={busy}>Cancel</button>
-                            {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>Saving takes the next PO number on this job.</span>}
+                            {!draft.id && <span style={{ fontSize: '13px', color: '#666' }}>The PO number is given when the PO is marked Complete.</span>}
                         </div>
                     </div>
                 )}
@@ -2291,7 +2303,7 @@
             // Status tags (job trade list only): from the saved trade list and the job's requests
             const tags = worksheets && po;
             // The job's POs: each trade's go under its row; ones whose trade was taken off the list get their own group
-            const allReqs = tags ? [...(po.requests || [])].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || '')) : [];
+            const allReqs = tags ? [...(po.requests || [])].sort(byPoNumber) : [];
             const liveReqs = allReqs.filter(r => !r.deleted), goneReqs = allReqs.filter(r => r.deleted);
             const reqsOf = (l) => liveReqs.filter(r => r.lineId === l.id);
             const statusOf = {};
@@ -2766,12 +2778,13 @@
                 const complete = live.filter(r => r.status === 'Complete');
                 const toAdd = complete.filter(r => !r.handedOffAt);
                 const toUpdate = complete.filter(r => r.handedOffAt && !r.earlyHandoff && handoffKey(r) !== r.handedOffKey); // early POs belong to PO Manager
-                const work = [...toAdd, ...toUpdate].sort((a, b) => (a.poNumber || '').localeCompare(b.poNumber || ''));
+                const work = [...toAdd, ...toUpdate].sort(byPoNumber);
                 const label = (r) => `${r.category || r.tradeCode || ''} ${r.poNumber || ''}`.trim();
                 // Checks: nothing moves unless all of them pass
                 const missing = [];
                 if (!superPick) missing.push('The job has no Super. Set it on Customer Information.');
                 work.forEach(r => { if (!(n(r.contractAmount) > 0)) missing.push(`${label(r)} has no amount.`); });
+                work.forEach(r => { if (!r.poNumber) missing.push(`${label(r)} has no PO number. Mark it Pending, then Complete again.`); });
                 if (missing.length) { setHandoffNote('Error: nothing was handed off. ' + missing.join(' ')); return; }
                 const leftBehind = requests.filter(r => r.handedOffAt && !r.earlyHandoff && (r.deleted || r.status !== 'Complete'));
                 const total = work.reduce((t, r) => t + n(r.contractAmount), 0);
