@@ -55,6 +55,10 @@
         .ws table { background: white; }
         .ws .sub-title:first-child { margin-top: 0; }
         .req { background: white; border: 1px solid #ccc; border-radius: 6px; padding: 14px; margin-top: 10px; }
+        .tpl-sum { font-size: 12px; color: #0052a3; margin-top: 3px; }
+        .tpl-box { background: #f7f9fc; border: 1px solid #dde3ea; border-radius: 6px; padding: 10px 12px; }
+        .tpl-head { font-weight: 600; font-size: 13px; color: #333; margin-bottom: 8px; }
+        .tpl-head span { font-weight: 400; color: #888; font-size: 12px; margin-left: 8px; }
         .req-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
         .track td { vertical-align: top; padding: 8px 6px; border-bottom: 1px solid #eee; }
         .track tr:hover td { background: #fafafa; }
@@ -238,6 +242,7 @@
         const jobItems = (items) => (items || []).filter(i => (i.name || '').trim()).map(i => ({ id: newId(), name: i.name, price: i.price || '', qty: '', note: '' }));
         const copyStart = (start) => sortLines(start.filter(l => !l.deleted).map(l => {
             const line = { id: newId(), startId: l.id, code: l.code, name: l.name, method: l.method || '' };
+            if (l.po) line.po = { ...l.po }; // the line's template PO: + New request on the job starts from it
             if (l.method === 'calculator' && l.items && l.items.length) line.ws = { citems: jobItems(l.items) };
             if (l.method === 'allowance' && (l.defSf || l.defSl)) line.ws = { defSf: l.defSf || DEFAULT_SPLIT, defSl: l.defSl || DEFAULT_LABOR_PCT };
             return line;
@@ -2168,9 +2173,154 @@
 
         // Editable list of trades. Used for a job's list and for the start list.
         // worksheets = true on a job (Open button and pricing worksheet); false on the start list
-        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po }) {
+        // ---------- Template PO per start-list line (decided Oct 31) ----------
+        // Edit start list is where the template POs are made: one line = one PO (DMO Trailer Load #1-#6 = six lines).
+        // A line's PO: vendor (subName, contact, phone, email, subCode), category, kind, amount (only for a fixed price),
+        // scope (no REQUEST FOR PRICING line; it is added on requests sent for pricing). Attachments are added on the job.
+        // A new job copies each line's PO; + New request on the job starts from it (step 2).
+        // The vendor list (Pick a vendor) = saved vendors (vendors collection) plus the vendors on the old templates, one per name.
+        const PO_VENDOR = [['subName', 'Subcontractor'], ['contact', 'Contact'], ['phone', 'Phone'], ['email', 'Email'], ['subCode', 'Sub Code']];
+        const vName = (x) => String((x && x.subName) || '').trim();
+        const vendorChoices = (vendors, templates) => {
+            const by = new Map();
+            (templates || []).filter(t => !t.deleted && vName(t)).forEach(t => { const k = vName(t).toLowerCase(); if (!by.has(k)) by.set(k, { subName: vName(t), contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '', from: 'template' }); });
+            (vendors || []).filter(v => !v.deleted && vName(v)).forEach(v => by.set(vName(v).toLowerCase(), { id: v.id, subName: vName(v), contact: v.contact || '', phone: v.phone || '', email: v.email || '', subCode: v.subCode || '', from: 'list' }));
+            return [...by.values()].sort((a, b) => a.subName.localeCompare(b.subName));
+        };
+        const blankPO = (line) => ({ subName: '', contact: '', phone: '', email: '', subCode: '', category: line.code || '', kind: 'ask', amount: '', scope: '' });
+
+        function StartPO({ line, onChange, vendors, templates, me }) {
+            const t = { ...blankPO(line), ...(line.po || {}) };
+            const [note, setNote] = useState('');
+            const [busy, setBusy] = useState(false);
+            const [listening, setListening] = useState(false);
+            const [fit, setFit] = useState(null);
+            const recRef = React.useRef(null);
+            const scopeRef = React.useRef(null);
+            const choices = vendorChoices(vendors, templates);
+            const set = (k, v) => onChange({ ...t, [k]: v });
+            const setMany = (o) => onChange({ ...t, ...o });
+            const fullScope = withFirstLine(t.scope, t.kind);
+            useEffect(() => {
+                if (!window.POForm || !window.POForm.scopeFit) { setFit(null); return; }
+                let live = true;
+                const tm = setTimeout(() => { window.POForm.scopeFit(fullScope).then(f => { if (live) setFit(f); }).catch(() => { if (live) setFit(null); }); }, 150);
+                return () => { live = false; clearTimeout(tm); };
+            }, [fullScope]);
+            const stopVoice = () => { if (recRef.current) recRef.current.stop(); recRef.current = null; setListening(false); };
+            useEffect(() => () => { if (recRef.current) recRef.current.stop(); }, []);
+            const toggleVoice = () => {
+                if (listening) { stopVoice(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setNote('Error: voice input is not supported in this browser (use Chrome or Edge).'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let text = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) text += e.results[i][0].transcript;
+                    const el = scopeRef.current;
+                    if (!text.trim() || !el) return;
+                    const { value, pos } = insertAtCursor(el, text.trim());
+                    set('scope', value);
+                    setTimeout(() => { el.focus(); el.setSelectionRange(pos, pos); }, 0);
+                };
+                rec.onerror = (e) => setNote('Error: voice input stopped (' + e.error + ').');
+                rec.onend = () => { setListening(false); recRef.current = null; };
+                recRef.current = rec; rec.start(); setListening(true);
+            };
+            const pickVendor = (name) => {
+                const v = choices.find(x => x.subName === name);
+                if (v) { setMany({ subName: v.subName, contact: v.contact, phone: v.phone, email: v.email, subCode: v.subCode }); setNote(''); }
+            };
+            // Save the vendor typed here to the Pick a vendor list (name and contact information only)
+            const saveVendor = async () => {
+                const v = {};
+                PO_VENDOR.forEach(([k]) => { v[k] = String(t[k] || '').trim(); });
+                if (!v.subName) { setNote('Error: type the Subcontractor name first.'); return; }
+                const old = (vendors || []).find(x => !x.deleted && vName(x).toLowerCase() === v.subName.toLowerCase());
+                if (old && !window.confirm(`${old.subName} is already on the vendor list. Replace its contact information with what is here?`)) return;
+                setBusy(true); setNote('');
+                try {
+                    const now = new Date();
+                    if (old) {
+                        const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null };
+                        PO_VENDOR.forEach(([k]) => { prev[k] = old[k] || ''; });
+                        await db.collection('vendors').doc(old.id).update({ ...v, updatedAt: now, updatedBy: me, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+                    } else {
+                        await db.collection('vendors').add({ ...v, createdAt: now, createdBy: me, updatedAt: now, updatedBy: me, deleted: false });
+                    }
+                    setNote(`${v.subName} ${old ? 'updated on' : 'saved to'} the vendor list.`);
+                } catch (err) { setNote('Error saving the vendor: ' + err.message); }
+                setBusy(false);
+            };
+            const preview = async () => {
+                if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
+                const tab = window.open('', '_blank');
+                if (!tab) { setNote('Error: the browser blocked the new tab. Allow pop-ups for this site, then click Preview again.'); return; }
+                tab.document.write('<p style="font-family: sans-serif; padding: 20px">Building the form...</p>');
+                try {
+                    const bytes = await window.POForm.build({
+                        jobCode: 'START LIST', jobAddress: '', cityStateZip: '', lockBox: '', superName: '', superEmail: '', superPhone: '', poNumber: '',
+                        subName: t.subName, contact: t.contact, phone: t.phone, email: t.email, subCode: t.subCode, category: t.category,
+                        amount: t.kind === 'ask' ? '' : t.amount, scope: fullScope
+                    }, []);
+                    tab.location.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+                } catch (err) { tab.close(); setNote('Error building the form: ' + err.message); }
+            };
+            const radio = { display: 'flex', alignItems: 'center', gap: '4px', margin: 0, fontWeight: 'normal', whiteSpace: 'nowrap', color: '#333', cursor: 'pointer' };
+            return (
+                <div className="tpl-box">
+                    <div className="tpl-head">Template PO · {line.code} {line.name}<span>Every new job starts with this PO for this line. Attachments are added on the job.</span></div>
+                    <div className="inline" style={{ marginBottom: '8px' }}>
+                        <select value="" onChange={e => pickVendor(e.target.value)} style={{ flex: 1, minWidth: '240px' }}>
+                            <option value="">{choices.length ? '-- Pick a vendor --' : 'No vendors saved yet'}</option>
+                            {choices.map(v => <option key={v.subName} value={v.subName}>{v.subName}{v.contact ? ' · ' + v.contact : ''}</option>)}
+                        </select>
+                        <button type="button" className="btn-secondary btn-sm" style={{ marginTop: 0, whiteSpace: 'nowrap' }} onClick={saveVendor} disabled={busy}>{busy ? 'Saving...' : 'Save vendor to list'}</button>
+                    </div>
+                    <div className="req-grid">
+                        {PO_VENDOR.map(([k, label]) => <div key={k}><label>{label}</label><input value={t[k] || ''} onChange={e => set(k, e.target.value)} /></div>)}
+                        <div><label>Category</label><input value={t.category} onChange={e => set('category', e.target.value)} /></div>
+                    </div>
+                    <div className="inline" style={{ margin: '10px 0 4px' }}>
+                        <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>Kind of request</span>
+                        {KINDS.map(([v, label]) => <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={t.kind === v} onChange={() => set('kind', v)} />{label}</label>)}
+                    </div>
+                    <div className="inline" style={{ margin: '6px 0' }}>
+                        <label style={{ margin: 0 }}>Amount</label>
+                        <input className="num" style={{ width: '130px' }} value={t.amount} placeholder="0.00" onChange={e => set('amount', e.target.value)} onBlur={e => { const x = n(e.target.value); set('amount', x > 0 ? amountText(x) : ''); }} />
+                        <span style={{ fontSize: '12px', color: '#888' }}>Only for a fixed price (like a trailer load). Leave blank when the job's worksheet sets the price.</span>
+                    </div>
+                    <div className="inline" style={{ marginTop: '6px' }}>
+                        <label style={{ margin: 0 }}>Scope of Work</label>
+                        <button type="button" className={listening ? 'btn-x' : 'btn-secondary btn-sm'} style={{ marginTop: 0 }} onClick={toggleVoice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                    </div>
+                    <textarea ref={scopeRef} rows={8} value={t.scope} placeholder="One item per line, the way it goes on the PO" onChange={e => set('scope', capInPlace(e.target))} />
+                    {fit && (
+                        <div style={{ fontSize: '12px', marginTop: '3px', fontWeight: 600, color: !fit.fits ? '#d32f2f' : fit.right > 0 ? '#0066cc' : '#555' }}>
+                            {!fit.fits ? `Too long for one page (left ${fit.left}, right ${fit.right} of ${fit.per} lines)`
+                                : fit.right > 0 ? `Right side: ${fit.right} of ${fit.per} lines (left side full)` : `Left side: ${fit.left} of ${fit.per} lines`}
+                            <span style={{ fontWeight: 400, color: '#888' }}> · counted with the REQUEST FOR PRICING line when the kind is sent for pricing</span>
+                        </div>
+                    )}
+                    <div className="inline" style={{ marginTop: '8px' }}>
+                        <button type="button" className="btn-secondary btn-sm" style={{ marginTop: 0 }} onClick={preview}>Preview</button>
+                        <span style={{ fontSize: '12px', color: '#888' }}>Saved with the start list when you click Save start list.</span>
+                    </div>
+                    {note && <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '6px', color: note.startsWith('Error') ? '#d32f2f' : '#388e3c' }}>{note}</div>}
+                </div>
+            );
+        }
+        const poSummary = (l) => {
+            const p = l.po || {};
+            if (!vName(p) && !String(p.scope || '').trim()) return 'No PO yet';
+            return [vName(p) || 'No vendor', n(p.amount) > 0 ? money(n(p.amount)) : '', String(p.scope || '').trim() ? '' : 'no scope'].filter(Boolean).join(' · ');
+        };
+
+        function LineTable({ lines, onChange, me, canRestore, worksheets, startList, onSaveItems, onSaveSplit, po, vendors, templates }) {
             const [showGone, setShowGone] = useState(false);
             const [openId, setOpenId] = useState(null); // trade whose worksheet (or price list, on the start list) is open
+            const [poId, setPoId] = useState(null);     // start list: line whose template PO is open
             // Edit clicked on a PO: open that trade's worksheet
             const jump = po ? po.jump : null;
             useEffect(() => { if (jump) setOpenId(jump.lineId); }, [jump]);
@@ -2242,7 +2392,7 @@
                         <thead><tr>
                             <th className="code">Trade code</th><th>Description</th><th style={{ width: '110px' }}>Method</th>
                             {tags && <th style={{ width: '170px' }}>Status</th>}
-                            <th style={{ width: tags ? '118px' : '70px' }}></th>
+                            <th style={{ width: tags ? '118px' : '130px' }}></th>
                             <th style={{ width: '40px' }}></th>
                         </tr></thead>
                         <tbody>
@@ -2250,7 +2400,10 @@
                                 <React.Fragment key={l.id}>
                                     <tr className="line">
                                         <td><input value={l.code} onChange={e => edit(l.id, 'code', e.target.value)} onBlur={resort} /></td>
-                                        <td><input value={l.name} onChange={e => edit(l.id, 'name', e.target.value)} /></td>
+                                        <td>
+                                            <input value={l.name} onChange={e => edit(l.id, 'name', e.target.value)} />
+                                            {!worksheets && <div className="tpl-sum">{poSummary(l)}</div>}
+                                        </td>
                                         <td>
                                             <select value={l.method || ''} onChange={e => edit(l.id, 'method', e.target.value)}>
                                                 {METHODS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
@@ -2263,6 +2416,11 @@
                                                     {openId === l.id ? 'Close' : 'Open'}
                                                 </button>
                                             )}
+                                            {!worksheets && (
+                                                <button className="btn-secondary btn-sm" title="This line's template PO" onClick={() => setPoId(poId === l.id ? null : l.id)} style={{ marginRight: '4px' }}>
+                                                    {poId === l.id ? 'Close PO' : 'PO'}
+                                                </button>
+                                            )}
                                             {!worksheets && l.method === 'calculator' && (
                                                 <button className="btn-secondary btn-sm" title="Items and prices for this trade" onClick={() => setOpenId(openId === l.id ? null : l.id)}>
                                                     {openId === l.id ? 'Close' : 'Items'}
@@ -2271,6 +2429,10 @@
                                         </td>
                                         <td><button className="btn-x" title="Remove this trade" onClick={() => remove(l)}>✕</button></td>
                                     </tr>
+                                    {!worksheets && poId === l.id && (
+                                        <tr><td colSpan={cols}><StartPO line={l} vendors={vendors} templates={templates} me={me}
+                                            onChange={p => onChange(lines.map(x => x.id === l.id ? { ...x, po: p } : x))} /></td></tr>
+                                    )}
                                     {tags && reqsOf(l).length > 0 && (
                                         <tr><td colSpan={cols} style={{ padding: 0, borderBottom: 'none' }}><TradePOs rows={reqsOf(l)} po={po} line={l} /></td></tr>
                                     )}
@@ -2358,6 +2520,7 @@
             const [requests, setRequests] = useState(null);   // this job's quote requests: null = loading
             const [requestsError, setRequestsError] = useState('');
             const [templates, setTemplates] = useState(null); // PO Manager's templates (vendor details and scope wording), read only here
+            const [vendors, setVendors] = useState(null);     // saved vendor list (Pick a vendor)
             const [jump, setJump] = useState(null);           // Edit on a PO: { lineId, requestId } to open in that trade's worksheet
             const [draftOpen, setDraftOpen] = useState(false); // a request is open for editing in a worksheet
             const [handoffBusy, setHandoffBusy] = useState('');   // progress text while handing off
@@ -2434,6 +2597,14 @@
                     snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
                     setTemplates(list);
                 }, () => setTemplates([]));
+            }, [profile]);
+            useEffect(() => {
+                if (!profile) return;
+                return db.collection('vendors').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setVendors(list);
+                }, () => setVendors([]));
             }, [profile]);
 
             // This job's quote requests. They are their own records, so Save on the trade list never touches them.
@@ -2829,7 +3000,7 @@
                                 This is the list every new job starts with. Changes here do not touch jobs already saved in Trades-EST.
                             </div>
                             <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>{startText}{startDirty && <span className="unsaved"> | Unsaved changes</span>}</div>
-                            <LineTable lines={startEdit} me={me} canRestore={canRestore} worksheets={false}
+                            <LineTable lines={startEdit} me={me} canRestore={canRestore} worksheets={false} vendors={vendors} templates={templates}
                                 onChange={next => { setStartEdit(next); setStartDirty(true); setMessage(''); }} />
                         </div>
                     )}
