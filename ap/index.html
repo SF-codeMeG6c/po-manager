@@ -78,6 +78,14 @@
         .pill.appr-supplement { background: #f3e8fb; color: #7b1fa2; }
         .appr-box { border: 1px solid #b7dcc0; border-radius: 6px; background: #f6fbf7; padding: 16px; margin-bottom: 20px; }
         .wait-title { font-weight: 600; color: #2e7d32; font-size: 14px; margin-bottom: 8px; }
+        .pill.question { background: #fdecea; color: #c62828; }
+        .notes-box { border: 1px solid #ddd; border-radius: 6px; background: #fcfcfc; padding: 16px; margin-bottom: 20px; }
+        .note { border-top: 1px solid #eee; padding: 10px 0; font-size: 13px; color: #333; }
+        .note:first-child { border-top: none; padding-top: 0; }
+        .note-head { font-size: 12px; color: #666; margin-bottom: 4px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .note-text { white-space: pre-wrap; word-break: break-word; }
+        .note.open { background: #fff8f7; border-left: 3px solid #c62828; padding-left: 8px; }
+        .note-old { font-size: 12px; color: #888; margin-top: 4px; white-space: pre-wrap; }
         .pill.hidden { background: #eee; color: #888; }
         .review-box { border: 1px solid #c8daf0; border-radius: 6px; background: #f7fafe; padding: 16px; margin-bottom: 18px; }
         .review-facts { font-size: 13px; color: #333; margin-bottom: 10px; line-height: 1.6; }
@@ -168,6 +176,14 @@
                 : key === 'pa-pending' ? 'Pending (Production Admin)' : 'Supplement (Production Admin)';
             return { key, text };
         };
+        // Step 2c: notes on an invoice, in apInvoices/{id}/apNotes (not 'notes': the Customer Notes search rule covers every 'notes' collection). The invoice keeps noteCount and openQuestionIds
+        // (notes marked "Needs an answer" not yet marked Answered). Pay is blocked while any question is open.
+        // Only the person who asked, or an Owner/Admin, marks a question Answered (the rule checks it).
+        const ROLE_LABELS = { owner: 'Owner', admin: 'Admin', estimator: 'Estimator', super: 'Super', office: 'Office' };
+        const openQ = (i) => Array.isArray(i.openQuestionIds) ? i.openQuestionIds.length : 0;
+        const dateTime = (t) => { const d = asDate(t); if (!d) return '';
+            let h = d.getHours(); const ap = h < 12 ? 'am' : 'pm'; h = h % 12 || 12;
+            return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)} ${h}:${pad(d.getMinutes())} ${ap}`; };
         const FIELD_LABELS = { kind: 'kind', vendor: 'vendor', invoiceNumber: 'invoice #', amount: 'amount', previousPayment: 'previous payment',
             dateReceived: 'date received', po: 'PO', approver: 'approver', file: 'file' };
 
@@ -255,6 +271,15 @@
             const [apprMsg, setApprMsg] = useState(null);
             const [apprSaving, setApprSaving] = useState(false);
             const [apprDone, setApprDone] = useState('');     // message after the approver saves
+            const [notesId, setNotesId] = useState(null);     // the invoice whose notes are open (2c)
+            const [notes, setNotes] = useState(null);         // its notes, oldest first (null = loading)
+            const [notesErr, setNotesErr] = useState('');
+            const [noteText, setNoteText] = useState('');
+            const [noteAsk, setNoteAsk] = useState(false);    // "Needs an answer"
+            const [noteMsg, setNoteMsg] = useState(null);
+            const [noteSaving, setNoteSaving] = useState(false);
+            const [noteEditId, setNoteEditId] = useState(null);
+            const [noteEditText, setNoteEditText] = useState('');
             const [saving, setSaving] = useState(false);
             const [formMsg, setFormMsg] = useState(null);   // { text, ok } inside the Add box
             const [listMsg, setListMsg] = useState('');     // after a save
@@ -407,6 +432,19 @@
                 if (showAdd && !form.approverUid && superInfo && superInfo.uid) setForm(f => f.approverUid ? f : { ...f, approverUid: superInfo.uid });
             }, [showAdd, superInfo]);
 
+            // Notes of the open invoice (2c). The rule lets Owner/Admin and the invoice's approver read them.
+            useEffect(() => {
+                setNotes(null); setNotesErr('');
+                if (!notesId) return;
+                return db.collection('apInvoices').doc(notesId).collection('apNotes').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    const ms = (t) => { const d = asDate(t); return d ? d.getTime() : 0; };
+                    list.sort((a, b) => ms(a.at) - ms(b.at));
+                    setNotes(list);
+                }, error => { setNotes([]); setNotesErr('Error loading notes: ' + error.message); });
+            }, [notesId]);
+
             // Pick a job. The address keeps the job, so a refresh stays on it.
             const pickJob = (id) => {
                 if (showAdd && formTouched() && !window.confirm('Switch jobs and drop the invoice you started?')) return;
@@ -540,6 +578,7 @@
                 const problem = !isPassed(inv) || inv.deleted === true ? 'Production Admin has changed this invoice. It is no longer passed.'
                     : !inv.approver || inv.approver.uid !== user.uid ? 'This invoice is assigned to someone else now.'
                     : !st ? 'Pick Pay, Pending or Supplement.'
+                    : st === 'Pay' && openQ(inv) > 0 ? `There ${openQ(inv) === 1 ? 'is an open question' : `are ${openQ(inv)} open questions`} on this invoice. It can't be marked Pay until ${openQ(inv) === 1 ? "it's" : "they're"} marked Answered (see Notes).`
                     : st === now0 && !note ? 'Nothing changed.'
                     : (st === 'Pending' || st === 'Supplement') && !note ? `Type a note saying why it's ${st === 'Pending' ? 'pending' : 'a supplement'}.`
                     : '';
@@ -560,6 +599,81 @@
                     setApprMsg({ text: 'Error saving: ' + error.message, ok: false });
                 }
                 setApprSaving(false);
+            };
+
+            // Notes (2c): Owner, Admin and the invoice's approver post. Own notes can be edited (old text kept); no deletes.
+            const notesAll = isAdmin ? (allInvoices || []) : (myInvoices || []);
+            const notesInv = notesId ? notesAll.find(i => i.id === notesId) || null : null;
+            const myRole = profile && typeof profile === 'object' ? profile.role : '';
+            const meBy = () => ({ uid: user.uid, name: profile.name || user.email, role: myRole });
+            const openNotes = (inv) => {
+                if (notesId && notesId !== inv.id && (noteText.trim() || noteEditId) && !window.confirm('Drop the note you started?')) return;
+                setNotesId(inv.id); setNoteText(''); setNoteAsk(false); setNoteMsg(null); setNoteEditId(null); setNoteEditText('');
+                try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { /* older browsers */ }
+            };
+            const closeNotes = () => {
+                if ((noteText.trim() || noteEditId) && !window.confirm('Close and drop the note you started?')) return;
+                setNotesId(null); setNoteText(''); setNoteAsk(false); setNoteMsg(null); setNoteEditId(null); setNoteEditText('');
+            };
+            const postNote = async () => {
+                const inv = notesInv;
+                const text = noteText.trim();
+                if (!inv) { setNoteMsg({ text: 'This invoice is no longer on your list.', ok: false }); return; }
+                if (!text) { setNoteMsg({ text: 'Type the note.', ok: false }); return; }
+                if (text.length > 4000) { setNoteMsg({ text: 'That note is too long (4,000 characters at most).', ok: false }); return; }
+                setNoteSaving(true); setNoteMsg(null);
+                try {
+                    const now = new Date();
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const FV = firebase.firestore.FieldValue;
+                    const noteRef = ref.collection('apNotes').doc();
+                    const batch = db.batch();
+                    batch.set(noteRef, { text, at: now, by: meBy(), needsAnswer: noteAsk, answered: false, edits: [] });
+                    const upd = { noteCount: FV.increment(1), lastNoteAt: now };
+                    if (noteAsk) upd.openQuestionIds = FV.arrayUnion(noteRef.id);
+                    batch.update(ref, upd);
+                    await batch.commit();
+                    setNoteText(''); setNoteAsk(false);
+                    setNoteMsg({ text: noteAsk ? 'Question posted. Pay is blocked until you (or an Owner/Admin) mark it Answered.' : 'Note posted.', ok: true });
+                } catch (error) {
+                    setNoteMsg({ text: 'Error posting the note: ' + error.message, ok: false });
+                }
+                setNoteSaving(false);
+            };
+            const saveNoteEdit = async (n) => {
+                const text = noteEditText.trim();
+                if (!text) { setNoteMsg({ text: 'A note can\'t be emptied. Post a new note instead.', ok: false }); return; }
+                if (text === n.text) { setNoteEditId(null); return; }
+                if (text.length > 4000) { setNoteMsg({ text: 'That note is too long (4,000 characters at most).', ok: false }); return; }
+                setNoteSaving(true); setNoteMsg(null);
+                try {
+                    const now = new Date();
+                    await db.collection('apInvoices').doc(notesId).collection('apNotes').doc(n.id).update({
+                        text, editedAt: now, edits: firebase.firestore.FieldValue.arrayUnion({ text: n.text, until: now })
+                    });
+                    setNoteEditId(null); setNoteEditText('');
+                    setNoteMsg({ text: 'Note changed. The old text is kept under it.', ok: true });
+                } catch (error) {
+                    setNoteMsg({ text: 'Error saving the note: ' + error.message, ok: false });
+                }
+                setNoteSaving(false);
+            };
+            const markAnswered = async (n) => {
+                if (!window.confirm('Mark this question Answered?')) return;
+                setNoteSaving(true); setNoteMsg(null);
+                try {
+                    const now = new Date();
+                    const ref = db.collection('apInvoices').doc(notesId);
+                    const batch = db.batch();
+                    batch.update(ref.collection('apNotes').doc(n.id), { answered: true, answeredAt: now, answeredBy: meBy() });
+                    batch.update(ref, { openQuestionIds: firebase.firestore.FieldValue.arrayRemove(n.id), lastNoteAt: now });
+                    await batch.commit();
+                    setNoteMsg({ text: 'Question marked Answered.', ok: true });
+                    setApprMsg(null);
+                } catch (error) {
+                    setNoteMsg({ text: 'Error: ' + error.message, ok: false });
+                }
+                setNoteSaving(false);
             };
 
             const restoreInvoice = async (inv) => {
@@ -792,7 +906,7 @@
                         </thead>
                         <tbody>
                             {list.map(i => (
-                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : (i.id === editId || i.id === reviewId || i.id === apprId) ? 'editing-row' : ''}>
+                                <tr key={i.id} className={i.deleted === true ? 'hidden-row' : (i.id === editId || i.id === reviewId || i.id === apprId || i.id === notesId) ? 'editing-row' : ''}>
                                     {showJob && <td>{(jobs || []).some(j => j.id === i.jobId)
                                         ? <a href={'?job=' + encodeURIComponent(i.jobId)} onClick={e => { e.preventDefault(); pickJob(i.jobId); }}>{i.jobCode}</a>
                                         : i.jobCode}</td>}
@@ -806,9 +920,11 @@
                                     <td>{(() => { const s = statusOf(i); return <span className={'pill ' + s.key}>{s.text}</span>; })()}
                                         {i.deleted !== true && i.pa && i.pa.note && <small title={i.pa.note}>PA: "{i.pa.note.length > 60 ? i.pa.note.slice(0, 60) + '...' : i.pa.note}"</small>}
                                         {i.deleted !== true && isPassed(i) && i.appr && i.appr.note && <small title={i.appr.note}>{i.appr.by ? i.appr.by.name : 'Approver'}: "{i.appr.note.length > 60 ? i.appr.note.slice(0, 60) + '...' : i.appr.note}"</small>}
+                                        {i.deleted !== true && openQ(i) > 0 && <div style={{ marginTop: '3px' }}><span className="pill question">{openQ(i) === 1 ? 'Question open' : `${openQ(i)} questions open`}</span></div>}
                                         <small>Approver: {i.approver ? i.approver.name : '-'}</small></td>
                                     <td><div className="row-btns">
                                         {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
+                                        {i.id !== notesId && <button className="btn-secondary btn-sm" onClick={() => openNotes(i)}>Notes{i.noteCount ? ` (${i.noteCount})` : ''}</button>}
                                         {i.deleted !== true && isPassed(i) && i.approver && i.approver.uid === user.uid && i.id !== apprId && (
                                             <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
                                                 {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
@@ -860,6 +976,73 @@
             return (
                 <div>
                     {apprDone && <div className="ok" style={{ marginBottom: '14px' }}>{apprDone}</div>}
+                    {notesInv && (
+                        <div className="notes-box">
+                            <div className="section-head" style={{ marginBottom: '6px' }}>
+                                <div className="section-title">Notes: invoice {notesInv.invoiceNumber} from {notesInv.vendor}</div>
+                                <button className="btn-secondary btn-auto btn-sm" onClick={closeNotes}>Close</button>
+                            </div>
+                            <div className="review-facts">
+                                {notesInv.jobCode} · {typeof notesInv.amount === 'number' ? money(notesInv.amount) : '-'} · PO {notesInv.po ? notesInv.po.poNumber : '-'} · {(() => { const st = statusOf(notesInv); return <span className={'pill ' + st.key}>{st.text}</span>; })()}
+                                {openQ(notesInv) > 0 && <span> <span className="pill question">{openQ(notesInv) === 1 ? 'Question open' : `${openQ(notesInv)} questions open`}</span></span>}
+                            </div>
+                            {notesErr && <div className="error" style={{ marginBottom: '10px' }}>{notesErr}</div>}
+                            {notes === null && <p className="muted">Loading notes...</p>}
+                            {notes && notes.length === 0 && !notesErr && <p className="muted">No notes yet.</p>}
+                            {notes && notes.length > 0 && (
+                                <div style={{ marginBottom: '12px' }}>
+                                    {notes.map(n => {
+                                        const isOpen = n.needsAnswer && !n.answered;
+                                        const mine = n.by && n.by.uid === user.uid;
+                                        return (
+                                            <div key={n.id} className={'note' + (isOpen ? ' open' : '')}>
+                                                <div className="note-head">
+                                                    <strong>{n.by ? n.by.name : ''}</strong>
+                                                    <span>{n.by && ROLE_LABELS[n.by.role] ? ROLE_LABELS[n.by.role] : ''}</span>
+                                                    <span>{dateTime(n.at)}</span>
+                                                    {n.editedAt && <span>(edited {dateTime(n.editedAt)})</span>}
+                                                    {isOpen && <span className="pill question">Needs an answer{!(isAdmin || mine) ? ` (${n.by ? n.by.name : 'the asker'} marks it Answered)` : ''}</span>}
+                                                    {n.needsAnswer && n.answered && <span className="pill passed">Answered{n.answeredBy ? ` by ${n.answeredBy.name}` : ''}, {dateTime(n.answeredAt)}</span>}
+                                                </div>
+                                                {noteEditId === n.id ? (
+                                                    <div>
+                                                        <textarea value={noteEditText} onChange={e => { setNoteEditText(e.target.value); setNoteMsg(null); }} />
+                                                        <div className="actions" style={{ marginTop: '6px' }}>
+                                                            <button className="btn-secondary btn-auto btn-sm" onClick={() => { setNoteEditId(null); setNoteEditText(''); }} disabled={noteSaving}>Cancel</button>
+                                                            <button className="btn-primary btn-auto btn-sm" onClick={() => saveNoteEdit(n)} disabled={noteSaving}>Save</button>
+                                                        </div>
+                                                    </div>
+                                                ) : <div className="note-text">{n.text}</div>}
+                                                {Array.isArray(n.edits) && n.edits.length > 0 && noteEditId !== n.id && (
+                                                    <details className="note-old"><summary>Earlier text ({n.edits.length})</summary>
+                                                        {n.edits.map((e, k) => <div key={k}>Until {dateTime(e.until)}: {e.text}</div>)}
+                                                    </details>
+                                                )}
+                                                {noteEditId !== n.id && (mine || (isOpen && (isAdmin || mine))) && (
+                                                    <div className="row-btns" style={{ justifyContent: 'flex-start', marginTop: '4px' }}>
+                                                        {mine && <button className="btn-link" onClick={() => { setNoteEditId(n.id); setNoteEditText(n.text); setNoteMsg(null); }}>Edit</button>}
+                                                        {isOpen && (isAdmin || mine) && <button className="btn-link" onClick={() => markAnswered(n)} disabled={noteSaving}>Mark answered</button>}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            <div className="form-group">
+                                <label htmlFor="note-new">Add a note</label>
+                                <textarea id="note-new" value={noteText} onChange={e => { setNoteText(e.target.value); setNoteMsg(null); }} />
+                            </div>
+                            <label className="check">
+                                <input type="checkbox" checked={noteAsk} onChange={e => setNoteAsk(e.target.checked)} />
+                                Needs an answer (blocks Pay until you or an Owner/Admin mark it Answered)
+                            </label>
+                            {noteMsg && <div className={noteMsg.ok ? 'ok' : 'error'}>{noteMsg.text}</div>}
+                            <div className="actions">
+                                <button className="btn-primary btn-auto" onClick={postNote} disabled={noteSaving}>{noteSaving ? 'Saving...' : 'Post note'}</button>
+                            </div>
+                        </div>
+                    )}
                     {apprInv && (
                         <div className="appr-box">
                             <div className="section-title" style={{ marginBottom: '6px' }}>Your approval: invoice {apprInv.invoiceNumber} from {apprInv.vendor}</div>
@@ -874,6 +1057,9 @@
                                 {apprInv.pa && apprInv.pa.by && <span className="muted"> by {apprInv.pa.by.name}, {dateOnly(apprInv.pa.at)}{apprInv.pa.note ? `: "${apprInv.pa.note}"` : ''}</span>}
                                 {apprInv.appr && apprInv.appr.status && <div className="muted" style={{ marginTop: '4px' }}>Your decision now: {apprInv.appr.status}, {dateOnly(apprInv.appr.at)}{apprInv.appr.note ? `: "${apprInv.appr.note}"` : ''}</div>}
                             </div>
+                            {openQ(apprInv) > 0 && <div className="dup" style={{ marginBottom: '10px' }}>
+                                {openQ(apprInv) === 1 ? 'There is an open question' : `There are ${openQ(apprInv)} open questions`} on this invoice. Pay is blocked until {openQ(apprInv) === 1 ? "it's" : "they're"} marked Answered.
+                                <button className="btn-link" onClick={() => openNotes(apprInv)}>Open notes</button></div>}
                             <div className="kinds">
                                 {APPR_CHOICES.map(c => (
                                     <label key={c} className="check">
