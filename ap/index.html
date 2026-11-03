@@ -187,8 +187,13 @@
             : ['CES', 'Complete', 'Completed'].includes(s) ? 'CES'
             : s === 'Revised' ? 'Revised' : 'New';
 
-        // A trade's General PO (for supplier bills): sub name "General Material", Cat is the trade
-        const isGeneralPO = (p) => p.subName.trim().toLowerCase() === 'general material';
+        // Material POs take supplier bills, not sub invoices:
+        // - a trade's General PO: sub name "General Material", Cat is the trade (made in Trades-EST with the CES)
+        // - a PO for several vendors: sub name "Various – see scope", vendors and amounts in the Scope (Spencer, Nov 3)
+        const isGeneralPO = (p) => {
+            const s = p.subName.trim().toLowerCase();
+            return s === 'general material' || s.startsWith('various');
+        };
 
         const pad = (n) => String(n).padStart(2, '0');
         const todayText = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -1034,19 +1039,19 @@
                                         </div>
 
                                         <div className="form-group">
-                                            <label htmlFor="inv-po">{form.kind === 'supplier' ? 'General PO (trade)' : 'PO'}</label>
+                                            <label htmlFor="inv-po">{form.kind === 'supplier' ? 'Material PO' : 'PO'}</label>
                                             <select id="inv-po" value={form.formId} onChange={e => setField('formId', e.target.value)}>
                                                 <option value="">-- Pick the PO --</option>
                                                 {poChoices.map(p => (
                                                     <option key={p.id} value={p.id}>
-                                                        {form.kind === 'supplier' ? `${p.category} - ${p.poNumber}` : `${p.poNumber} - ${p.category} - ${p.subName}`}
+                                                        {form.kind === 'supplier' ? `${p.category} - ${p.poNumber} - ${p.subName}` : `${p.poNumber} - ${p.category} - ${p.subName}`}
                                                     </option>
                                                 ))}
                                             </select>
                                             {poChoices.length === 0 && pos && (
                                                 <div className="warn">
                                                     {form.kind === 'supplier'
-                                                        ? 'This job has no General POs (sub name "General Material"). They are made in Trades-EST with the CES.'
+                                                        ? 'This job has no material POs (sub name "General Material" or "Various – see scope").'
                                                         : 'This job has no sub POs yet. POs are made in PO Manager.'}
                                                 </div>
                                             )}
@@ -1222,3 +1227,4 @@
     </script>
 </body>
 </html>
+
