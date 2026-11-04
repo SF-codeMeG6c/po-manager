@@ -79,6 +79,17 @@
         .appr-box { border: 1px solid #b7dcc0; border-radius: 6px; background: #f6fbf7; padding: 16px; margin-bottom: 20px; }
         .wait-title { font-weight: 600; color: #2e7d32; font-size: 14px; margin-bottom: 8px; }
         .pill.question { background: #fdecea; color: #c62828; }
+        .batch-box { border: 1px solid #c8daf0; border-radius: 6px; background: #f7fafe; padding: 16px; margin-bottom: 20px; }
+        .batch-defaults { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; margin-bottom: 12px; }
+        .bcard { border: 1px solid #ddd; border-radius: 6px; background: white; padding: 10px 12px; margin-bottom: 10px; }
+        .bcard.saved { background: #f3faf4; border-color: #b7dcc0; }
+        .bcard.bad { border-color: #f0b4b4; }
+        .bcard-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; flex-wrap: wrap; }
+        .bcard-head strong { word-break: break-all; }
+        .bgrid { display: grid; grid-template-columns: 1.2fr 1.3fr 1.2fr; gap: 6px 10px; }
+        .bgrid label { font-size: 12px; margin-bottom: 2px; }
+        .bgrid select, .bgrid input[type=text], .bgrid input[type=date] { padding: 6px 8px; font-size: 13px; }
+        @media (max-width: 600px) { .bgrid, .batch-defaults { grid-template-columns: 1fr; } }
         .notes-box { border: 1px solid #ddd; border-radius: 6px; background: #fcfcfc; padding: 16px; margin-bottom: 20px; }
         .note { border-top: 1px solid #eee; padding: 10px 0; font-size: 13px; color: #333; }
         .note:first-child { border-top: none; padding-top: 0; }
@@ -249,6 +260,327 @@
         const blankForm = () => ({ kind: 'sub', formId: '', vendorPick: '', vendorOther: '', addVendor: false, invoiceNumber: '', amount: '',
             dateReceived: todayText(), previousPayment: '', approverUid: '' });
 
+        // Step 1d: batch upload of supplier bills (Owner/Admin). Each file becomes a card; a card saves when it's complete.
+        // Saves exactly like Add invoice (file, apInvoices record, 'Added' history line). No holding area: unsaved cards stay on screen.
+        const BATCH_MAX = 50;
+        function BatchUpload({ jobs, allInvoices, vendorList, approvers, user, profile, onClose }) {
+            const [rows, setRows] = useState([]);
+            const [defs, setDefs] = useState({ vendorPick: '', vendorOther: '', dateReceived: todayText() });
+            const [jobData, setJobData] = useState({});     // jobId -> { pos: material POs | null (loading), superInfo, error }
+            const [dragOver, setDragOver] = useState(false);
+            const [running, setRunning] = useState(false);
+            const [topMsg, setTopMsg] = useState(null);
+            const nextKey = React.useRef(1);
+            const loading = React.useRef({});
+
+            // Unsaved cards would be lost on leaving the page
+            useEffect(() => {
+                if (!rows.some(r => r.state !== 'saved')) return;
+                const h = (e) => { e.preventDefault(); e.returnValue = ''; };
+                window.addEventListener('beforeunload', h);
+                return () => window.removeEventListener('beforeunload', h);
+            }, [rows]);
+
+            const openJobs = (jobs || []).filter(j => !j.archived);
+            const loadJob = async (jobId) => {
+                if (!jobId || loading.current[jobId]) return;
+                loading.current[jobId] = true;
+                setJobData(d => ({ ...d, [jobId]: { pos: null, superInfo: undefined } }));
+                try {
+                    const [formsSnap, cardSnap] = await Promise.all([
+                        db.collection('jobs').doc(jobId).collection('forms').get(),
+                        db.collection('jobs').doc(jobId).collection('notesInfo').doc('contactCard').get()
+                    ]);
+                    const list = [];
+                    formsSnap.forEach(doc => {
+                        const d = doc.data();
+                        if (d.deleted === true) return;
+                        list.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                            status: poStatus(d.status), amount: amountOf(d.contractAmount) });
+                    });
+                    const mats = list.filter(isGeneralPO).sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
+                    const t = cardSnap.exists ? (cardSnap.data().team || {}) : {};
+                    const sup = t.super && t.super.uid ? t.super : null;
+                    setJobData(d => ({ ...d, [jobId]: { pos: mats, superInfo: sup } }));
+                    // Fill in the job's Super as approver, and the PO when the job has only one material PO
+                    setRows(rs => rs.map(r => r.jobId !== jobId || r.state === 'saved' ? r : {
+                        ...r, approverUid: r.approverUid || (sup ? sup.uid : ''), formId: r.formId || (mats.length === 1 ? mats[0].id : '') }));
+                } catch (error) {
+                    loading.current[jobId] = false;
+                    setJobData(d => ({ ...d, [jobId]: { pos: [], superInfo: null, error: 'Error loading the job: ' + error.message } }));
+                }
+            };
+
+            // A job code in the file name picks the job (for example CONBO.M.2519_FRM.pdf)
+            const guessJob = (name) => {
+                const n = normKey(name);
+                const hit = openJobs.filter(j => j.code && n.includes(normKey(j.code)));
+                return hit.length === 1 ? hit[0].id : '';
+            };
+            const addFiles = (fileList) => {
+                const files = Array.from(fileList || []);
+                if (!files.length) return;
+                const bad = [];
+                const room = BATCH_MAX - rows.length;
+                const fresh = [];
+                files.forEach(f => {
+                    if (!(f.type === 'application/pdf' || (f.type || '').startsWith('image/'))) { bad.push(`${f.name} (not a PDF or photo)`); return; }
+                    if (f.size > MAX_MB * 1024 * 1024) { bad.push(`${f.name} (over ${MAX_MB} MB)`); return; }
+                    if (fresh.length >= room) { bad.push(`${f.name} (more than ${BATCH_MAX} files in one batch)`); return; }
+                    const jobId = guessJob(f.name);
+                    // A job already loaded fills in its Super and its only material PO right away
+                    const jd = jobId ? jobData[jobId] : null;
+                    const formId = jd && jd.pos && jd.pos.length === 1 ? jd.pos[0].id : '';
+                    const approverUid = jd && jd.superInfo ? jd.superInfo.uid : '';
+                    fresh.push({ key: nextKey.current++, file: f, jobId, formId, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther,
+                        addVendor: false, invoiceNumber: '', amount: '', dateReceived: defs.dateReceived, approverUid, state: 'new', msg: '' });
+                });
+                setRows(rs => [...rs, ...fresh]);
+                fresh.forEach(r => r.jobId && loadJob(r.jobId));
+                setTopMsg(bad.length ? { text: `Not added: ${bad.join('; ')}.`, ok: false }
+                    : { text: `${fresh.length} file${fresh.length === 1 ? '' : 's'} added. Fill in each card, then Save all ready.`, ok: true });
+            };
+            const setRow = (key, patch) => {
+                setRows(rs => rs.map(r => {
+                    if (r.key !== key) return r;
+                    const next = { ...r, ...patch, state: r.state === 'error' ? 'new' : r.state, msg: r.state === 'error' ? '' : r.msg };
+                    if (patch.jobId !== undefined && patch.jobId !== r.jobId) {
+                        next.formId = ''; next.approverUid = '';
+                        const jd = jobData[patch.jobId];
+                        if (jd && jd.pos) { next.approverUid = jd.superInfo ? jd.superInfo.uid : ''; if (jd.pos.length === 1) next.formId = jd.pos[0].id; }
+                    }
+                    return next;
+                }));
+                if (patch.jobId) loadJob(patch.jobId);
+            };
+            const removeRow = (key) => setRows(rs => rs.filter(r => r.key !== key));
+            const applyDefaults = () => {
+                setRows(rs => rs.map(r => r.state === 'saved' ? r : { ...r, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther, dateReceived: defs.dateReceived }));
+                setTopMsg({ text: 'Supplier and date put on every card not yet saved.', ok: true });
+            };
+
+            // What each card has and is missing
+            const keyOf = (r) => {
+                const typed = r.vendorOther.trim().replace(/\s+/g, ' ');
+                const onList = typed ? vendorList.find(n => n.toLowerCase() === typed.toLowerCase()) : null;
+                const vendor = r.vendorPick === OTHER ? (onList || typed) : r.vendorPick;
+                return { vendor, typed, onList, dk: vendor && r.invoiceNumber.trim() ? dupKeyOf(vendor, r.invoiceNumber) : '' };
+            };
+            const info = {};
+            rows.forEach((r, idx) => {
+                const { vendor, typed, onList, dk } = keyOf(r);
+                const job = (jobs || []).find(j => j.id === r.jobId) || null;
+                const jd = r.jobId ? jobData[r.jobId] : null;
+                const po = jd && jd.pos ? jd.pos.find(p => p.id === r.formId) || null : null;
+                const amount = amountOf(r.amount);
+                const list = [...(approvers || [])];
+                if (jd && jd.superInfo && !list.some(a => a.uid === jd.superInfo.uid)) list.unshift({ uid: jd.superInfo.uid, name: jd.superInfo.name || 'Job Super', role: 'super' });
+                const approver = list.find(a => a.uid === r.approverUid) || null;
+                const dupAp = dk && allInvoices ? allInvoices.find(i => i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === dk) : null;
+                const dupBatch = dk ? rows.slice(0, idx).find(o => o.state !== 'saved' && keyOf(o).dk === dk) : null;
+                const problem = r.state === 'saved' ? ''
+                    : !r.jobId ? 'Pick the job.'
+                    : !jd || jd.pos === null ? 'Loading the job...'
+                    : jd.error ? jd.error
+                    : jd.pos.length === 0 ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.'
+                    : !po ? 'Pick the material PO.'
+                    : !vendor ? 'Pick or type the supplier.'
+                    : !r.invoiceNumber.trim() ? 'Type the invoice #.'
+                    : !(amount > 0) ? 'Type the amount.'
+                    : !/^\d{4}-\d{2}-\d{2}$/.test(r.dateReceived) ? 'Pick the date received.'
+                    : !approver ? 'Pick who approves it.'
+                    : allInvoices === null ? 'Still loading the invoice list...'
+                    : dupAp ? `Invoice ${dupAp.invoiceNumber} from ${dupAp.vendor} is already in AP on ${dupAp.jobCode}. It can't be added twice.`
+                    : dupBatch ? `Same supplier and invoice # as ${dupBatch.file.name} in this batch.`
+                    : '';
+                // PO balance: passed invoices + invoices added but not passed + other unsaved cards on the same PO
+                let warn = '';
+                if (po && amount > 0 && r.state !== 'saved') {
+                    if (po.amount === null) warn = 'This PO has no amount, so it can\'t pass until the PO is fixed in PO Manager.';
+                    else {
+                        const onPo = (allInvoices || []).filter(i => i.deleted !== true && i.po && i.po.formId === po.id);
+                        const used = onPo.reduce((sum, i) => sum + (i.amount || 0), 0)
+                            + rows.filter(o => o.key !== r.key && o.state !== 'saved' && o.jobId === r.jobId && o.formId === po.id).reduce((sum, o) => sum + (amountOf(o.amount) || 0), 0);
+                        if (used + amount > po.amount + 0.005) warn = `With the invoices already on this PO and in this batch, it would be over the PO's ${money(po.amount)} by ${money(used + amount - po.amount)}. It can be added, but it can't pass until a revised PO or a supplement covers it.`;
+                    }
+                }
+                const fileName = !problem && po && vendor && amount > 0 ? buildFileName({ category: po.category, vendor, amount, poNumber: po.poNumber, dateReceived: r.dateReceived, file: r.file }) : '';
+                info[r.key] = { vendor, typed, onList, job, jd, po, amount, approver, approverList: list, problem, warn, fileName };
+            });
+            const readyRows = rows.filter(r => r.state !== 'saved' && !info[r.key].problem);
+            const unsavedCount = rows.filter(r => r.state !== 'saved').length;
+            const savedCount = rows.length - unsavedCount;
+
+            const saveAll = async () => {
+                if (!readyRows.length) return;
+                setRunning(true); setTopMsg(null);
+                let ok = 0, failed = 0;
+                for (const r of readyRows) {
+                    const x = info[r.key];
+                    setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saving', msg: '' } : o));
+                    try {
+                        const invRef = db.collection('apInvoices').doc();
+                        const path = `apInvoices/${r.jobId}/${invRef.id}/${Date.now()}_${x.fileName}`;
+                        const ref = storage.ref(path);
+                        await ref.put(r.file, cleanSaveName(x.fileName, r.file.type));
+                        const url = await ref.getDownloadURL();
+                        const now = new Date();
+                        const by = { uid: user.uid, name: profile.name || user.email };
+                        const batch = db.batch();
+                        const newVendor = r.vendorPick === OTHER && r.addVendor && !x.onList;
+                        if (newVendor) {
+                            batch.set(vendorsDoc(), {
+                                list: firebase.firestore.FieldValue.arrayUnion(...SUPPLIERS, x.vendor),
+                                added: firebase.firestore.FieldValue.arrayUnion({ name: x.vendor, at: now, by })
+                            }, { merge: true });
+                        }
+                        batch.set(invRef, {
+                            jobId: r.jobId, jobCode: x.job ? x.job.code : '', kind: 'supplier', vendor: x.vendor,
+                            invoiceNumber: r.invoiceNumber.trim(), amount: x.amount, previousPayment: null, dateReceived: r.dateReceived,
+                            po: { formId: x.po.id, poNumber: x.po.poNumber, category: x.po.category, subName: x.po.subName },
+                            approver: { uid: x.approver.uid, name: x.approver.name },
+                            file: { url, name: x.fileName, path, type: r.file.type },
+                            createdAt: now, createdBy: by, deleted: false, batchUpload: true
+                        });
+                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true, originalFileName: r.file.name });
+                        await batch.commit();
+                        ok++;
+                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saved', msg: `Saved as ${x.fileName}` } : o));
+                    } catch (error) {
+                        failed++;
+                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'error', msg: 'Error saving: ' + error.message } : o));
+                    }
+                }
+                setRunning(false);
+                const left = unsavedCount - ok;
+                setTopMsg({ text: `${ok} saved${failed ? `, ${failed} not saved (see the red cards)` : ''}.${left > 0 ? ` ${left} card${left === 1 ? '' : 's'} still to finish.` : ' Every card is saved.'}`, ok: !failed });
+            };
+            const close = () => {
+                if (unsavedCount && !window.confirm(`${unsavedCount} file${unsavedCount === 1 ? ' is' : 's are'} not saved. Close and drop ${unsavedCount === 1 ? 'it' : 'them'}?`)) return;
+                onClose();
+            };
+
+            return (
+                <div className="batch-box">
+                    <div className="section-head" style={{ marginBottom: '6px' }}>
+                        <div className="section-title">Batch upload: supplier bills</div>
+                        <button className="btn-secondary btn-auto btn-sm" onClick={close} disabled={running}>Close</button>
+                    </div>
+                    <p className="muted" style={{ marginBottom: '10px' }}>Drop in up to {BATCH_MAX} PDFs or photos. Each becomes a card: fill in the job, material PO, supplier, invoice #, amount and date. Cards save when they're complete; the rest stay here until you finish them. A job code in the file name picks the job.</p>
+                    <div className="batch-defaults">
+                        <div>
+                            <label htmlFor="b-def-vendor">Supplier for new files</label>
+                            <select id="b-def-vendor" value={defs.vendorPick} onChange={e => setDefs(d => ({ ...d, vendorPick: e.target.value }))}>
+                                <option value="">-- Pick on each card --</option>
+                                {vendorList.map(v => <option key={v} value={v}>{v}</option>)}
+                                <option value={OTHER}>Other (type it)</option>
+                            </select>
+                            {defs.vendorPick === OTHER && <input type="text" style={{ marginTop: '6px' }} value={defs.vendorOther} placeholder="Name as it is in QuickBooks" onChange={e => setDefs(d => ({ ...d, vendorOther: e.target.value }))} />}
+                        </div>
+                        <div>
+                            <label htmlFor="b-def-date">Date received for new files</label>
+                            <input id="b-def-date" type="date" value={defs.dateReceived} onChange={e => setDefs(d => ({ ...d, dateReceived: e.target.value }))} />
+                        </div>
+                        <button className="btn-secondary btn-auto btn-sm" onClick={applyDefaults} disabled={running || !unsavedCount}>Use on all cards</button>
+                    </div>
+                    <label className={'drop' + (dragOver ? ' over' : '')} style={{ display: 'block', marginBottom: '12px' }}
+                        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                        onDragLeave={() => setDragOver(false)}
+                        onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}>
+                        <span>Drop the supplier bills here, or click to pick them (PDF or photo, {MAX_MB} MB each).</span>
+                        <input type="file" multiple accept="application/pdf,image/*" style={{ display: 'none' }}
+                            onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+                    </label>
+                    {topMsg && <div className={topMsg.ok ? 'ok' : 'error'} style={{ marginBottom: '10px' }}>{topMsg.text}</div>}
+
+                    {rows.map(r => {
+                        const x = info[r.key];
+                        const saved = r.state === 'saved';
+                        const dis = saved || r.state === 'saving' || running;
+                        return (
+                            <div key={r.key} className={'bcard' + (saved ? ' saved' : r.state === 'error' ? ' bad' : '')}>
+                                <div className="bcard-head">
+                                    <span><strong>{r.file.name}</strong> <span className="muted">({Math.max(1, Math.round(r.file.size / 1024))} KB)</span></span>
+                                    <span className="row-btns">
+                                        <button className="btn-link" onClick={() => window.open(URL.createObjectURL(r.file))}>View</button>
+                                        {!saved && <button className="btn-link" onClick={() => removeRow(r.key)} disabled={dis}>Remove</button>}
+                                        {saved ? <span className="pill passed">Saved</span> : r.state === 'saving' ? <span className="pill waiting-pa">Saving...</span>
+                                            : x.problem ? <span className="pill pa-pending">Needs info</span> : <span className="pill waiting-pa">Ready</span>}
+                                    </span>
+                                </div>
+                                {!saved && (
+                                    <div className="bgrid">
+                                        <div>
+                                            <label>Job</label>
+                                            <select value={r.jobId} onChange={e => setRow(r.key, { jobId: e.target.value })} disabled={dis}>
+                                                <option value="">-- Pick the job --</option>
+                                                {openJobs.map(j => <option key={j.id} value={j.id}>{j.code} - {j.address}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label>Material PO</label>
+                                            <select value={r.formId} onChange={e => setRow(r.key, { formId: e.target.value })} disabled={dis || !x.jd || !x.jd.pos}>
+                                                <option value="">{r.jobId && x.jd && x.jd.pos === null ? 'Loading...' : '-- Pick the PO --'}</option>
+                                                {(x.jd && x.jd.pos ? x.jd.pos : []).map(p => <option key={p.id} value={p.id}>{p.category} - {p.poNumber} - {p.subName}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label>Supplier</label>
+                                            <select value={r.vendorPick} onChange={e => setRow(r.key, { vendorPick: e.target.value })} disabled={dis}>
+                                                <option value="">-- Pick the supplier --</option>
+                                                {vendorList.map(v => <option key={v} value={v}>{v}</option>)}
+                                                <option value={OTHER}>Other (type it)</option>
+                                            </select>
+                                            {r.vendorPick === OTHER && (
+                                                <div>
+                                                    <input type="text" style={{ marginTop: '4px' }} value={r.vendorOther} placeholder="Name as it is in QuickBooks" onChange={e => setRow(r.key, { vendorOther: e.target.value })} disabled={dis} />
+                                                    {x.onList ? <div className="muted">On the list as "{x.onList}".</div>
+                                                        : x.typed && <label className="check" style={{ marginTop: '4px' }}>
+                                                            <input type="checkbox" checked={r.addVendor} onChange={e => setRow(r.key, { addVendor: e.target.checked })} disabled={dis} />
+                                                            Add "{x.typed}" to the supplier list</label>}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label>Invoice #</label>
+                                            <input type="text" value={r.invoiceNumber} onChange={e => setRow(r.key, { invoiceNumber: e.target.value })} disabled={dis} />
+                                        </div>
+                                        <div>
+                                            <label>Amount</label>
+                                            <input type="text" inputMode="decimal" placeholder="$0.00" value={r.amount} onChange={e => setRow(r.key, { amount: e.target.value })} disabled={dis} />
+                                        </div>
+                                        <div>
+                                            <label>Date received</label>
+                                            <input type="date" value={r.dateReceived} onChange={e => setRow(r.key, { dateReceived: e.target.value })} disabled={dis} />
+                                        </div>
+                                        <div>
+                                            <label>Approver</label>
+                                            <select value={r.approverUid} onChange={e => setRow(r.key, { approverUid: e.target.value })} disabled={dis}>
+                                                <option value="">{approvers === null ? 'Loading people...' : '-- Pick who approves it --'}</option>
+                                                {x.approverList.map(a => <option key={a.uid} value={a.uid}>{a.name}{x.jd && x.jd.superInfo && a.uid === x.jd.superInfo.uid ? ' (job Super)' : ` (${a.role})`}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                )}
+                                {!saved && x.problem && <div className={x.problem.startsWith('Loading') ? 'muted' : (x.problem.includes('already in AP') || x.problem.startsWith('Same supplier') ? 'dup' : 'warn')} style={{ marginTop: '6px' }}>{x.problem}</div>}
+                                {!saved && x.warn && <div className="warn" style={{ marginTop: '6px' }}>{x.warn}</div>}
+                                {!saved && x.fileName && <div className="fname" style={{ marginTop: '6px', marginBottom: 0 }}>Saved as: {x.fileName}</div>}
+                                {r.msg && <div className={saved ? 'ok' : 'error'} style={{ marginTop: '6px' }}>{r.msg}</div>}
+                            </div>
+                        );
+                    })}
+
+                    {rows.length > 0 && (
+                        <div className="actions" style={{ alignItems: 'center' }}>
+                            <span className="muted">{readyRows.length} ready · {unsavedCount - readyRows.length} need info · {savedCount} saved</span>
+                            {savedCount > 0 && <button className="btn-secondary btn-auto btn-sm" onClick={() => setRows(rs => rs.filter(r => r.state !== 'saved'))} disabled={running}>Clear saved cards</button>}
+                            <button className="btn-primary btn-auto" onClick={saveAll} disabled={running || !readyRows.length}>{running ? 'Saving...' : `Save all ready (${readyRows.length})`}</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         function APApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', 'notset', 'noaccess', object = can use AP
@@ -283,6 +615,7 @@
             const [apprMsg, setApprMsg] = useState(null);
             const [apprSaving, setApprSaving] = useState(false);
             const [apprDone, setApprDone] = useState('');     // message after the approver saves
+            const [showBatch, setShowBatch] = useState(false); // 1d batch upload box (Owner/Admin, no job picked)
             const [notesId, setNotesId] = useState(null);     // the invoice whose notes are open (2c)
             const [notes, setNotes] = useState(null);         // its notes, oldest first (null = loading)
             const [notesErr, setNotesErr] = useState('');
@@ -425,7 +758,7 @@
 
             // Users (Owner/Admin): the approver pick list and the names in the filters
             useEffect(() => {
-                if (!isAdmin || people) return;
+                if (!isAdmin || people) return;  // loads once for Owner/Admin (approver pick lists in Add, Edit and Batch upload)
                 db.collection('users').get().then(snapshot => {
                     const list = [];
                     snapshot.forEach(doc => {
@@ -1107,7 +1440,12 @@
 
                     {isAdmin && !job && (
                         <div className="section">
-                            <div className="section-title">All invoices (all jobs)</div>
+                            <div className="section-head">
+                                <div className="section-title">All invoices (all jobs)</div>
+                                {!showBatch && <button className="btn-primary btn-auto btn-sm" onClick={() => setShowBatch(true)}>+ Batch upload supplier bills</button>}
+                            </div>
+                            {showBatch && <BatchUpload jobs={jobs} allInvoices={allInvoices} vendorList={vendorList} approvers={approvers}
+                                user={user} profile={profile} onClose={() => setShowBatch(false)} />}
                             <div className="filters">
                                 <select value={filters.status} onChange={e => setFilter('status', e.target.value)} aria-label="Status">
                                     {STATUS_FILTERS.map(([key, label]) => <option key={key} value={key}>{label} ({statusCount[key]})</option>)}
@@ -1436,3 +1774,5 @@
     </script>
 </body>
 </html>
+
+
