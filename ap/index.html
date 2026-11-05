@@ -81,6 +81,9 @@
         .pill.question { background: #fdecea; color: #c62828; }
         .pill.dupflag { background: #fff3e0; color: #b36b00; border: 1px solid #f0c27a; }
         .pill.inqb { background: #455a64; color: white; }
+        .pill.coding { background: #fff3e0; color: #b45309; border: 1px solid #f5c98a; }
+        .hold-line { margin-top: 6px; font-size: 13px; }
+        .code-box { border: 1px solid #f5c98a; background: #fffaf2; border-radius: 6px; padding: 12px; margin: 10px 0; }
         .pill.checked { background: #e6f4ea; color: #2e7d32; }
         .pill.unchecked { background: #f5f5f5; color: #777; }
         .dup-box { border: 1px solid #f0c27a; background: #fffaf0; border-radius: 4px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; }
@@ -192,6 +195,7 @@
         const waitingOn = (i, uid) => i.deleted !== true && isPassed(i) && !(i.appr && i.appr.status) && i.approver && i.approver.uid === uid;
         const statusOf = (i) => {
             if (i.deleted === true) return { key: 'hidden', text: 'Hidden' };
+            if (isHolding(i)) return { key: 'coding', text: 'Needs coding' };
             const key = statusKeyOf(i.pa, i.appr);
             if (key === 'ready' && inQb(i)) return { key: 'inqb', text: 'In QuickBooks' };
             const who = i.approver && i.approver.name ? i.approver.name : 'the approver';
@@ -232,6 +236,14 @@
         const withRandom = (name) => String(name).replace(/(\.[a-z0-9]{2,5})$/i, `_R${1000 + Math.floor(Math.random() * 9000)}$1`);
         const dupFlagFor = (matches, now) => ({ at: now, matches: matches.map(m => ({ id: m.id, invoiceNumber: m.invoiceNumber || '', jobCode: m.jobCode || '', vendor: m.vendor || '' })) });
         const dupOpen = (i) => i.deleted !== true && !!(i.dupFlag && !i.dupChecked);
+        // Step 4b: a supplier bill whose job or PO isn't known yet is saved to the Needs coding list (no job, no PO, no approver).
+        // Owner/Admin code it later; it then goes to Production Admin like any other invoice. Not counted on any job or PO until then.
+        const isHolding = (i) => i.needsCoding === true;
+        const HOLD_FOLDER = '_needs-coding';
+        const holdFileName = ({ vendor, amount, dateReceived, file }) => {
+            const [y, m, d] = dateReceived.split('-');
+            return `NEEDS-CODING_${cleanPart(vendor)}_${amountForName(amount)}_${m}-${d}-${y.slice(-2)}${extOf(file)}`;
+        };
 
         // Step 3a: Bookkeeping (Spencer, Nov 5). Ready-to-pay invoices are checked and corrected for QuickBooks, printed,
         // entered by hand, then marked In QuickBooks. The amount is never changed here. The status stays 'ready' (Job Cost reads it).
@@ -700,7 +712,7 @@
                     : !/^\d{4}-\d{2}-\d{2}$/.test(r.dateReceived) ? 'Pick the date received.'
                     : !approver ? 'Pick who approves it.'
                     : allInvoices === null ? 'Still loading the invoice list...'
-                    : dupAp ? `Invoice ${dupAp.invoiceNumber} from ${dupAp.vendor} is already in AP on ${dupAp.jobCode}. It can't be added twice.`
+                    : dupAp ? `Invoice ${dupAp.invoiceNumber} from ${dupAp.vendor} is already in AP on ${dupAp.jobCode || 'the Needs coding list'}. It can't be added twice.`
                     : dupBatch ? `Same supplier and invoice # as ${dupBatch.file.name} in this batch.`
                     : '';
                 // PO balance: passed invoices + invoices added but not passed + other unsaved cards on the same PO
@@ -715,7 +727,16 @@
                     }
                 }
                 const fileName = !problem && po && vendor && amount > 0 ? buildFileName({ category: po.category, vendor, amount, poNumber: po.poNumber, dateReceived: r.dateReceived, file: r.file }) : '';
-                info[r.key] = { vendor, typed, onList, job, jd, po, amount, approver, approverList: list, problem, warn, fileName };
+                // Needs coding (4b): the supplier, invoice #, amount and date are in, no duplicate, but no job or PO yet
+                const holdOk = r.state !== 'saved' && !r.reading && !!vendor && !!r.invoiceNumber.trim() && amount > 0
+                    && /^\d{4}-\d{2}-\d{2}$/.test(r.dateReceived) && allInvoices !== null && !dupAp && !dupBatch;
+                const canHold = !!problem && holdOk && !po;
+                const holdName = canHold ? holdFileName({ vendor, amount, dateReceived: r.dateReceived, file: r.file }) : '';
+                // A duplicate is normally named only once the job and PO are in; say it straight away so it's clear why it can't be saved at all
+                const dupMsg = dupAp ? `Invoice ${dupAp.invoiceNumber} from ${dupAp.vendor} is already in AP on ${dupAp.jobCode || 'the Needs coding list'}. It can't be added twice.`
+                    : dupBatch ? `Same supplier and invoice # as ${dupBatch.file.name} in this batch.` : '';
+                info[r.key] = { vendor, typed, onList, job, jd, po, amount, approver, approverList: list, problem, warn, fileName, canHold, holdName,
+                    dupEarly: r.state !== 'saved' && dupMsg && problem !== dupMsg ? dupMsg : '' };
             });
             const readyRows = rows.filter(r => r.state !== 'saved' && !info[r.key].problem);
             const unsavedCount = rows.filter(r => r.state !== 'saved').length;
@@ -777,6 +798,67 @@
                 const left = unsavedCount - ok;
                 setTopMsg({ text: `${ok} saved${failed ? `, ${failed} not saved (see the red cards)` : ''}.${left > 0 ? ` ${left} card${left === 1 ? '' : 's'} still to finish.` : ' Every card is saved.'}`
                     + (flagged ? ` ${flagged} flagged as a possible duplicate (same file name) for Production Admin to check.` : ''), ok: !failed });
+            };
+            // 4b: save cards with no job or PO yet to the Needs coding list
+            const holdList = rows.filter(r => r.state !== 'saved' && info[r.key].canHold);
+            const saveHold = async (list) => {
+                if (!list.length) return;
+                setRunning(true); setTopMsg(null);
+                let ok = 0, failed = 0, flagged = 0;
+                const savedThisRun = [];
+                for (const r of list) {
+                    const x = info[r.key];
+                    setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saving', msg: '' } : o));
+                    try {
+                        const invRef = db.collection('apInvoices').doc();
+                        const sameName = sameNameAs(x.holdName, [...(allInvoices || []), ...savedThisRun]);
+                        const saveName = sameName.length ? withRandom(x.holdName) : x.holdName;
+                        const path = `apInvoices/${HOLD_FOLDER}/${invRef.id}/${Date.now()}_${saveName}`;
+                        const ref = storage.ref(path);
+                        await ref.put(r.file, cleanSaveName(saveName, r.file.type));
+                        const url = await ref.getDownloadURL();
+                        const now = new Date();
+                        const by = { uid: user.uid, name: profile.name || user.email };
+                        const batch = db.batch();
+                        const newVendor = r.vendorPick === OTHER && r.addVendor && !x.onList;
+                        if (newVendor) {
+                            batch.set(vendorsDoc(), {
+                                list: firebase.firestore.FieldValue.arrayUnion(...SUPPLIERS, x.vendor),
+                                added: firebase.firestore.FieldValue.arrayUnion({ name: x.vendor, at: now, by })
+                            }, { merge: true });
+                        }
+                        batch.set(invRef, {
+                            jobId: '', jobCode: '', kind: 'supplier', vendor: x.vendor,
+                            invoiceNumber: r.invoiceNumber.trim(), amount: x.amount, previousPayment: null, dateReceived: r.dateReceived,
+                            po: null, approver: null,
+                            file: { url, name: saveName, path, type: r.file.type },
+                            dupFlag: sameName.length ? dupFlagFor(sameName, now) : null,
+                            invoiceDate: r.invoiceDate || null, dueDate: r.dueDate || null,
+                            pdfRead: r.readInfo && r.readInfo.supplier ? { supplier: r.readInfo.supplier, fields: r.readInfo.fields, jobText: r.readInfo.jobText,
+                                jobHow: r.jobHow || '', page: r.readInfo.page || 0, of: r.readInfo.of || 1, at: now } : null,
+                            needsCoding: true,
+                            hold: { at: now, by, jobId: r.jobId || '', jobCode: x.job ? x.job.code : '', trade: r.trade || '',
+                                jobText: r.readInfo && r.readInfo.jobText ? r.readInfo.jobText : '', why: x.problem },
+                            createdAt: now, createdBy: by, deleted: false, batchUpload: true
+                        });
+                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true, needsCoding: true,
+                            originalFileName: r.readInfo && r.readInfo.originalFileName ? r.readInfo.originalFileName : r.file.name,
+                            ...(r.readInfo && r.readInfo.supplier ? { readFromPdf: r.readInfo.supplier } : {}), ...(sameName.length ? { dupFlag: true } : {}) });
+                        await batch.commit();
+                        ok++;
+                        if (sameName.length) flagged++;
+                        savedThisRun.push({ id: invRef.id, invoiceNumber: r.invoiceNumber.trim(), jobCode: '', vendor: x.vendor, deleted: false, file: { name: saveName } });
+                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saved',
+                            msg: `Saved to Needs coding as ${saveName}` + (sameName.length ? ` (same file name as invoice ${sameName.map(m => m.invoiceNumber).join(', ')}: flagged as a possible duplicate)` : '') } : o));
+                    } catch (error) {
+                        failed++;
+                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'error', msg: 'Error saving: ' + error.message } : o));
+                    }
+                }
+                setRunning(false);
+                const left = unsavedCount - ok;
+                setTopMsg({ text: `${ok} saved to Needs coding${failed ? `, ${failed} not saved (see the red cards)` : ''}.${left > 0 ? ` ${left} card${left === 1 ? '' : 's'} still to finish.` : ' Every card is saved.'}`
+                    + ' Code them from the Needs coding tab.' + (flagged ? ` ${flagged} flagged as a possible duplicate (same file name).` : ''), ok: !failed });
             };
             const close = () => {
                 if (unsavedCount && !window.confirm(`${unsavedCount} file${unsavedCount === 1 ? ' is' : 's are'} not saved. Close and drop ${unsavedCount === 1 ? 'it' : 'them'}?`)) return;
@@ -908,6 +990,11 @@
                                 {!saved && x.problem && <div className={x.problem.startsWith('Loading') ? 'muted' : (x.problem.includes('already in AP') || x.problem.startsWith('Same supplier') ? 'dup' : 'warn')} style={{ marginTop: '6px' }}>{x.problem}</div>}
                                 {!saved && x.warn && <div className="warn" style={{ marginTop: '6px' }}>{x.warn}</div>}
                                 {!saved && x.fileName && <div className="fname" style={{ marginTop: '6px', marginBottom: 0 }}>Saved as: {x.fileName}</div>}
+                                {!saved && x.dupEarly && <div className="dup" style={{ marginTop: '6px' }}>{x.dupEarly}</div>}
+                                {!saved && x.canHold && (
+                                    <div className="hold-line">Job or PO not known yet? <button className="btn-link" onClick={() => saveHold([r])} disabled={dis}>Save to Needs coding</button>
+                                        <span className="muted"> (it waits on the Needs coding tab until someone picks the job and PO)</span></div>
+                                )}
                                 {r.msg && <div className={saved ? 'ok' : 'error'} style={{ marginTop: '6px' }}>{r.msg}</div>}
                             </div>
                         );
@@ -917,8 +1004,193 @@
                         <div className="actions" style={{ alignItems: 'center' }}>
                             <span className="muted">{readyRows.length} ready · {unsavedCount - readyRows.length} need info · {savedCount} saved</span>
                             {savedCount > 0 && <button className="btn-secondary btn-auto btn-sm" onClick={() => setRows(rs => rs.filter(r => r.state !== 'saved'))} disabled={running}>Clear saved cards</button>}
+                            {holdList.length > 0 && <button className="btn-secondary btn-auto" onClick={() => saveHold(holdList)} disabled={running}>{`Save ${holdList.length} to Needs coding`}</button>}
                             <button className="btn-primary btn-auto" onClick={saveAll} disabled={running || !readyRows.length}>{running ? 'Saving...' : `Save all ready (${readyRows.length})`}</button>
                         </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Step 4b: Needs coding page (Owner/Admin). Pick the job, material PO and approver; the bill then waits on Production Admin.
+        function NeedsCoding({ allInvoices, jobs, approvers, user, profile, onHide }) {
+            const [codeId, setCodeId] = useState(null);
+            const [f, setF] = useState({ jobId: '', formId: '', approverUid: '' });
+            const [jd, setJd] = useState(null);       // { jobId, pos: material POs | null (loading), superInfo, error }
+            const [msg, setMsg] = useState(null);
+            const [saving, setSaving] = useState(false);
+            const current = React.useRef('');
+            const list = (allInvoices || []).filter(i => isHolding(i) && i.deleted !== true)
+                .sort((a, b) => (a.dateReceived || '').localeCompare(b.dateReceived || '') || (a.vendor || '').localeCompare(b.vendor || ''));
+            const openJobs = (jobs || []).filter(j => !j.archived);
+            const inv = codeId ? list.find(i => i.id === codeId) || null : null;
+            const tradeOf = (i) => (i && i.hold && i.hold.trade) || '';
+
+            const loadFor = async (jobId, trade) => {
+                current.current = jobId;
+                setJd(jobId ? { jobId, pos: null, superInfo: undefined } : null);
+                if (!jobId) return;
+                try {
+                    const [formsSnap, cardSnap] = await Promise.all([
+                        db.collection('jobs').doc(jobId).collection('forms').get(),
+                        db.collection('jobs').doc(jobId).collection('notesInfo').doc('contactCard').get()
+                    ]);
+                    const all = [];
+                    formsSnap.forEach(doc => {
+                        const d = doc.data();
+                        if (d.deleted === true) return;
+                        all.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                            status: poStatus(d.status), amount: amountOf(d.contractAmount) });
+                    });
+                    const mats = all.filter(isGeneralPO).sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
+                    const t = cardSnap.exists ? (cardSnap.data().team || {}) : {};
+                    const sup = t.super && t.super.uid ? t.super : null;
+                    if (current.current !== jobId) return;
+                    setJd({ jobId, pos: mats, superInfo: sup });
+                    setF(x => x.jobId !== jobId ? x : { ...x, formId: x.formId || pickMaterialPO(mats, trade), approverUid: x.approverUid || (sup ? sup.uid : '') });
+                } catch (error) {
+                    if (current.current !== jobId) return;
+                    setJd({ jobId, pos: [], superInfo: null, error: 'Error loading the job: ' + error.message });
+                }
+            };
+            const openCode = (i) => {
+                const jobId = i.hold && i.hold.jobId && openJobs.some(j => j.id === i.hold.jobId) ? i.hold.jobId : '';
+                setF({ jobId, formId: '', approverUid: '' }); setMsg(null); setCodeId(i.id);
+                loadFor(jobId, tradeOf(i));
+            };
+            const pickJob = (jobId) => { setF({ jobId, formId: '', approverUid: '' }); loadFor(jobId, tradeOf(inv)); };
+            const closeCode = () => { setCodeId(null); current.current = ''; setJd(null); };
+
+            const job = f.jobId ? openJobs.find(j => j.id === f.jobId) || null : null;
+            const jdNow = jd && jd.jobId === f.jobId ? jd : null;
+            const po = jdNow && jdNow.pos ? jdNow.pos.find(p => p.id === f.formId) || null : null;
+            const approverList = [...(approvers || [])];
+            if (jdNow && jdNow.superInfo && !approverList.some(a => a.uid === jdNow.superInfo.uid)) approverList.unshift({ uid: jdNow.superInfo.uid, name: jdNow.superInfo.name || 'Job Super', role: 'super' });
+            const approver = approverList.find(a => a.uid === f.approverUid) || null;
+            const problem = !inv ? ''
+                : !f.jobId ? 'Pick the job.'
+                : !jdNow || jdNow.pos === null ? 'Loading the job...'
+                : jdNow.error ? jdNow.error
+                : jdNow.pos.length === 0 ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.'
+                : !po ? 'Pick the material PO.'
+                : !approver ? 'Pick who approves it.' : '';
+            let warn = '';
+            if (inv && po && typeof inv.amount === 'number') {
+                if (po.amount === null) warn = 'This PO has no amount, so it can\'t pass until the PO is fixed in PO Manager.';
+                else {
+                    const used = (allInvoices || []).filter(i => i.id !== inv.id && i.deleted !== true && i.po && i.po.formId === po.id).reduce((t, i) => t + (i.amount || 0), 0);
+                    if (used + inv.amount > po.amount + 0.005) warn = `With the invoices already on this PO, it would be over the PO's ${money(po.amount)} by ${money(used + inv.amount - po.amount)}. It can be coded, but it can't pass until a revised PO or a supplement covers it.`;
+                }
+            }
+            const fileName = inv && po ? buildFileName({ category: po.category, vendor: inv.vendor, amount: inv.amount, poNumber: po.poNumber,
+                dateReceived: inv.dateReceived, file: { name: inv.file ? inv.file.name : '', type: inv.file ? inv.file.type : '' } }) : '';
+
+            const save = async () => {
+                if (!inv || problem) return;
+                setSaving(true); setMsg(null);
+                try {
+                    const ref = db.collection('apInvoices').doc(inv.id);
+                    const snap = await ref.get();
+                    if (!snap.exists || snap.data().needsCoding !== true || snap.data().deleted === true) {
+                        setMsg({ text: 'Someone else coded or hid this bill meanwhile.', ok: false }); setSaving(false); return;
+                    }
+                    const same = sameNameAs(fileName, allInvoices, inv.id);
+                    const name = same.length ? withRandom(fileName) : fileName;
+                    const now = new Date();
+                    const by = { uid: user.uid, name: profile.name || user.email };
+                    const batch = db.batch();
+                    batch.update(ref, {
+                        jobId: f.jobId, jobCode: job.code,
+                        po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
+                        approver: { uid: approver.uid, name: approver.name },
+                        needsCoding: false,
+                        coded: { at: now, by, holdFileName: inv.file ? inv.file.name : '' },
+                        file: { ...(inv.file || {}), name },
+                        dupFlag: same.length ? dupFlagFor(same, now) : (inv.dupFlag || null)
+                    });
+                    batch.set(ref.collection('history').doc(), { action: 'Coded', at: now, by, jobCode: job.code, poNumber: po.poNumber,
+                        approver: approver.name, fileName: name, ...(same.length ? { dupFlag: true } : {}) });
+                    await batch.commit();
+                    setCodeId(null); current.current = ''; setJd(null);
+                    setMsg({ text: `Bill ${inv.invoiceNumber} from ${inv.vendor} coded to ${job.code}, PO ${po.poNumber}. It's now waiting on Production Admin.`
+                        + (same.length ? ` Same file name as invoice ${same.map(m => m.invoiceNumber).join(', ')}, so a number was added and it's flagged as a possible duplicate.` : ''), ok: true });
+                } catch (error) {
+                    setMsg({ text: 'Error saving: ' + error.message, ok: false });
+                }
+                setSaving(false);
+            };
+
+            const total = list.reduce((t, i) => t + (typeof i.amount === 'number' ? i.amount : 0), 0);
+            return (
+                <div className="section">
+                    <div className="section-title">Needs coding: bills saved with no job or PO yet</div>
+                    <p className="muted" style={{ marginBottom: '10px' }}>Pick the job, material PO and approver for each bill. It then goes to Production Admin like any other invoice. These bills aren't counted on any job or PO until they're coded.</p>
+                    {allInvoices === null && <p className="muted">Loading invoices...</p>}
+                    {msg && !(inv && !msg.ok) && <div className={msg.ok ? 'ok' : 'error'} style={{ marginBottom: '10px' }}>{msg.text}</div>}
+                    {allInvoices && list.length === 0 && <p className="muted">Nothing waiting to be coded.</p>}
+                    {list.length > 0 && (
+                        <React.Fragment>
+                            <div className="list-sum"><span>{list.length} bill{list.length === 1 ? '' : 's'} · {money(total)}</span></div>
+                            <div className="table-wrap"><table>
+                                <thead><tr><th>Received</th><th>Supplier</th><th>Invoice #</th><th className="num">Amount</th><th>The bill says</th><th>Saved by</th><th></th></tr></thead>
+                                <tbody>{list.map(i => (
+                                    <React.Fragment key={i.id}>
+                                        <tr className={codeId === i.id ? 'editing-row' : ''}>
+                                            <td>{shortDate(i.dateReceived)}</td>
+                                            <td>{i.vendor}{i.pdfRead ? <small>Read from PDF</small> : null}</td>
+                                            <td>{i.invoiceNumber}{dupOpen(i) ? <small><span className="pill pa-pending">Possible duplicate</span></small> : null}</td>
+                                            <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}</td>
+                                            <td>{i.hold && i.hold.jobText ? `"${i.hold.jobText}"` : <span className="muted">no job on it</span>}
+                                                {i.hold && i.hold.jobCode ? <small>Job {i.hold.jobCode} picked, no PO</small> : null}</td>
+                                            <td>{i.createdBy ? i.createdBy.name : ''}</td>
+                                            <td><span className="row-btns">
+                                                {i.file && i.file.url && <a className="btn-link" href={i.file.url} target="_blank" rel="noopener">View</a>}
+                                                <button className="btn-link" onClick={() => codeId === i.id ? closeCode() : openCode(i)} disabled={saving}>{codeId === i.id ? 'Close' : 'Code'}</button>
+                                                <button className="btn-link" onClick={() => onHide(i)} disabled={saving}>Hide</button>
+                                            </span></td>
+                                        </tr>
+                                        {codeId === i.id && (
+                                            <tr><td colSpan="7">
+                                                <div className="code-box">
+                                                    <div className="section-title" style={{ marginBottom: '6px' }}>Code bill {i.invoiceNumber} from {i.vendor} ({typeof i.amount === 'number' ? money(i.amount) : ''})</div>
+                                                    <div className="bgrid">
+                                                        <div>
+                                                            <label htmlFor="nc-job">Job</label>
+                                                            <select id="nc-job" value={f.jobId} onChange={e => pickJob(e.target.value)} disabled={saving}>
+                                                                <option value="">-- Pick the job --</option>
+                                                                {openJobs.map(j => <option key={j.id} value={j.id}>{j.code} - {j.address}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label htmlFor="nc-po">Material PO</label>
+                                                            <select id="nc-po" value={f.formId} onChange={e => setF(x => ({ ...x, formId: e.target.value }))} disabled={saving || !jdNow || !jdNow.pos}>
+                                                                <option value="">{f.jobId && jdNow && jdNow.pos === null ? 'Loading...' : '-- Pick the PO --'}</option>
+                                                                {(jdNow && jdNow.pos ? jdNow.pos : []).map(p => <option key={p.id} value={p.id}>{p.category} - {p.poNumber} - {p.subName}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label htmlFor="nc-appr">Approver</label>
+                                                            <select id="nc-appr" value={f.approverUid} onChange={e => setF(x => ({ ...x, approverUid: e.target.value }))} disabled={saving}>
+                                                                <option value="">{approvers === null ? 'Loading people...' : '-- Pick who approves it --'}</option>
+                                                                {approverList.map(a => <option key={a.uid} value={a.uid}>{a.name}{jdNow && jdNow.superInfo && a.uid === jdNow.superInfo.uid ? ' (job Super)' : ` (${a.role})`}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    {problem && <div className={problem.startsWith('Loading') ? 'muted' : 'warn'} style={{ marginTop: '6px' }}>{problem}</div>}
+                                                    {warn && <div className="warn" style={{ marginTop: '6px' }}>{warn}</div>}
+                                                    {fileName && <div className="fname" style={{ marginTop: '6px', marginBottom: 0 }}>File name becomes: {fileName}</div>}
+                                                    {msg && !msg.ok && <div className="error" style={{ marginTop: '6px' }}>{msg.text}</div>}
+                                                    <div className="actions">
+                                                        <button className="btn-secondary btn-auto" onClick={closeCode} disabled={saving}>Cancel</button>
+                                                        <button className="btn-primary btn-auto" onClick={save} disabled={saving || !!problem}>{saving ? 'Saving...' : 'Save coding'}</button>
+                                                    </div>
+                                                </div>
+                                            </td></tr>
+                                        )}
+                                    </React.Fragment>
+                                ))}</tbody>
+                            </table></div>
+                        </React.Fragment>
                     )}
                 </div>
             );
@@ -1612,7 +1884,7 @@
                 const key = dupKeyOf(inv.vendor, inv.invoiceNumber);
                 const other = (allInvoices || []).find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === key);
                 if (other) {
-                    window.alert(`It can't be restored: invoice ${other.invoiceNumber} from ${other.vendor} is already in AP on ${other.jobCode}. Hide that one first if this is the one to keep.`);
+                    window.alert(`It can't be restored: invoice ${other.invoiceNumber} from ${other.vendor} is already in AP on ${other.jobCode || 'the Needs coding list'}. Hide that one first if this is the one to keep.`);
                     return;
                 }
                 if (!window.confirm(`Restore invoice ${inv.invoiceNumber} from ${inv.vendor}? It counts against the PO balance again.`)) return;
@@ -1729,7 +2001,7 @@
                     : prevPay === null && form.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
                     : !approver ? 'Pick who approves it.' : !file && !editId ? 'Add the invoice file (PDF or photo).'
                     : allInvoices === null ? 'Still loading the invoice list. Try again in a moment.'
-                    : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode}. The same invoice can't be added twice.` : '';
+                    : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. The same invoice can't be added twice.` : '';
                 if (missing) { setFormMsg({ text: missing, ok: false }); return; }
                 if (editId) { await saveEdit(); return; }
                 setSaving(true); setFormMsg(null);
@@ -1899,7 +2171,8 @@
             const searchText = filters.text.trim().toLowerCase();
             // The other filters first; the status filter and its counts work on what's left
             const otherFiltered = (allInvoices || []).filter(i =>
-                (!filters.superUid || (jobById[i.jobId] && jobById[i.jobId].assignedSupers.includes(filters.superUid)))
+                !(isHolding(i) && i.deleted !== true) // bills waiting on the Needs coding tab (hidden ones show with Show hidden)
+                && (!filters.superUid || (jobById[i.jobId] && jobById[i.jobId].assignedSupers.includes(filters.superUid)))
                 && (!filters.approverUid || (i.approver && i.approver.uid === filters.approverUid))
                 && (!filters.kind || i.kind === filters.kind)
                 && (!searchText || [i.vendor, i.invoiceNumber, i.jobCode, i.po && i.po.poNumber].join(' ').toLowerCase().includes(searchText)));
@@ -2037,10 +2310,12 @@
                     {isAdmin && !job && (
                         <div className="view-tabs">
                             <button className={view === 'invoices' ? 'on' : ''} onClick={() => setView('invoices')}>All invoices</button>
+                            <button className={view === 'coding' ? 'on' : ''} onClick={() => setView('coding')}>Needs coding ({(allInvoices || []).filter(i => isHolding(i) && i.deleted !== true).length})</button>
                             <button className={view === 'books' ? 'on' : ''} onClick={() => setView('books')}>Bookkeeping: For QuickBooks ({(allInvoices || []).filter(i => isReady(i) && !inQb(i)).length})</button>
                         </div>
                     )}
                     {isAdmin && !job && view === 'books' && <Bookkeeping allInvoices={allInvoices} user={user} profile={profile} />}
+                    {isAdmin && !job && view === 'coding' && <NeedsCoding allInvoices={allInvoices} jobs={jobs} approvers={approvers} user={user} profile={profile} onHide={hideInvoice} />}
 
                     {isAdmin && !job && view === 'invoices' && (
                         <div className="section">
