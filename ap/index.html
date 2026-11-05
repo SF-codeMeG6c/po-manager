@@ -240,8 +240,8 @@
         const tradeCode = (cat) => { const m = /^[A-Za-z]+/.exec(String(cat || '').trim()); return m ? m[0].toUpperCase() : ''; };
         const qbItemFor = (i) => { const c = tradeCode(i.po && i.po.category); return c ? (i.kind === 'supplier' ? c + ' MATERIAL' : c) : ''; };
         const QB_FIELDS = ['vendor', 'customer', 'billNo', 'billDate', 'dueDate', 'item', 'memo'];
-        const qbDefaults = (i) => ({ vendor: i.vendor || '', customer: i.jobCode || '', billNo: i.invoiceNumber || '', billDate: i.dateReceived || '',
-            dueDate: '', item: qbItemFor(i), memo: i.po && i.po.poNumber ? 'PO ' + i.po.poNumber : '' });
+        const qbDefaults = (i) => ({ vendor: i.vendor || '', customer: i.jobCode || '', billNo: i.invoiceNumber || '', billDate: i.invoiceDate || i.dateReceived || '',
+            dueDate: i.dueDate || '', item: qbItemFor(i), memo: i.po && i.po.poNumber ? 'PO ' + i.po.poNumber : '' });
         const qbOf = (i) => ({ ...qbDefaults(i), ...(i.qb || {}) });
         const inQb = (i) => !!(i.qbEntered && i.qbEntered.date);
         const qbChecked = (i) => !!(i.qb && i.qb.checked);
@@ -301,6 +301,212 @@
 
         // Step 1d: batch upload of supplier bills (Owner/Admin). Each file becomes a card; a card saves when it's complete.
         // Saves exactly like Add invoice (file, apInvoices record, 'Added' history line). No holding area: unsaved cards stay on screen.
+        // Step 4 (Spencer, Nov 5: Option 1): read computer-made supplier PDFs, one reader per layout:
+        // Home Depot, L&W Supply, National, Ganahl Lumber. Scans, photos and handwriting can't be read.
+        (function (root) {
+            const money = (t) => { const m = /\(?-?\$?\s*([\d,]+\.\d{2})\)?/.exec(String(t || '')); return m ? Number(m[1].replace(/,/g, '')) : null; };
+            // mm/dd/yy or mm/dd/yyyy -> yyyy-mm-dd
+            const isoDate = (t) => {
+                const m = /(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(String(t || ''));
+                if (!m) return '';
+                const y = m[3].length === 2 ? '20' + m[3] : m[3];
+                return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+            };
+            const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+            const sorted = (items) => items.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+            const pageText = (p) => sorted(p.items).map(i => i.s).join(' ');
+            const findItem = (p, re) => sorted(p.items).find(i => re.test(clean(i.s)));
+            // The first item to the right of the label, on the same line (within 4 points up or down)
+            const rightOf = (p, re, maxGap) => {
+                const l = findItem(p, re);
+                if (!l) return '';
+                const end = l.x + (l.w || 0);
+                const r = p.items.filter(i => i !== l && Math.abs(i.y - l.y) <= 4 && i.x >= end - 1 && (!maxGap || i.x - end <= maxGap))
+                    .sort((a, b) => a.x - b.x)[0];
+                return r ? clean(r.s) : '';
+            };
+            // The text just below a column heading (the next line down, overlapping the heading's width)
+            const below = (p, re) => {
+                const l = findItem(p, re);
+                if (!l) return '';
+                const lo = l.x - 10, hi = l.x + (l.w || 60) + 10;
+                const cands = p.items.filter(i => i.y < l.y - 4 && i.y > l.y - 30 && i.x + (i.w || 0) >= lo && i.x <= hi);
+                if (!cands.length) return '';
+                const top = Math.max(...cands.map(i => i.y));
+                return clean(cands.filter(i => top - i.y <= 4).sort((a, b) => a.x - b.x).map(i => i.s).join(' '));
+            };
+            // National's "print to PDF" files sometimes come out with every letter shifted by 29 (a broken font map). Undo it.
+            const unshift = (pages) => pages.map(p => ({ ...p, items: p.items.map(i => ({ ...i, s: Array.from(i.s).map(c => {
+                const n = c.charCodeAt(0); return n >= 3 && n <= 93 && c !== ' ' ? String.fromCharCode(n + 29) : c; }).join('') })) }));
+        
+            const READERS = [
+                {
+                    supplier: 'Home Depot', keyword: 'home depot',
+                    match: (all) => /HOME DEPOT CREDIT SERVICES|HOMEDEPOT\.COM/i.test(all),
+                    read: (pages) => {
+                        const p = pages[0];
+                        const total = money(rightOf(findItem(p, /^by \d/) ? { items: p.items } : p, /^by \d/) || '');
+                        // Two amounts: "Total Invoice Due by <date> $X" and "Balance Due if paid online by <date> $Y". Use the higher (Spencer, Nov 5).
+                        const bys = sorted(p.items).filter(i => /^by \d{1,2}\/\d{1,2}\/\d{2,4}$/.test(clean(i.s)));
+                        const pairs = bys.map(b => {
+                            const v = p.items.filter(i => Math.abs(i.y - b.y) <= 4 && i.x > b.x + 20 && money(i.s) !== null).sort((a, c) => a.x - c.x)[0];
+                            return { date: isoDate(b.s), amount: v ? money(v.s) : null };
+                        }).filter(x => x.amount !== null);
+                        const top = pairs.reduce((m, x) => (!m || x.amount > m.amount ? x : m), null);
+                        return [{ page: 1,
+                            invoiceNumber: (rightOf(p, /^Invoice #:?$/) || '').replace(/\s*cont\.?$/i, ''),
+                            invoiceDate: isoDate(rightOf(p, /^Transaction Date$/)),
+                            dueDate: top ? top.date : '',
+                            amount: top ? top.amount : total,
+                            jobText: below(p, /^Purchase Order\/Job Name$/),
+                            note: pairs.length > 1 ? `Higher of ${pairs.map(x => '$' + x.amount.toFixed(2)).join(' and ')} (Total Invoice Due).` : '' }];
+                    }
+                },
+                {
+                    supplier: 'L&W Supply', keyword: 'l&w',
+                    match: (all) => /L&W Supply/i.test(all),
+                    read: (pages) => {
+                        const p = pages[0];
+                        const ship = findItem(p, /^Ship To:/);
+                        let job = '';
+                        if (ship) {
+                            const n = p.items.filter(i => i.y < ship.y - 3 && i.y > ship.y - 20 && Math.abs(i.x - ship.x) <= 15).sort((a, b) => b.y - a.y)[0];
+                            job = n ? clean(n.s) : '';
+                        }
+                        return [{ page: 1,
+                            invoiceNumber: rightOf(p, /^Invoice Number$/),
+                            invoiceDate: isoDate(rightOf(p, /^Invoice Date$/)),
+                            dueDate: isoDate(rightOf(p, /^Payment Due Date$/)),
+                            amount: money(rightOf(p, /^Total Invoice Amt$/)) !== null ? money(rightOf(p, /^Total Invoice Amt$/)) : money(rightOf(p, /^Total Amount Due$/)),
+                            jobText: job, note: '' }];
+                    }
+                },
+                {
+                    supplier: 'National', keyword: 'national',
+                    match: (all) => /Our Local Office/i.test(all) && /Job Site #/i.test(all),
+                    read: (pages) => {
+                        const p = pages[0];
+                        const totalItem = findItem(p, /^Total Due:?/);
+                        let amount = null;
+                        if (totalItem) { amount = money(totalItem.s.replace(/^Total Due:?/i, '')); if (amount === null) amount = money(rightOf(p, /^Total Due:?$/)); }
+                        if (amount === null) { const m = /Total Due:\s*\$?([\d,]+\.\d{2})/i.exec(pageText(p)); amount = m ? Number(m[1].replace(/,/g, '')) : null; }
+                        const ja = rightOf(p, /^Job Address:?$/, 120);
+                        return [{ page: 1,
+                            invoiceNumber: rightOf(p, /^Invoice #$/),
+                            invoiceDate: isoDate(rightOf(p, /^Invoice Date:?$/)),
+                            dueDate: isoDate(rightOf(p, /^Due Date:?$/)),
+                            amount,
+                            jobText: ja && !/^(Cross St|City|Job Name):?$/i.test(ja) ? ja : rightOf(p, /^Purchase Order #$/),
+                            note: '' }];
+                    }
+                },
+                {
+                    supplier: 'Ganahl Lumber', keyword: 'ganahl',
+                    // Ganahl's form has no labels in the text: the right-hand column holds invoice #, date, job, then the trade or address.
+                    match: (all) => /Post Office Box 1326, Corona/i.test(all) || /\(951\) 278-4000/.test(all),
+                    read: (pages) => pages.map((p, k) => {
+                        const inv = sorted(p.items).find(i => /^\d{8,10}$/.test(clean(i.s)));
+                        if (!inv) return null;
+                        const col = sorted(p.items).filter(i => Math.abs(i.x - inv.x) <= 6 && i.y <= inv.y);
+                        const date = col.find(i => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(clean(i.s)));
+                        const after = date ? col.filter(i => i.y < date.y) : [];
+                        const amounts = p.items.filter(i => i.x > 500 && /^[\d,]+\.\d{2}$/.test(clean(i.s))).sort((a, b) => a.y - b.y);
+                        return { page: k + 1, invoiceNumber: clean(inv.s), invoiceDate: date ? isoDate(date.s) : '', dueDate: '',
+                            amount: amounts.length ? money(amounts[0].s) : null,
+                            jobText: after.length ? clean(after[0].s) : '', note: '' };
+                    }).filter(Boolean)
+                }
+            ];
+        
+            // pages -> result. Tries the National shift fix when the text looks shifted.
+            function readSupplierPdf(pages) {
+                if (!pages || !pages.length) return null;
+                let all = pages.map(pageText).join(' ');
+                if (all.replace(/\s/g, '').length < 40) return { unreadable: true };
+                if (/&XVWRPHU|,QYRLFH/.test(all)) { pages = unshift(pages); all = pages.map(pageText).join(' '); }
+                const r = READERS.find(x => x.match(all));
+                if (!r) return { unknown: true };
+                const invoices = r.read(pages).filter(i => i && (i.invoiceNumber || i.amount !== null));
+                return { supplier: r.supplier, keyword: r.keyword, invoices };
+            }
+        
+            // Match a job from the bill's job text: exact code, else the job number (typos like CERG.L.2517), else the homeowner's
+            // last name as the first part of a job code (RAY STARK -> Stark.W.2602). Returns { jobId, how, trade }.
+            function matchJob(text, jobs) {
+                const t = String(text || '');
+                const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const nt = norm(t);
+                const out = { jobId: '', how: '', trade: '' };
+                if (!nt) return out;
+                const exact = jobs.filter(j => j.code && nt.includes(norm(j.code)));
+                if (exact.length === 1) out.jobId = exact[0].id, out.how = 'code';
+                else {
+                    const nums = (t.match(/\d{3,}/g) || []);
+                    const byNum = jobs.filter(j => j.code && nums.some(n => norm(j.code).endsWith(n) || new RegExp('(^|[^0-9])' + n + '($|[^0-9])').test(j.code)));
+                    if (byNum.length === 1) out.jobId = byNum[0].id, out.how = 'number';
+                    else {
+                        const words = (t.toLowerCase().match(/[a-z]{3,}/g) || []);
+                        const byName = jobs.filter(j => j.code && words.includes(String(j.code).split('.')[0].toLowerCase()));
+                        if (byName.length === 1) out.jobId = byName[0].id, out.how = 'name';
+                    }
+                }
+                // A trade code typed after the job code, like ABC.123/FRM or CONBO.M.2519_FRM or CERG.L.2517- FNH
+                const m = /[\s_\/\-]+([A-Za-z]{3})\s*$/.exec(t.trim());
+                if (m) out.trade = m[1].toUpperCase();
+                return out;
+            }
+        
+            const api = { readSupplierPdf, matchJob, isoDate, money, SUPPLIER_READERS: READERS.map(r => r.supplier) };
+            if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.APReader = api;
+        })(typeof window !== 'undefined' ? window : this);
+
+        // PDF libraries, loaded only when a PDF is dropped into the batch (jsDelivr serves the npm packages as published)
+        const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+        const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+        const PDFLIB_URL = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+        const scriptOnce = {};
+        const loadScript = (src) => scriptOnce[src] || (scriptOnce[src] = new Promise((resolve, reject) => {
+            const el = document.createElement('script');
+            el.src = src; el.async = true;
+            el.onload = () => resolve();
+            el.onerror = () => { delete scriptOnce[src]; reject(new Error('Could not load the PDF reader. Check the internet connection.')); };
+            document.head.appendChild(el);
+        }));
+        const pdfPages = async (file) => {
+            await loadScript(PDFJS_URL);
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+            const bytes = await file.arrayBuffer();
+            const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)), disableFontFace: true }).promise;
+            const pages = [];
+            for (let n = 1; n <= doc.numPages; n++) {
+                const tc = await (await doc.getPage(n)).getTextContent();
+                pages.push({ items: tc.items.filter(i => i.str && i.str.trim()).map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5], w: i.width })) });
+            }
+            return { pages, numPages: doc.numPages, bytes };
+        };
+        // One file per invoice when a PDF holds several (Ganahl: one invoice per page)
+        const splitPages = async (bytes, name, pageNums, total) => {
+            await loadScript(PDFLIB_URL);
+            const srcDoc = await window.PDFLib.PDFDocument.load(bytes);
+            const base = String(name).replace(/\.pdf$/i, '');
+            const out = [];
+            for (const n of pageNums) {
+                const d = await window.PDFLib.PDFDocument.create();
+                const [pg] = await d.copyPages(srcDoc, [n - 1]);
+                d.addPage(pg);
+                out.push(new File([await d.save()], `${base} (page ${n} of ${total}).pdf`, { type: 'application/pdf' }));
+            }
+            return out;
+        };
+        // The job's material PO: the only one, or the one whose trade matches the trade typed on the bill
+        const pickMaterialPO = (mats, trade) => {
+            if (!mats || !mats.length) return '';
+            if (mats.length === 1) return mats[0].id;
+            const hit = trade ? mats.filter(m => tradeCode(m.category) === trade) : [];
+            return hit.length === 1 ? hit[0].id : '';
+        };
+        const JOB_HOW = { number: 'the job number', name: "the homeowner's last name" };
+
         const BATCH_MAX = 50;
         function BatchUpload({ jobs, allInvoices, vendorList, approvers, user, profile, onClose }) {
             const [rows, setRows] = useState([]);
@@ -311,6 +517,8 @@
             const [topMsg, setTopMsg] = useState(null);
             const nextKey = React.useRef(1);
             const loading = React.useRef({});
+            const jobDataRef = React.useRef({});
+            jobDataRef.current = jobData;
 
             // Unsaved cards would be lost on leaving the page
             useEffect(() => {
@@ -343,7 +551,7 @@
                     setJobData(d => ({ ...d, [jobId]: { pos: mats, superInfo: sup } }));
                     // Fill in the job's Super as approver, and the PO when the job has only one material PO
                     setRows(rs => rs.map(r => r.jobId !== jobId || r.state === 'saved' ? r : {
-                        ...r, approverUid: r.approverUid || (sup ? sup.uid : ''), formId: r.formId || (mats.length === 1 ? mats[0].id : '') }));
+                        ...r, approverUid: r.approverUid || (sup ? sup.uid : ''), formId: r.formId || pickMaterialPO(mats, r.trade) }));
                 } catch (error) {
                     loading.current[jobId] = false;
                     setJobData(d => ({ ...d, [jobId]: { pos: [], superInfo: null, error: 'Error loading the job: ' + error.message } }));
@@ -369,24 +577,84 @@
                     const jobId = guessJob(f.name);
                     // A job already loaded fills in its Super and its only material PO right away
                     const jd = jobId ? jobData[jobId] : null;
-                    const formId = jd && jd.pos && jd.pos.length === 1 ? jd.pos[0].id : '';
+                    // A trade code at the end of the file name (like _FRM.pdf) picks the material PO when the job has more than one
+                    const tm = /[_\-\s]([A-Za-z]{3})\.[A-Za-z]{3,4}$/.exec(f.name);
+                    const trade = tm ? tm[1].toUpperCase() : '';
+                    const formId = jd && jd.pos ? pickMaterialPO(jd.pos, trade) : '';
                     const approverUid = jd && jd.superInfo ? jd.superInfo.uid : '';
                     fresh.push({ key: nextKey.current++, file: f, jobId, formId, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther,
-                        addVendor: false, invoiceNumber: '', amount: '', dateReceived: defs.dateReceived, approverUid, state: 'new', msg: '' });
+                        addVendor: false, invoiceNumber: '', amount: '', dateReceived: defs.dateReceived, approverUid, state: 'new', msg: '',
+                        jobHow: jobId ? 'file' : '', jobOk: true, trade, invoiceDate: '', dueDate: '', reading: f.type === 'application/pdf', readInfo: null });
                 });
                 setRows(rs => [...rs, ...fresh]);
                 fresh.forEach(r => r.jobId && loadJob(r.jobId));
+                fresh.forEach(r => r.reading && readRow(r.key, r.file));
                 setTopMsg(bad.length ? { text: `Not added: ${bad.join('; ')}.`, ok: false }
-                    : { text: `${fresh.length} file${fresh.length === 1 ? '' : 's'} added. Fill in each card, then Save all ready.`, ok: true });
+                    : { text: `${fresh.length} file${fresh.length === 1 ? '' : 's'} added.${fresh.some(r => r.reading) ? ' Supplier PDFs fill themselves in.' : ''} Check each card, then Save all ready.`, ok: true });
+            };
+
+            // Read one PDF and fill its card (or several cards, one per invoice in the file)
+            const readRow = async (key, file) => {
+                let res = null, split = null, splitErr = '';
+                try {
+                    const got = await pdfPages(file);
+                    res = APReader.readSupplierPdf(got.pages);
+                    if (res && res.invoices && res.invoices.length > 1 && got.numPages > 1) {
+                        try { split = await splitPages(got.bytes, file.name, res.invoices.map(i => i.page), got.numPages); }
+                        catch (e) { splitErr = 'The pages could not be split, so each card keeps the whole file.'; }
+                    }
+                } catch (error) { res = { error: error.message }; }
+                const fail = !res ? 'unknown' : res.error ? 'error' : res.unreadable ? 'scan' : res.unknown ? 'unknown' : !res.invoices.length ? 'unknown' : '';
+                if (fail) {
+                    setRows(rs => rs.map(r => r.key !== key ? r : { ...r, reading: false, readInfo: { fail, msg: res && res.error ? res.error : '' } }));
+                    return;
+                }
+                const pick = vendorList.find(n => n.toLowerCase().includes(res.keyword)) || '';
+                const many = res.invoices.length;
+                // Match the jobs first, so their POs and Super can be loaded straight away
+                const matched = res.invoices.map(inv => APReader.matchJob(inv.jobText, openJobs));
+                matched.forEach(m => m.jobId && loadJob(m.jobId));
+                setRows(rs => {
+                    const idx = rs.findIndex(r => r.key === key);
+                    if (idx < 0) return rs;
+                    const base = rs[idx];
+                    const made = res.invoices.map((inv, k) => {
+                        const m = matched[k];
+                        const jobId = m.jobId || (k === 0 ? base.jobId : '');
+                        const jd = jobId ? jobDataRef.current[jobId] : null;
+                        const fields = ['supplier'];
+                        if (inv.invoiceNumber) fields.push('invoice #');
+                        if (inv.amount !== null && inv.amount !== undefined) fields.push('amount');
+                        if (inv.invoiceDate || inv.dueDate) fields.push('bill and due dates');
+                        if (m.jobId) fields.push('job');
+                        if (m.trade) fields.push('trade ' + m.trade);
+                        else if (base.trade) fields.push('trade ' + base.trade + ' (from the file name)');
+                        return {
+                            ...base, key: k === 0 ? base.key : nextKey.current++,
+                            file: split ? split[k] : base.file,
+                            vendorPick: pick || OTHER, vendorOther: pick ? '' : res.supplier,
+                            invoiceNumber: inv.invoiceNumber || (k === 0 ? base.invoiceNumber : ''),
+                            amount: inv.amount !== null && inv.amount !== undefined ? inv.amount.toFixed(2) : (k === 0 ? base.amount : ''),
+                            jobId, jobHow: m.jobId ? m.how : (jobId ? base.jobHow : ''), jobOk: !(m.jobId && m.how !== 'code'),
+                            trade: m.trade || base.trade || '', invoiceDate: inv.invoiceDate || '', dueDate: inv.dueDate || '',
+                            formId: jd && jd.pos ? pickMaterialPO(jd.pos, m.trade || base.trade) : '',
+                            approverUid: jd && jd.superInfo ? jd.superInfo.uid : (k === 0 && jobId === base.jobId ? base.approverUid : ''),
+                            reading: false,
+                            readInfo: { supplier: res.supplier, fields, note: [inv.note, splitErr].filter(Boolean).join(' '), jobText: inv.jobText || '',
+                                page: many > 1 ? inv.page : 0, of: many, originalFileName: file.name, supplierOnList: !!pick }
+                        };
+                    });
+                    return [...rs.slice(0, idx), ...made, ...rs.slice(idx + 1)];
+                });
             };
             const setRow = (key, patch) => {
                 setRows(rs => rs.map(r => {
                     if (r.key !== key) return r;
                     const next = { ...r, ...patch, state: r.state === 'error' ? 'new' : r.state, msg: r.state === 'error' ? '' : r.msg };
                     if (patch.jobId !== undefined && patch.jobId !== r.jobId) {
-                        next.formId = ''; next.approverUid = '';
+                        next.formId = ''; next.approverUid = ''; next.jobHow = 'manual'; next.jobOk = true;
                         const jd = jobData[patch.jobId];
-                        if (jd && jd.pos) { next.approverUid = jd.superInfo ? jd.superInfo.uid : ''; if (jd.pos.length === 1) next.formId = jd.pos[0].id; }
+                        if (jd && jd.pos) { next.approverUid = jd.superInfo ? jd.superInfo.uid : ''; next.formId = pickMaterialPO(jd.pos, r.trade); }
                     }
                     return next;
                 }));
@@ -394,8 +662,9 @@
             };
             const removeRow = (key) => setRows(rs => rs.filter(r => r.key !== key));
             const applyDefaults = () => {
-                setRows(rs => rs.map(r => r.state === 'saved' ? r : { ...r, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther, dateReceived: defs.dateReceived }));
-                setTopMsg({ text: 'Supplier and date put on every card not yet saved.', ok: true });
+                setRows(rs => rs.map(r => r.state === 'saved' ? r : r.readInfo && r.readInfo.supplier ? { ...r, dateReceived: defs.dateReceived }
+                    : { ...r, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther, dateReceived: defs.dateReceived }));
+                setTopMsg({ text: 'Supplier and date put on every card not yet saved (cards read from a PDF keep their supplier).', ok: true });
             };
 
             // What each card has and is missing
@@ -418,7 +687,9 @@
                 const dupAp = dk && allInvoices ? allInvoices.find(i => i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === dk) : null;
                 const dupBatch = dk ? rows.slice(0, idx).find(o => o.state !== 'saved' && keyOf(o).dk === dk) : null;
                 const problem = r.state === 'saved' ? ''
-                    : !r.jobId ? 'Pick the job.'
+                    : r.reading ? 'Reading the PDF...'
+                    : !r.jobId ? (r.readInfo && r.readInfo.supplier && r.readInfo.jobText ? `Pick the job. The bill says "${r.readInfo.jobText}", which doesn't match a job code.` : r.readInfo && r.readInfo.supplier ? 'Pick the job. The bill has no job code on it.' : 'Pick the job.')
+                    : (r.jobHow === 'number' || r.jobHow === 'name') && !r.jobOk ? `Check the job: it was matched by ${JOB_HOW[r.jobHow]} in "${r.readInfo ? r.readInfo.jobText : ''}". Tick "Job is right" if it is.`
                     : !jd || jd.pos === null ? 'Loading the job...'
                     : jd.error ? jd.error
                     : jd.pos.length === 0 ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.'
@@ -483,9 +754,14 @@
                             approver: { uid: x.approver.uid, name: x.approver.name },
                             file: { url, name: saveName, path, type: r.file.type },
                             dupFlag: sameName.length ? dupFlagFor(sameName, now) : null,
+                            invoiceDate: r.invoiceDate || null, dueDate: r.dueDate || null,
+                            pdfRead: r.readInfo && r.readInfo.supplier ? { supplier: r.readInfo.supplier, fields: r.readInfo.fields, jobText: r.readInfo.jobText,
+                                jobHow: r.jobHow || '', page: r.readInfo.page || 0, of: r.readInfo.of || 1, at: now } : null,
                             createdAt: now, createdBy: by, deleted: false, batchUpload: true
                         });
-                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true, originalFileName: r.file.name, ...(sameName.length ? { dupFlag: true } : {}) });
+                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true,
+                            originalFileName: r.readInfo && r.readInfo.originalFileName ? r.readInfo.originalFileName : r.file.name,
+                            ...(r.readInfo && r.readInfo.supplier ? { readFromPdf: r.readInfo.supplier } : {}), ...(sameName.length ? { dupFlag: true } : {}) });
                         await batch.commit();
                         ok++;
                         if (sameName.length) flagged++;
@@ -513,7 +789,7 @@
                         <div className="section-title">Batch upload: supplier bills</div>
                         <button className="btn-secondary btn-auto btn-sm" onClick={close} disabled={running}>Close</button>
                     </div>
-                    <p className="muted" style={{ marginBottom: '10px' }}>Drop in up to {BATCH_MAX} PDFs or photos. Each becomes a card: fill in the job, material PO, supplier, invoice #, amount and date. Cards save when they're complete; the rest stay here until you finish them. A job code in the file name picks the job.</p>
+                    <p className="muted" style={{ marginBottom: '10px' }}>Drop in up to {BATCH_MAX} PDFs or photos. Each becomes a card: fill in the job, material PO, supplier, invoice #, amount and date. Cards save when they're complete; the rest stay here until you finish them. A job code in the file name picks the job. Home Depot, L&W Supply, National and Ganahl Lumber PDFs are read and filled in for you; scans and photos are filled in by hand.</p>
                     <div className="batch-defaults">
                         <div>
                             <label htmlFor="b-def-vendor">Supplier for new files</label>
@@ -551,10 +827,24 @@
                                     <span className="row-btns">
                                         <button className="btn-link" onClick={() => window.open(URL.createObjectURL(r.file))}>View</button>
                                         {!saved && <button className="btn-link" onClick={() => removeRow(r.key)} disabled={dis}>Remove</button>}
+                                        {r.reading && <span className="pill waiting-pa">Reading...</span>}
+                                        {!r.reading && r.readInfo && r.readInfo.supplier && <span className="pill checked">Read from PDF</span>}
                                         {saved ? <span className="pill passed">Saved</span> : r.state === 'saving' ? <span className="pill waiting-pa">Saving...</span>
                                             : x.problem ? <span className="pill pa-pending">Needs info</span> : <span className="pill waiting-pa">Ready</span>}
                                     </span>
                                 </div>
+                                {!saved && r.readInfo && (
+                                    <div className="muted" style={{ fontSize: '12px', marginBottom: '6px' }}>
+                                        {r.readInfo.supplier
+                                            ? <span>Read as a <strong>{r.readInfo.supplier}</strong> bill{r.readInfo.page ? ` (invoice on page ${r.readInfo.page}; this file had ${r.readInfo.of} invoices, so each has its own card)` : ''}: filled {r.readInfo.fields.join(', ')}.
+                                                {r.invoiceDate ? ` Bill date ${shortDate(r.invoiceDate)}` : ''}{r.dueDate ? `, due ${shortDate(r.dueDate)}` : ''}{r.invoiceDate || r.dueDate ? ' (for Bookkeeping).' : ''}
+                                                {r.readInfo.note ? ' ' + r.readInfo.note : ''}
+                                                {!r.readInfo.supplierOnList ? ` "${r.readInfo.supplier}" isn't on the supplier list yet: check it matches the QuickBooks name and tick Add to the supplier list.` : ''} Check every field before saving.</span>
+                                            : r.readInfo.fail === 'scan' ? <span className="warn">This PDF has no text (a scan or a photo), so it can't be read. Fill in the card.</span>
+                                            : r.readInfo.fail === 'error' ? <span className="warn">{r.readInfo.msg || 'The PDF could not be read.'} Fill in the card.</span>
+                                            : <span className="warn">Not a bill layout the tool knows (it reads Home Depot, L&W Supply, National and Ganahl Lumber). Fill in the card.</span>}
+                                    </div>
+                                )}
                                 {!saved && (
                                     <div className="bgrid">
                                         <div>
@@ -563,6 +853,12 @@
                                                 <option value="">-- Pick the job --</option>
                                                 {openJobs.map(j => <option key={j.id} value={j.id}>{j.code} - {j.address}</option>)}
                                             </select>
+                                            {(r.jobHow === 'number' || r.jobHow === 'name') && (
+                                                <label className="check" style={{ marginTop: '4px' }}>
+                                                    <input type="checkbox" checked={!!r.jobOk} onChange={e => setRow(r.key, { jobOk: e.target.checked })} disabled={dis} />
+                                                    Job is right (matched by {JOB_HOW[r.jobHow]} in "{r.readInfo ? r.readInfo.jobText : ''}")
+                                                </label>
+                                            )}
                                         </div>
                                         <div>
                                             <label>Material PO</label>
@@ -2095,4 +2391,3 @@
     </script>
 </body>
 </html>
-
