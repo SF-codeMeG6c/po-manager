@@ -79,6 +79,21 @@
         .appr-box { border: 1px solid #b7dcc0; border-radius: 6px; background: #f6fbf7; padding: 16px; margin-bottom: 20px; }
         .wait-title { font-weight: 600; color: #2e7d32; font-size: 14px; margin-bottom: 8px; }
         .pill.question { background: #fdecea; color: #c62828; }
+        .pill.dupflag { background: #fff3e0; color: #b36b00; border: 1px solid #f0c27a; }
+        .pill.inqb { background: #455a64; color: white; }
+        .pill.checked { background: #e6f4ea; color: #2e7d32; }
+        .pill.unchecked { background: #f5f5f5; color: #777; }
+        .dup-box { border: 1px solid #f0c27a; background: #fffaf0; border-radius: 4px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; }
+        .view-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+        .view-tabs button { background: #f0f0f0; color: #333; padding: 7px 14px; font-size: 13px; }
+        .view-tabs button.on { background: #0066cc; color: white; }
+        .qb-group { margin-bottom: 18px; }
+        .qb-group-head { display: flex; justify-content: space-between; font-weight: 600; font-size: 14px; color: #333; margin-bottom: 6px; }
+        .qb-edit td { background: #f7fafe; }
+        .qb-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; padding: 6px 0; }
+        .qb-form label { font-size: 12px; margin-bottom: 2px; }
+        .qb-form select, .qb-form input[type=text], .qb-form input[type=date] { padding: 6px 8px; font-size: 13px; }
+        @media (max-width: 600px) { .qb-form { grid-template-columns: 1fr 1fr; } }
         .batch-box { border: 1px solid #c8daf0; border-radius: 6px; background: #f7fafe; padding: 16px; margin-bottom: 20px; }
         .batch-defaults { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; margin-bottom: 12px; }
         .bcard { border: 1px solid #ddd; border-radius: 6px; background: white; padding: 10px 12px; margin-bottom: 10px; }
@@ -178,6 +193,7 @@
         const statusOf = (i) => {
             if (i.deleted === true) return { key: 'hidden', text: 'Hidden' };
             const key = statusKeyOf(i.pa, i.appr);
+            if (key === 'ready' && inQb(i)) return { key: 'inqb', text: 'In QuickBooks' };
             const who = i.approver && i.approver.name ? i.approver.name : 'the approver';
             const text = key === 'waiting-pa' ? 'Waiting on Production Admin'
                 : key === 'passed' ? `Passed, waiting on ${who}`
@@ -202,11 +218,34 @@
             ['waiting-appr', 'Waiting on approver', (i) => statusKeyOf(i.pa, i.appr) === 'passed'],
             ['held', 'Pending or Supplement', (i) => ['pa-pending', 'pa-supplement', 'appr-pending', 'appr-supplement'].includes(statusKeyOf(i.pa, i.appr))],
             ['question', 'Question open', (i) => openQ(i) > 0],
-            ['ready', 'Ready to pay', (i) => isReady(i)],
+            ['ready', 'Ready to pay', (i) => isReady(i) && !inQb(i)],
+            ['inqb', 'In QuickBooks', (i) => isReady(i) && inQb(i)],
+            ['dupflag', 'Possible duplicate', (i) => dupOpen(i)],
             ['all', 'All statuses', () => true]
         ];
         const STATUS_DEFAULT = 'open'; // the page opens on the work queue (decided Nov 4)
         const BLANK_FILTERS = { status: STATUS_DEFAULT, superUid: '', approverUid: '', kind: '', text: '' };
+        // Duplicate file names (Spencer, Nov 5): when a new invoice's file name matches one already in AP (not hidden),
+        // add a random number (_R1234) and flag it; Production Admin ticks "Checked, not a duplicate" before it can pass.
+        const baseFileName = (n) => String(n || '').replace(/_R\d{4}(\.[a-z0-9]{2,5})$/i, '$1').toLowerCase();
+        const sameNameAs = (name, list, exceptId) => (list || []).filter(i => i.id !== exceptId && i.deleted !== true && i.file && baseFileName(i.file.name) === baseFileName(name));
+        const withRandom = (name) => String(name).replace(/(\.[a-z0-9]{2,5})$/i, `_R${1000 + Math.floor(Math.random() * 9000)}$1`);
+        const dupFlagFor = (matches, now) => ({ at: now, matches: matches.map(m => ({ id: m.id, invoiceNumber: m.invoiceNumber || '', jobCode: m.jobCode || '', vendor: m.vendor || '' })) });
+        const dupOpen = (i) => i.deleted !== true && !!(i.dupFlag && !i.dupChecked);
+
+        // Step 3a: Bookkeeping (Spencer, Nov 5). Ready-to-pay invoices are checked and corrected for QuickBooks, printed,
+        // entered by hand, then marked In QuickBooks. The amount is never changed here. The status stays 'ready' (Job Cost reads it).
+        const QB_CODES = 'ACT APP AWN CAB CLN CNC CON DMO DOR DRY ELE ELS EQU FCC FCR FCS FCT FCV FCW FEE FEN FNC FNH FPL FPS FRM GLS HMR HVC INS LAB LIT LND MAS MBL MPR MSD ORI PLA PLM PNL PNT POL RFG SCF SDG SFG SPE STL STR STU TBA TIL TMB TMP USR WDA WDP WDR WDS WDT WDV WDW WPR WTR XST'.split(' ');
+        const QB_ITEMS = QB_CODES.reduce((list, c) => list.concat([c, c + ' MATERIAL']), []);
+        const tradeCode = (cat) => { const m = /^[A-Za-z]+/.exec(String(cat || '').trim()); return m ? m[0].toUpperCase() : ''; };
+        const qbItemFor = (i) => { const c = tradeCode(i.po && i.po.category); return c ? (i.kind === 'supplier' ? c + ' MATERIAL' : c) : ''; };
+        const QB_FIELDS = ['vendor', 'customer', 'billNo', 'billDate', 'dueDate', 'item', 'memo'];
+        const qbDefaults = (i) => ({ vendor: i.vendor || '', customer: i.jobCode || '', billNo: i.invoiceNumber || '', billDate: i.dateReceived || '',
+            dueDate: '', item: qbItemFor(i), memo: i.po && i.po.poNumber ? 'PO ' + i.po.poNumber : '' });
+        const qbOf = (i) => ({ ...qbDefaults(i), ...(i.qb || {}) });
+        const inQb = (i) => !!(i.qbEntered && i.qbEntered.date);
+        const qbChecked = (i) => !!(i.qb && i.qb.checked);
+        const esc = (t) => String(t === undefined || t === null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
         const FIELD_LABELS = { kind: 'kind', vendor: 'vendor', invoiceNumber: 'invoice #', amount: 'amount', previousPayment: 'previous payment',
             dateReceived: 'date received', po: 'PO', approver: 'approver', file: 'file' };
 
@@ -414,15 +453,18 @@
             const saveAll = async () => {
                 if (!readyRows.length) return;
                 setRunning(true); setTopMsg(null);
-                let ok = 0, failed = 0;
+                let ok = 0, failed = 0, flagged = 0;
+                const savedThisRun = [];
                 for (const r of readyRows) {
                     const x = info[r.key];
                     setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saving', msg: '' } : o));
                     try {
                         const invRef = db.collection('apInvoices').doc();
-                        const path = `apInvoices/${r.jobId}/${invRef.id}/${Date.now()}_${x.fileName}`;
+                        const sameName = sameNameAs(x.fileName, [...(allInvoices || []), ...savedThisRun]);
+                        const saveName = sameName.length ? withRandom(x.fileName) : x.fileName;
+                        const path = `apInvoices/${r.jobId}/${invRef.id}/${Date.now()}_${saveName}`;
                         const ref = storage.ref(path);
-                        await ref.put(r.file, cleanSaveName(x.fileName, r.file.type));
+                        await ref.put(r.file, cleanSaveName(saveName, r.file.type));
                         const url = await ref.getDownloadURL();
                         const now = new Date();
                         const by = { uid: user.uid, name: profile.name || user.email };
@@ -439,13 +481,17 @@
                             invoiceNumber: r.invoiceNumber.trim(), amount: x.amount, previousPayment: null, dateReceived: r.dateReceived,
                             po: { formId: x.po.id, poNumber: x.po.poNumber, category: x.po.category, subName: x.po.subName },
                             approver: { uid: x.approver.uid, name: x.approver.name },
-                            file: { url, name: x.fileName, path, type: r.file.type },
+                            file: { url, name: saveName, path, type: r.file.type },
+                            dupFlag: sameName.length ? dupFlagFor(sameName, now) : null,
                             createdAt: now, createdBy: by, deleted: false, batchUpload: true
                         });
-                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true, originalFileName: r.file.name });
+                        batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, batchUpload: true, originalFileName: r.file.name, ...(sameName.length ? { dupFlag: true } : {}) });
                         await batch.commit();
                         ok++;
-                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saved', msg: `Saved as ${x.fileName}` } : o));
+                        if (sameName.length) flagged++;
+                        savedThisRun.push({ id: invRef.id, invoiceNumber: r.invoiceNumber.trim(), jobCode: x.job ? x.job.code : '', vendor: x.vendor, deleted: false, file: { name: saveName } });
+                        setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'saved',
+                            msg: `Saved as ${saveName}` + (sameName.length ? ` (same file name as invoice ${sameName.map(m => m.invoiceNumber).join(', ')}: flagged as a possible duplicate)` : '') } : o));
                     } catch (error) {
                         failed++;
                         setRows(rs => rs.map(o => o.key === r.key ? { ...o, state: 'error', msg: 'Error saving: ' + error.message } : o));
@@ -453,7 +499,8 @@
                 }
                 setRunning(false);
                 const left = unsavedCount - ok;
-                setTopMsg({ text: `${ok} saved${failed ? `, ${failed} not saved (see the red cards)` : ''}.${left > 0 ? ` ${left} card${left === 1 ? '' : 's'} still to finish.` : ' Every card is saved.'}`, ok: !failed });
+                setTopMsg({ text: `${ok} saved${failed ? `, ${failed} not saved (see the red cards)` : ''}.${left > 0 ? ` ${left} card${left === 1 ? '' : 's'} still to finish.` : ' Every card is saved.'}`
+                    + (flagged ? ` ${flagged} flagged as a possible duplicate (same file name) for Production Admin to check.` : ''), ok: !failed });
             };
             const close = () => {
                 if (unsavedCount && !window.confirm(`${unsavedCount} file${unsavedCount === 1 ? ' is' : 's are'} not saved. Close and drop ${unsavedCount === 1 ? 'it' : 'them'}?`)) return;
@@ -581,6 +628,243 @@
             );
         }
 
+        // Step 3a: Bookkeeping page (Owner/Admin; Bookkeeping has the Admin role)
+        function Bookkeeping({ allInvoices, user, profile }) {
+            const [editId, setEditId] = useState(null);
+            const [draft, setDraft] = useState(null);
+            const [msg, setMsg] = useState(null);
+            const [busy, setBusy] = useState(false);
+            const [mark, setMark] = useState(null);          // { ids, date, qbBillNo } for Mark in QuickBooks
+            const [showDone, setShowDone] = useState(false);
+            const by = () => ({ uid: user.uid, name: profile.name || user.email });
+
+            const toQb = (allInvoices || []).filter(i => isReady(i) && !inQb(i));
+            const done = (allInvoices || []).filter(i => isReady(i) && inQb(i))
+                .sort((a, b) => String(b.qbEntered.date).localeCompare(String(a.qbEntered.date)));
+            const groups = {};
+            toQb.forEach(i => { const v = qbOf(i).vendor || '(no supplier)'; (groups[v] = groups[v] || []).push(i); });
+            const vendors = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+            vendors.forEach(v => groups[v].sort((a, b) => String(a.dateReceived).localeCompare(String(b.dateReceived)) || String(a.invoiceNumber).localeCompare(String(b.invoiceNumber))));
+            const sum = (list) => list.reduce((t, i) => t + (typeof i.amount === 'number' ? i.amount : 0), 0);
+            const checked = toQb.filter(qbChecked);
+
+            const openEdit = (i) => {
+                if (editId && editId !== i.id && draft && !window.confirm('Drop the changes you started on the other line?')) return;
+                setEditId(i.id); setDraft({ ...qbOf(i), checked: qbChecked(i) || true }); setMsg(null);
+            };
+            const saveEdit = async (i) => {
+                const d = draft;
+                const fields = {};
+                QB_FIELDS.forEach(k => { fields[k] = String(d[k] || '').trim(); });
+                const missing = !fields.vendor ? 'Type the supplier as it is in QuickBooks.' : !fields.customer ? 'Type the Customer/Job.'
+                    : !fields.billNo ? 'Type the bill #.' : !/^\d{4}-\d{2}-\d{2}$/.test(fields.billDate) ? 'Pick the bill date.'
+                    : fields.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(fields.dueDate) ? 'The due date isn\'t a date.'
+                    : !QB_ITEMS.includes(fields.item) ? 'Pick the QuickBooks item.' : '';
+                if (missing) { setMsg({ text: missing, ok: false, id: i.id }); return; }
+                const before = qbOf(i);
+                const changed = QB_FIELDS.filter(k => (before[k] || '') !== fields[k]);
+                const wasChecked = qbChecked(i);
+                if (!changed.length && wasChecked === !!d.checked) { setEditId(null); setDraft(null); return; }
+                setBusy(true); setMsg(null);
+                try {
+                    const now = new Date();
+                    const qb = { ...fields, checked: !!d.checked, checkedAt: d.checked ? now : null, checkedBy: d.checked ? by() : null,
+                        ...(i.qb && i.qb.printedAt ? { printedAt: i.qb.printedAt, printedBy: i.qb.printedBy } : {}) };
+                    const ref = db.collection('apInvoices').doc(i.id);
+                    const b = db.batch();
+                    b.update(ref, { qb });
+                    const hb = {}, ha = {};
+                    changed.forEach(k => { hb[k] = before[k] || ''; ha[k] = fields[k]; });
+                    b.set(ref.collection('history').doc(), { action: 'QuickBooks details', fields: changed, before: hb, after: ha,
+                        checked: !!d.checked, wasChecked, firstTime: !i.qb, at: now, by: by() });
+                    await b.commit();
+                    setEditId(null); setDraft(null);
+                    setMsg({ text: `${i.vendor} ${i.invoiceNumber}: ${changed.length ? 'corrected (' + changed.join(', ') + ')' : 'saved'}${d.checked ? ', checked.' : ', not checked yet.'}`, ok: true });
+                } catch (error) { setMsg({ text: 'Error saving: ' + error.message, ok: false, id: i.id }); }
+                setBusy(false);
+            };
+
+            const printList = async () => {
+                if (!checked.length) return;
+                const now = new Date();
+                const who = profile.name || user.email;
+                const pv = {};
+                checked.forEach(i => { const v = qbOf(i).vendor; (pv[v] = pv[v] || []).push(i); });
+                const rowsHtml = Object.keys(pv).sort((a, b) => a.localeCompare(b)).map(v => {
+                    const list = pv[v];
+                    return `<h3>${esc(v)}</h3><table><thead><tr><th>Customer/Job</th><th>Bill #</th><th>Bill date</th><th>Due date</th><th>Item</th><th>Memo</th><th class="n">Amount</th><th>Entered</th></tr></thead><tbody>`
+                        + list.map(i => { const q = qbOf(i); return `<tr><td>${esc(q.customer)}</td><td>${esc(q.billNo)}</td><td>${esc(shortDate(q.billDate))}</td><td>${esc(shortDate(q.dueDate))}</td><td>${esc(q.item)}</td><td>${esc(q.memo)}</td><td class="n">${esc(money(i.amount || 0))}</td><td class="box">&#9744;</td></tr>`; }).join('')
+                        + `<tr class="t"><td colspan="6">${esc(v)}: ${list.length} bill${list.length === 1 ? '' : 's'}</td><td class="n">${esc(money(sum(list)))}</td><td></td></tr></tbody></table>`;
+                }).join('');
+                const html = `<!doctype html><html><head><meta charset="utf-8"><title>Bills for QuickBooks ${esc(dateOnly(now))}</title><style>
+                    body{font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;color:#222;margin:24px}h1{font-size:18px;margin:0 0 4px}.sub{color:#555;margin-bottom:16px}
+                    h3{font-size:14px;margin:18px 0 6px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left}
+                    th{background:#eee}.n{text-align:right;white-space:nowrap}.box{text-align:center;font-size:14px}.t td{font-weight:bold;background:#f6f6f6}
+                    .grand{font-size:14px;font-weight:bold;margin-top:16px}.sign{margin-top:28px}@media print{button{display:none}}</style></head><body>
+                    <button onclick="window.print()">Print</button>
+                    <h1>Bills for QuickBooks</h1><div class="sub">Freeman Restoration · printed ${esc(dateTime(now))} by ${esc(who)} · checked by Bookkeeping in Accounts Payable</div>
+                    ${rowsHtml}<div class="grand">Total: ${checked.length} bill${checked.length === 1 ? '' : 's'} · ${esc(money(sum(checked)))}</div>
+                    <div class="sign">Entered in QuickBooks by: ______________________ &nbsp;&nbsp; Date: ____________</div></body></html>`;
+                const w = window.open('', '_blank');
+                if (!w) { setMsg({ text: 'The print page was blocked. Allow pop-ups for this site, then click Print again.', ok: false }); return; }
+                w.document.open(); w.document.write(html); w.document.close();
+                try { w.focus(); setTimeout(() => { try { w.print(); } catch (e) { /* the page has its own Print button */ } }, 300); } catch (e) { /* ignore */ }
+                // Record what was printed
+                try {
+                    const b = db.batch();
+                    checked.forEach(i => {
+                        const ref = db.collection('apInvoices').doc(i.id);
+                        b.update(ref, { qb: { ...i.qb, printedAt: now, printedBy: by() } });
+                        b.set(ref.collection('history').doc(), { action: 'Printed for QuickBooks', at: now, by: by() });
+                    });
+                    await b.commit();
+                    setMsg({ text: `Printed ${checked.length} checked bill${checked.length === 1 ? '' : 's'} (${money(sum(checked))}). After entering them in QuickBooks, click Mark checked bills In QuickBooks.`, ok: true });
+                } catch (error) { setMsg({ text: 'Printed, but the print record didn\'t save: ' + error.message, ok: false }); }
+            };
+
+            const openMark = (ids) => { setMark({ ids, date: todayText(), qbBillNo: '' }); setMsg(null); };
+            const saveMark = async () => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(mark.date)) { setMsg({ text: 'Pick the date it was entered in QuickBooks.', ok: false }); return; }
+                const list = toQb.filter(i => mark.ids.includes(i.id));
+                const notChecked = list.filter(i => !qbChecked(i));
+                if (notChecked.length) { setMsg({ text: 'Only checked bills can be marked In QuickBooks. Check the line first.', ok: false }); return; }
+                setBusy(true);
+                try {
+                    const now = new Date();
+                    const b = db.batch();
+                    list.forEach(i => {
+                        const ref = db.collection('apInvoices').doc(i.id);
+                        const qbEntered = { date: mark.date, qbBillNo: mark.ids.length === 1 ? mark.qbBillNo.trim() : '', at: now, by: by() };
+                        b.update(ref, { qbEntered });
+                        b.set(ref.collection('history').doc(), { action: 'In QuickBooks', date: mark.date, qbBillNo: qbEntered.qbBillNo, qb: qbOf(i), at: now, by: by() });
+                    });
+                    await b.commit();
+                    setMark(null);
+                    setMsg({ text: `${list.length} bill${list.length === 1 ? '' : 's'} marked In QuickBooks (${money(sum(list))}).`, ok: true });
+                } catch (error) { setMsg({ text: 'Error: ' + error.message, ok: false }); }
+                setBusy(false);
+            };
+            const undo = async (i) => {
+                const reason = window.prompt(`Undo "In QuickBooks" for ${i.vendor} ${i.invoiceNumber}? It goes back on the For QuickBooks list.\n\nWhy? (required)`, '');
+                if (reason === null) return;
+                if (!reason.trim()) { setMsg({ text: 'Type why it is being undone.', ok: false }); return; }
+                try {
+                    const now = new Date();
+                    const ref = db.collection('apInvoices').doc(i.id);
+                    const b = db.batch();
+                    b.update(ref, { qbEntered: null });
+                    b.set(ref.collection('history').doc(), { action: 'Undo In QuickBooks', reason: reason.trim(), before: i.qbEntered, at: now, by: by() });
+                    await b.commit();
+                    setMsg({ text: `${i.vendor} ${i.invoiceNumber} is back on the For QuickBooks list.`, ok: true });
+                } catch (error) { setMsg({ text: 'Error: ' + error.message, ok: false }); }
+            };
+
+            const lineRow = (i) => {
+                const q = qbOf(i);
+                const editing = editId === i.id;
+                return (
+                    <React.Fragment key={i.id}>
+                        <tr className={editing ? 'editing-row' : ''}>
+                            <td>{qbChecked(i) ? <span className="pill checked">Checked</span> : <span className="pill unchecked">Not checked</span>}
+                                {i.qb && i.qb.printedAt && <small>Printed {dateOnly(i.qb.printedAt)}</small>}</td>
+                            <td>{q.customer}<small>{i.po ? i.po.poNumber : ''}</small></td>
+                            <td>{q.billNo}{q.billNo !== i.invoiceNumber && <small>AP: {i.invoiceNumber}</small>}</td>
+                            <td>{shortDate(q.billDate)}{q.dueDate && <small>Due {shortDate(q.dueDate)}</small>}</td>
+                            <td>{q.item || <span className="warn">none</span>}<small>{q.memo}</small></td>
+                            <td className="num">{money(i.amount || 0)}<small>{i.appr && i.appr.by ? 'Pay: ' + i.appr.by.name : ''}</small></td>
+                            <td><div className="row-btns">
+                                {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
+                                {!editing && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)} disabled={busy}>{qbChecked(i) ? 'Correct' : 'Check'}</button>}
+                                {!editing && qbChecked(i) && <button className="btn-link" onClick={() => openMark([i.id])} disabled={busy}>In QuickBooks</button>}
+                            </div></td>
+                        </tr>
+                        {editing && draft && (
+                            <tr className="qb-edit"><td colSpan="7">
+                                <div className="qb-form">
+                                    <div><label>Supplier (as in QuickBooks)</label><input type="text" value={draft.vendor} onChange={e => setDraft(d => ({ ...d, vendor: e.target.value }))} /></div>
+                                    <div><label>Customer/Job</label><input type="text" value={draft.customer} onChange={e => setDraft(d => ({ ...d, customer: e.target.value }))} /></div>
+                                    <div><label>Bill #</label><input type="text" value={draft.billNo} onChange={e => setDraft(d => ({ ...d, billNo: e.target.value }))} /></div>
+                                    <div><label>QuickBooks item</label>
+                                        <select value={draft.item} onChange={e => setDraft(d => ({ ...d, item: e.target.value }))}>
+                                            <option value="">-- Pick the item --</option>
+                                            {QB_ITEMS.map(it => <option key={it} value={it}>{it}</option>)}
+                                        </select></div>
+                                    <div><label>Bill date</label><input type="date" value={draft.billDate} onChange={e => setDraft(d => ({ ...d, billDate: e.target.value }))} /></div>
+                                    <div><label>Due date (optional)</label><input type="date" value={draft.dueDate} onChange={e => setDraft(d => ({ ...d, dueDate: e.target.value }))} /></div>
+                                    <div style={{ gridColumn: 'span 2' }}><label>Memo</label><input type="text" value={draft.memo} onChange={e => setDraft(d => ({ ...d, memo: e.target.value }))} /></div>
+                                </div>
+                                <div className="muted" style={{ margin: '4px 0' }}>Amount {money(i.amount || 0)} can't be changed here. If it's wrong, Production Admin sets the invoice back to Pending (Review) with a note.</div>
+                                <label className="check"><input type="checkbox" checked={!!draft.checked} onChange={e => setDraft(d => ({ ...d, checked: e.target.checked }))} /> Checked and ready to enter in QuickBooks</label>
+                                {msg && msg.id === i.id && <div className="error">{msg.text}</div>}
+                                <div className="actions" style={{ marginTop: '6px' }}>
+                                    <button className="btn-secondary btn-auto btn-sm" onClick={() => { setEditId(null); setDraft(null); }} disabled={busy}>Cancel</button>
+                                    <button className="btn-primary btn-auto btn-sm" onClick={() => saveEdit(i)} disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
+                                </div>
+                            </td></tr>
+                        )}
+                    </React.Fragment>
+                );
+            };
+
+            return (
+                <div className="section">
+                    <div className="section-title">For QuickBooks: Ready to pay, not yet entered</div>
+                    <p className="muted" style={{ marginBottom: '10px' }}>Check and correct each bill as it should go into QuickBooks, print the checked list, enter it in QuickBooks, then mark those bills In QuickBooks. Every correction is kept in the invoice's history.</p>
+                    {allInvoices === null && <p className="muted">Loading invoices...</p>}
+                    {allInvoices && (
+                        <div className="list-sum">
+                            <span>{toQb.length} bill{toQb.length === 1 ? '' : 's'} · {money(sum(toQb))} · {checked.length} checked</span>
+                            <span className="row-btns">
+                                <button className="btn-secondary btn-auto btn-sm" onClick={printList} disabled={busy || !checked.length}>Print checked list ({checked.length})</button>
+                                <button className="btn-primary btn-auto btn-sm" onClick={() => openMark(checked.map(i => i.id))} disabled={busy || !checked.length}>Mark checked bills In QuickBooks ({checked.length})</button>
+                            </span>
+                        </div>
+                    )}
+                    {mark && (
+                        <div className="review-box">
+                            <div className="section-title" style={{ marginBottom: '6px' }}>Mark {mark.ids.length} bill{mark.ids.length === 1 ? '' : 's'} In QuickBooks ({money(sum(toQb.filter(i => mark.ids.includes(i.id))))})</div>
+                            <div className="grid2">
+                                <div className="form-group"><label htmlFor="qb-date">Date entered in QuickBooks</label>
+                                    <input id="qb-date" type="date" value={mark.date} onChange={e => setMark(m => ({ ...m, date: e.target.value }))} /></div>
+                                {mark.ids.length === 1 && <div className="form-group"><label htmlFor="qb-no">QuickBooks bill # (optional)</label>
+                                    <input id="qb-no" type="text" value={mark.qbBillNo} onChange={e => setMark(m => ({ ...m, qbBillNo: e.target.value }))} /></div>}
+                            </div>
+                            {msg && !msg.ok && !msg.id && <div className="error">{msg.text}</div>}
+                            <div className="actions">
+                                <button className="btn-secondary btn-auto" onClick={() => setMark(null)} disabled={busy}>Cancel</button>
+                                <button className="btn-primary btn-auto" onClick={saveMark} disabled={busy}>{busy ? 'Saving...' : 'Mark In QuickBooks'}</button>
+                            </div>
+                        </div>
+                    )}
+                    {msg && !msg.id && !(mark && !msg.ok) && <div className={msg.ok ? 'ok' : 'error'} style={{ marginBottom: '10px' }}>{msg.text}</div>}
+                    {allInvoices && toQb.length === 0 && <p className="muted">Nothing waiting for QuickBooks.</p>}
+                    {vendors.map(v => (
+                        <div key={v} className="qb-group">
+                            <div className="qb-group-head"><span>{v}</span><span>{groups[v].length} · {money(sum(groups[v]))}</span></div>
+                            <div className="table-wrap"><table>
+                                <thead><tr><th></th><th>Customer/Job</th><th>Bill #</th><th>Bill date</th><th>Item</th><th className="num">Amount</th><th></th></tr></thead>
+                                <tbody>{groups[v].map(lineRow)}</tbody>
+                            </table></div>
+                        </div>
+                    ))}
+                    {done.length > 0 && (
+                        <div style={{ marginTop: '10px' }}>
+                            <button className="btn-link" onClick={() => setShowDone(x => !x)}>{showDone ? 'Hide' : 'Show'} bills already In QuickBooks ({done.length})</button>
+                            {showDone && (
+                                <div className="table-wrap"><table>
+                                    <thead><tr><th>Entered</th><th>Supplier</th><th>Customer/Job</th><th>Bill #</th><th className="num">Amount</th><th></th></tr></thead>
+                                    <tbody>{done.map(i => { const q = qbOf(i); return (
+                                        <tr key={i.id}><td>{shortDate(i.qbEntered.date)}<small>{i.qbEntered.by ? i.qbEntered.by.name : ''}{i.qbEntered.qbBillNo ? ' · QB # ' + i.qbEntered.qbBillNo : ''}</small></td>
+                                            <td>{q.vendor}</td><td>{q.customer}</td><td>{q.billNo}</td><td className="num">{money(i.amount || 0)}</td>
+                                            <td><button className="btn-link" onClick={() => undo(i)}>Undo</button></td></tr>); })}</tbody>
+                                </table></div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         function APApp() {
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null); // null = checking, 'pending', 'notset', 'noaccess', object = can use AP
@@ -616,6 +900,7 @@
             const [apprSaving, setApprSaving] = useState(false);
             const [apprDone, setApprDone] = useState('');     // message after the approver saves
             const [showBatch, setShowBatch] = useState(false); // 1d batch upload box (Owner/Admin, no job picked)
+            const [view, setView] = useState('invoices');      // 3a: 'invoices' or 'books' (Owner/Admin, no job picked)
             const [notesId, setNotesId] = useState(null);     // the invoice whose notes are open (2c)
             const [notes, setNotes] = useState(null);         // its notes, oldest first (null = loading)
             const [notesErr, setNotesErr] = useState('');
@@ -869,8 +1154,11 @@
                 const poNow = (pos || []).find(p => p.id === (inv.po && inv.po.formId)) || null;
                 const passedOther = poNow ? passedOn(poNow.id, inv.id) : 0;
                 const room = poNow && poNow.amount !== null ? poNow.amount - passedOther : null;
-                const problem = !st ? 'Pick Pass, Pending or Supplement.'
-                    : st === now0 && !note ? 'Nothing changed.'
+                const dupTick = dupOpen(inv) && review.dupOk === true;
+                const problem = inQb(inv) ? 'This invoice is marked In QuickBooks. Undo that on the Bookkeeping page first.'
+                    : !st ? 'Pick Pass, Pending or Supplement.'
+                    : st === 'Pass' && dupOpen(inv) && !dupTick ? 'This invoice is flagged as a possible duplicate. Check it against the invoice named in the orange box, then tick "Checked, not a duplicate" before it can pass.'
+                    : st === now0 && !note && !dupTick ? 'Nothing changed.'
                     : (st === 'Pending' || st === 'Supplement') && !note ? `Type a note saying why it's ${st === 'Pending' ? 'pending' : 'a supplement'}.`
                     : st === 'Pass' && !poNow ? "This invoice's PO isn't on the job any more (hidden in PO Manager?). Edit the invoice to pick its PO first."
                     : st === 'Pass' && room === null ? 'This PO has no amount, so it can\'t pass. Fix the PO in PO Manager first.'
@@ -888,11 +1176,13 @@
                     const keepAppr = st === 'Pass' && inv.appr && inv.appr.status ? inv.appr : null;
                     const ref = db.collection('apInvoices').doc(inv.id);
                     const batch = db.batch();
-                    batch.update(ref, { pa, appr: keepAppr, status: statusKeyOf(pa, keepAppr) });
+                    const upd = { pa, appr: keepAppr, status: statusKeyOf(pa, keepAppr) };
+                    if (dupTick) upd.dupChecked = { at: now, by };
+                    batch.update(ref, upd);
                     batch.set(ref.collection('history').doc(), { action: 'Production Admin', status: st, note, before: inv.pa || null,
-                        apprCleared: clearsAppr ? inv.appr : null, at: now, by });
+                        apprCleared: clearsAppr ? inv.appr : null, ...(dupTick ? { dupChecked: true } : {}), at: now, by });
                     await batch.commit();
-                    setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor}: ${st === 'Pass' ? 'Passed' : st}${st === now0 ? ' (note added)' : ''}.`);
+                    setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor}: ${st === 'Pass' ? 'Passed' : st}${st === now0 ? (dupTick && !note ? ' (checked, not a duplicate)' : ' (note added)') : ''}${dupTick && st !== now0 ? '; checked, not a duplicate' : ''}.`);
                     setReviewId(null); setReview({ status: '', note: '' });
                 } catch (error) {
                     setReviewMsg({ text: 'Error saving: ' + error.message, ok: false });
@@ -920,7 +1210,8 @@
                 const st = apprForm.status;
                 const note = apprForm.note.trim();
                 const now0 = (inv.appr && inv.appr.status) || '';
-                const problem = !isPassed(inv) || inv.deleted === true ? 'Production Admin has changed this invoice. It is no longer passed.'
+                const problem = inQb(inv) ? 'This invoice is already marked In QuickBooks. Ask Bookkeeping if it needs to change.'
+                    : !isPassed(inv) || inv.deleted === true ? 'Production Admin has changed this invoice. It is no longer passed.'
                     : !inv.approver || inv.approver.uid !== user.uid ? 'This invoice is assigned to someone else now.'
                     : !st ? 'Pick Pay, Pending or Supplement.'
                     : st === 'Pay' && openQ(inv) > 0 ? `There ${openQ(inv) === 1 ? 'is an open question' : `are ${openQ(inv)} open questions`} on this invoice. It can't be marked Pay until ${openQ(inv) === 1 ? "it's" : "they're"} marked Answered (see Notes).`
@@ -1149,9 +1440,11 @@
                 try {
                     // 1. The file, in apInvoices/{jobId}/{invoiceId}/ (the invoice id lets the Storage rule check its approver)
                     const invRef = db.collection('apInvoices').doc();
-                    const path = `apInvoices/${jobId}/${invRef.id}/${Date.now()}_${fileName}`;
+                    const sameName = sameNameAs(fileName, allInvoices);
+                    const saveName = sameName.length ? withRandom(fileName) : fileName;
+                    const path = `apInvoices/${jobId}/${invRef.id}/${Date.now()}_${saveName}`;
                     const ref = storage.ref(path);
-                    await ref.put(file, cleanSaveName(fileName, file.type));
+                    await ref.put(file, cleanSaveName(saveName, file.type));
                     const url = await ref.getDownloadURL();
                     // 2. The invoice record, its first history line and any new supplier name, saved together
                     const now = new Date();
@@ -1170,12 +1463,14 @@
                         dateReceived: form.dateReceived,
                         po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
                         approver: { uid: approver.uid, name: approver.name },
-                        file: { url, name: fileName, path, type: file.type },
+                        file: { url, name: saveName, path, type: file.type },
+                        dupFlag: sameName.length ? dupFlagFor(sameName, now) : null,
                         createdAt: now, createdBy: by, deleted: false
                     });
-                    batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by });
+                    batch.set(invRef.collection('history').doc(), { action: 'Added', at: now, by, ...(sameName.length ? { dupFlag: true } : {}) });
                     await batch.commit();
-                    setListMsg(`Invoice added: ${fileName}${newVendor ? `. ${vendor} added to the supplier list.` : ''}`);
+                    setListMsg(`Invoice added: ${saveName}${newVendor ? `. ${vendor} added to the supplier list.` : ''}`
+                        + (sameName.length ? ` Same file name as invoice ${sameName.map(m => m.invoiceNumber).join(', ')}, so a number was added and it's flagged as a possible duplicate for Production Admin to check.` : ''));
                     closeAdd(true);
                 } catch (error) {
                     setFormMsg({ text: 'Error saving the invoice: ' + error.message, ok: false });
@@ -1203,11 +1498,14 @@
                 try {
                     const ref = db.collection('apInvoices').doc(inv.id);
                     let newFile = null;
+                    let editSame = [];
                     if (file) {
-                        const path = `apInvoices/${inv.jobId}/${inv.id}/${Date.now()}_${fileName}`;
+                        editSame = sameNameAs(fileName, allInvoices, inv.id);
+                        const saveName = editSame.length ? withRandom(fileName) : fileName;
+                        const path = `apInvoices/${inv.jobId}/${inv.id}/${Date.now()}_${saveName}`;
                         const sref = storage.ref(path);
-                        await sref.put(file, cleanSaveName(fileName, file.type));
-                        newFile = { url: await sref.getDownloadURL(), name: fileName, path, type: file.type };
+                        await sref.put(file, cleanSaveName(saveName, file.type));
+                        newFile = { url: await sref.getDownloadURL(), name: saveName, path, type: file.type };
                     }
                     const now = new Date();
                     const by = { uid: user.uid, name: profile.name || user.email };
@@ -1221,6 +1519,7 @@
                         hist.fields.push('file');
                         hist.before.file = inv.file || null;
                         hist.after.file = newFile;
+                        if (editSame.length) { update.dupFlag = dupFlagFor(editSame, now); update.dupChecked = null; hist.dupFlag = true; }
                     }
                     const batch = db.batch();
                     const newVendor = form.kind === 'supplier' && form.vendorPick === OTHER && form.addVendor && !otherOnList;
@@ -1265,12 +1564,13 @@
                                     <td>{(() => { const s = statusOf(i); return <span className={'pill ' + s.key}>{s.text}</span>; })()}
                                         {i.deleted !== true && i.pa && i.pa.note && <small title={i.pa.note}>PA: "{i.pa.note.length > 60 ? i.pa.note.slice(0, 60) + '...' : i.pa.note}"</small>}
                                         {i.deleted !== true && isPassed(i) && i.appr && i.appr.note && <small title={i.appr.note}>{i.appr.by ? i.appr.by.name : 'Approver'}: "{i.appr.note.length > 60 ? i.appr.note.slice(0, 60) + '...' : i.appr.note}"</small>}
+                                        {dupOpen(i) && <div style={{ marginTop: '3px' }}><span className="pill dupflag" title={'Same file name as ' + (i.dupFlag.matches || []).map(m => m.invoiceNumber).join(', ')}>Possible duplicate</span></div>}
                                         {i.deleted !== true && openQ(i) > 0 && <div style={{ marginTop: '3px' }}><span className="pill question">{openQ(i) === 1 ? 'Question open' : `${openQ(i)} questions open`}</span></div>}
                                         <small>Approver: {i.approver ? i.approver.name : '-'}</small></td>
                                     <td><div className="row-btns">
                                         {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
                                         {i.id !== notesId && <button className="btn-secondary btn-sm" onClick={() => openNotes(i)}>Notes{i.noteCount ? ` (${i.noteCount})` : ''}</button>}
-                                        {i.deleted !== true && isPassed(i) && i.approver && i.approver.uid === user.uid && i.id !== apprId && (
+                                        {i.deleted !== true && isPassed(i) && !inQb(i) && i.approver && i.approver.uid === user.uid && i.id !== apprId && (
                                             <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
                                                 {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
                                         {isPA && canEdit && i.deleted !== true && i.id !== reviewId && <button className="btn-secondary btn-sm" onClick={() => openReview(i)}>Review</button>}
@@ -1439,6 +1739,14 @@
                     )}
 
                     {isAdmin && !job && (
+                        <div className="view-tabs">
+                            <button className={view === 'invoices' ? 'on' : ''} onClick={() => setView('invoices')}>All invoices</button>
+                            <button className={view === 'books' ? 'on' : ''} onClick={() => setView('books')}>Bookkeeping: For QuickBooks ({(allInvoices || []).filter(i => isReady(i) && !inQb(i)).length})</button>
+                        </div>
+                    )}
+                    {isAdmin && !job && view === 'books' && <Bookkeeping allInvoices={allInvoices} user={user} profile={profile} />}
+
+                    {isAdmin && !job && view === 'invoices' && (
                         <div className="section">
                             <div className="section-head">
                                 <div className="section-title">All invoices (all jobs)</div>
@@ -1733,6 +2041,19 @@
                                                 <div><span>This invoice</span><span>{typeof r.amount === 'number' ? money(r.amount) : '-'}</span></div>
                                                 <div className="left"><span>Balance after passing it</span><span>{room === null ? '-' : money(room - (r.amount || 0))}</span></div>
                                             </div>
+                                            {dupOpen(r) && (
+                                                <div className="dup-box">
+                                                    <strong>Possible duplicate.</strong> Same file name (supplier, amount, PO and date) as
+                                                    {' '}{(r.dupFlag.matches || []).map(m => `invoice ${m.invoiceNumber} from ${m.vendor} on ${m.jobCode}`).join('; ')}.
+                                                    {' '}Open both files and check they're different bills.
+                                                    <label className="check" style={{ marginTop: '6px' }}>
+                                                        <input type="checkbox" checked={review.dupOk === true} onChange={e => { setReview(v => ({ ...v, dupOk: e.target.checked })); setReviewMsg(null); }} />
+                                                        Checked, not a duplicate (needed before Pass)
+                                                    </label>
+                                                </div>
+                                            )}
+                                            {r.dupChecked && r.dupChecked.by && <div className="muted" style={{ marginBottom: '8px' }}>Possible duplicate checked by {r.dupChecked.by.name}, {dateOnly(r.dupChecked.at)}: not a duplicate.</div>}
+                                            {inQb(r) && <div className="warn" style={{ marginBottom: '8px' }}>Marked In QuickBooks {shortDate(r.qbEntered.date)}{r.qbEntered.by ? ' by ' + r.qbEntered.by.name : ''}. Undo that on the Bookkeeping page before changing this invoice.</div>}
                                             {over && <div className="dup" style={{ marginBottom: '10px' }}>Over the PO balance by {money((r.amount || 0) - room)}. It can't pass until a revised PO or a supplement covers it. Pending or Supplement can still be picked.</div>}
                                             <div className="kinds">
                                                 {PA_CHOICES.map(c => (
