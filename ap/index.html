@@ -165,7 +165,9 @@
 
         // Supplier pick list (Spencer, Oct 28). Names must match the QuickBooks vendor names exactly.
         // Saved in apSettings/vendors (list). Owner and Admin add names; nobody removes them. These five start the list.
-        const SUPPLIERS = ['Home Depot', "Lowe's", 'Ganahl Lumber', 'Katella Lumber', 'L&M', 'L&W Supply', 'National Construction Rentals']; // QuickBooks names (Spencer, Nov 6)
+        const SUPPLIERS = ['Home Depot', "Lowe's", 'Ganahl Lumber', 'Katella Lumber', 'L&W Supply', 'National Construction Rentals']; // QuickBooks names (Spencer, Nov 6)
+        // Names taken off the list (Aubree, Nov 6). The saved list can't lose a name (rules), so the page just doesn't show these.
+        const RETIRED_SUPPLIERS = ['L&M', 'National'];
         const vendorsDoc = () => db.collection('apSettings').doc('vendors');
         const OTHER = '__other__';
         const MAX_MB = 20; // same limit as the Storage rule
@@ -591,7 +593,8 @@
                     const jd = jobId ? jobData[jobId] : null;
                     // A trade code at the end of the file name (like _FRM.pdf) picks the material PO when the job has more than one
                     const tm = /[_\-\s]([A-Za-z]{3})\.[A-Za-z]{3,4}$/.exec(f.name);
-                    const trade = tm ? tm[1].toUpperCase() : '';
+                    // ...but not the start of a job code (Nationa-ABC.pdf is job ABC.123, not trade ABC)
+                    const trade = tm && !openJobs.some(j => j.code && String(j.code).split('.')[0].toUpperCase() === tm[1].toUpperCase()) ? tm[1].toUpperCase() : '';
                     const formId = jd && jd.pos ? pickMaterialPO(jd.pos, trade) : '';
                     const approverUid = jd && jd.superInfo ? jd.superInfo.uid : '';
                     fresh.push({ key: nextKey.current++, file: f, jobId, formId, vendorPick: defs.vendorPick, vendorOther: defs.vendorOther,
@@ -1589,7 +1592,7 @@
                 if (!isAdmin) return;
                 return vendorsDoc().onSnapshot(doc => {
                     const saved = doc.exists && Array.isArray(doc.data().list) ? doc.data().list : [];
-                    const all = [...SUPPLIERS, ...saved.filter(n => !SUPPLIERS.includes(n))];
+                    const all = [...SUPPLIERS, ...saved.filter(n => !SUPPLIERS.includes(n) && !RETIRED_SUPPLIERS.includes(n))];
                     setVendorList(all);
                 }, () => setVendorList(SUPPLIERS));
             }, [isAdmin]);
