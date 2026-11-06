@@ -165,7 +165,7 @@
 
         // Supplier pick list (Spencer, Oct 28). Names must match the QuickBooks vendor names exactly.
         // Saved in apSettings/vendors (list). Owner and Admin add names; nobody removes them. These five start the list.
-        const SUPPLIERS = ['Home Depot', "Lowe's", 'Ganahl Lumber', 'Katella Lumber', 'L&M'];
+        const SUPPLIERS = ['Home Depot', "Lowe's", 'Ganahl Lumber', 'Katella Lumber', 'L&M', 'L&W Supply', 'National Construction Rentals']; // QuickBooks names (Spencer, Nov 6)
         const vendorsDoc = () => db.collection('apSettings').doc('vendors');
         const OTHER = '__other__';
         const MAX_MB = 20; // same limit as the Storage rule
@@ -394,7 +394,7 @@
                     }
                 },
                 {
-                    supplier: 'National', keyword: 'national',
+                    supplier: 'National Construction Rentals', keyword: 'national',
                     match: (all) => /Our Local Office/i.test(all) && /Job Site #/i.test(all),
                     read: (pages) => {
                         const p = pages[0];
