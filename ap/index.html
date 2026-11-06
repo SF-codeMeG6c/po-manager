@@ -258,6 +258,13 @@
             dueDate: i.dueDate || '', item: qbItemFor(i), memo: i.po && i.po.poNumber ? 'PO ' + i.po.poNumber : '' });
         const qbOf = (i) => ({ ...qbDefaults(i), ...(i.qb || {}) });
         const inQb = (i) => !!(i.qbEntered && i.qbEntered.date);
+        // Edit and Hide (Owner/Admin) are open until Bookkeeping marks the bill In QuickBooks (Aubree, Nov 6).
+        // Editing a passed bill: a money change (amount, PO, kind, previous payment) sends it back to Waiting on Production Admin;
+        // a new approver sends it back to the approver; anything else keeps the approvals.
+        const MONEY_FIELDS = ['amount', 'po', 'kind', 'previousPayment'];
+        const editReset = (inv, changed) => !inv || !isPassed(inv) ? ''
+            : changed.some(k => MONEY_FIELDS.includes(k)) ? 'pa'
+            : changed.includes('approver') && inv.appr && inv.appr.status ? 'appr' : '';
         const qbChecked = (i) => !!(i.qb && i.qb.checked);
         const esc = (t) => String(t === undefined || t === null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
         const FIELD_LABELS = { kind: 'kind', vendor: 'vendor', invoiceNumber: 'invoice #', amount: 'amount', previousPayment: 'previous payment',
@@ -1668,7 +1675,7 @@
             };
             // Edit (Owner/Admin): the same form, filled in from the saved invoice
             const openEdit = (inv) => {
-                if (isPassed(inv)) { window.alert('This invoice has passed. Production Admin sets it back to Pending before it can be edited.'); return; }
+                if (inQb(inv)) { window.alert('This bill is In QuickBooks. Bookkeeping clicks Undo on the Bookkeeping page before it can be edited.'); return; }
                 if (reviewId) closeReview(true);
                 if (showAdd && formTouched() && !window.confirm(`Drop what you typed and edit invoice ${inv.invoiceNumber} instead?`)) return;
                 const sup = inv.kind === 'supplier';
@@ -1683,9 +1690,25 @@
                 setForm(f); setEditOrig(f); setEditId(inv.id); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true);
             };
 
+            // Edit from an all-jobs list: switch to the bill's job, then open the form once its invoices are there
+            const [pendingEdit, setPendingEdit] = useState(null);
+            const editFromList = (inv) => {
+                if (inQb(inv)) { window.alert('This bill is In QuickBooks. Bookkeeping clicks Undo on the Bookkeeping page before it can be edited.'); return; }
+                if (jobId === inv.jobId) { openEdit(inv); return; }
+                pickJob(inv.jobId); setPendingEdit(inv.id);
+            };
+            useEffect(() => {
+                if (!pendingEdit || !jobAll) return;
+                const inv = jobAll.find(i => i.id === pendingEdit);
+                setPendingEdit(null);
+                if (!inv) return;
+                openEdit(inv);
+                setTimeout(() => { const box = document.querySelector('.add-box'); if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+            }, [pendingEdit, jobAll]);
+
             // Hide (Owner/Admin). Nothing is deleted: the record is marked hidden and a history line is added.
             const hideInvoice = async (inv) => {
-                if (isPassed(inv)) { window.alert('This invoice has passed. Production Admin sets it back to Pending before it can be hidden.'); return; }
+                if (inQb(inv)) { window.alert('This bill is In QuickBooks. Bookkeeping clicks Undo on the Bookkeeping page before it can be hidden.'); return; }
                 const reason = window.prompt(`Hide invoice ${inv.invoiceNumber} from ${inv.vendor} (${typeof inv.amount === 'number' ? money(inv.amount) : ''})?\n`
                     + 'It drops out of every list and out of the PO balance. Owner or Admin can restore it.\n\nWhy is it being hidden? (optional)', '');
                 if (reason === null) return;
@@ -1890,14 +1913,18 @@
                     window.alert(`It can't be restored: invoice ${other.invoiceNumber} from ${other.vendor} is already in AP on ${other.jobCode || 'the Needs coding list'}. Hide that one first if this is the one to keep.`);
                     return;
                 }
-                if (!window.confirm(`Restore invoice ${inv.invoiceNumber} from ${inv.vendor}? It counts against the PO balance again.`)) return;
+                if (!window.confirm(`Restore invoice ${inv.invoiceNumber} from ${inv.vendor}? It counts against the PO balance again.`
+                    + (isPassed(inv) ? ' It had passed, so it comes back as Waiting on Production Admin and needs Pass and Pay again.' : ''))) return;
                 try {
                     const now = new Date();
                     const by = { uid: user.uid, name: profile.name || user.email };
                     const ref = db.collection('apInvoices').doc(inv.id);
                     const batch = db.batch();
-                    batch.update(ref, { deleted: false, restoredAt: now, restoredBy: by });
-                    batch.set(ref.collection('history').doc(), { action: 'Restored', at: now, by });
+                    const wasPassed = isPassed(inv);
+                    batch.update(ref, { deleted: false, restoredAt: now, restoredBy: by,
+                        ...(wasPassed ? { pa: null, appr: null, status: statusKeyOf(null, null) } : {}) });
+                    batch.set(ref.collection('history').doc(), { action: 'Restored', at: now, by,
+                        ...(wasPassed ? { resetApprovals: { pa: inv.pa || null, appr: inv.appr || null } } : {}) });
                     await batch.commit();
                     setListMsg(`Invoice ${inv.invoiceNumber} from ${inv.vendor} restored.`);
                 } catch (error) {
@@ -2054,7 +2081,7 @@
             const saveEdit = async () => {
                 const inv = editInv;
                 if (!inv) { setFormMsg({ text: 'This invoice is no longer on the list.', ok: false }); return; }
-                if (isPassed(inv)) { setFormMsg({ text: 'This invoice has passed meanwhile. Production Admin sets it back to Pending before it can be edited.', ok: false }); return; }
+                if (inQb(inv)) { setFormMsg({ text: 'Bookkeeping marked this bill In QuickBooks meanwhile, so it can\'t be edited. Undo that on the Bookkeeping page first.', ok: false }); return; }
                 const next = {
                     kind: form.kind, vendor, invoiceNumber: form.invoiceNumber.trim(), amount,
                     previousPayment: form.kind === 'sub' ? prevPay : null, dateReceived: form.dateReceived,
@@ -2065,6 +2092,10 @@
                 Object.keys(next).forEach(k => { before[k] = inv[k] === undefined ? null : inv[k]; });
                 const changed = Object.keys(next).filter(k => !same(next[k], before[k]));
                 if (!changed.length && !file) { setFormMsg({ text: 'Nothing changed.', ok: false }); return; }
+                const reset = editReset(inv, changed);
+                if (reset && !window.confirm(reset === 'pa'
+                    ? `Invoice ${inv.invoiceNumber} has passed${inv.appr && inv.appr.status ? ` and ${inv.appr.by ? inv.appr.by.name : 'the approver'} chose ${inv.appr.status}` : ''}. Changing the ${changed.filter(k => MONEY_FIELDS.includes(k)).map(k => FIELD_LABELS[k] || k).join(', ')} sends it back to Waiting on Production Admin: it needs Pass and the approver's Pay again. Save?`
+                    : `${inv.appr.by ? inv.appr.by.name : 'The approver'} chose ${inv.appr.status} on invoice ${inv.invoiceNumber}. A new approver has to approve it again. Save?`)) return;
                 setSaving(true); setFormMsg(null);
                 try {
                     const ref = db.collection('apInvoices').doc(inv.id);
@@ -2084,6 +2115,22 @@
                     changed.forEach(k => { update[k] = next[k]; });
                     const hist = { action: 'Edited', at: now, by, fields: changed.slice(), before: {}, after: {} };
                     changed.forEach(k => { hist.before[k] = before[k]; hist.after[k] = next[k]; });
+                    // Approvals that no longer stand (see editReset)
+                    if (reset === 'pa') {
+                        update.pa = null; update.appr = null; update.status = statusKeyOf(null, null);
+                        hist.resetApprovals = { pa: inv.pa || null, appr: inv.appr || null };
+                    } else if (reset === 'appr') {
+                        update.appr = null; update.status = statusKeyOf(inv.pa, null);
+                        hist.resetApprovals = { appr: inv.appr || null };
+                    }
+                    // Bookkeeping's check: fields Bookkeeping didn't correct follow the edit, and the bill is checked again
+                    if (inv.qb && changed.some(k => ['vendor', 'invoiceNumber', 'po', 'kind', 'amount', 'dateReceived'].includes(k))) {
+                        const oldD = qbDefaults(inv), newD = qbDefaults({ ...inv, ...next });
+                        const q = { ...inv.qb };
+                        QB_FIELDS.forEach(k => { if ((q[k] || '') === (oldD[k] || '')) q[k] = newD[k] || ''; });
+                        q.checked = false; q.checkedAt = null; q.checkedBy = null;
+                        update.qb = q; hist.qbUnchecked = true;
+                    }
                     if (newFile) {
                         update.file = newFile;
                         if (inv.file) update.oldFiles = firebase.firestore.FieldValue.arrayUnion({ ...inv.file, replacedAt: now });
@@ -2104,6 +2151,8 @@
                     batch.set(ref.collection('history').doc(), hist);
                     await batch.commit();
                     setListMsg(`Invoice ${next.invoiceNumber} saved. Changed: ${hist.fields.map(k => FIELD_LABELS[k] || k).join(', ')}.`
+                        + (reset === 'pa' ? ' It is back to Waiting on Production Admin.' : reset === 'appr' ? ' It is back with the approver.' : '')
+                        + (hist.qbUnchecked ? ' Bookkeeping needs to check it again.' : '')
                         + (newVendor ? ` ${vendor} added to the supplier list.` : ''));
                     closeAdd(true);
                 } catch (error) {
@@ -2145,8 +2194,8 @@
                                             <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
                                                 {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
                                         {isPA && canEdit && i.deleted !== true && i.id !== reviewId && <button className="btn-secondary btn-sm" onClick={() => openReview(i)}>Review</button>}
-                                        {isAdmin && canEdit && i.deleted !== true && !isPassed(i) && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
-                                        {isAdmin && i.deleted !== true && !isPassed(i) && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
+                                        {isAdmin && i.deleted !== true && !inQb(i) && !isHolding(i) && i.jobId && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => canEdit ? openEdit(i) : editFromList(i)}>Edit</button>}
+                                        {isAdmin && i.deleted !== true && !inQb(i) && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
                                         {isAdmin && i.deleted === true && <button className="btn-link" onClick={() => restoreInvoice(i)}>Restore</button>}
                                     </div></td>
                                 </tr>
@@ -2457,6 +2506,10 @@
                                         {editInv && <p className="muted" style={{ marginBottom: '10px' }}>
                                             Added {dateOnly(editInv.createdAt)}{editInv.createdBy ? ' by ' + editInv.createdBy.name : ''}. The old values are kept in the invoice's history.
                                         </p>}
+                                        {editInv && isPassed(editInv) && <div className="warn" style={{ marginBottom: '10px' }}>
+                                            This bill has passed{editInv.appr && editInv.appr.status ? ` and ${editInv.appr.by ? editInv.appr.by.name : 'the approver'} chose ${editInv.appr.status}` : ''}.
+                                            Changing the amount, PO, kind or previous payment sends it back to Waiting on Production Admin. A new approver has to approve it again. Other changes keep the approvals.
+                                        </div>}
                                         <div className="kinds">
                                             {[['sub', 'Sub invoice'], ['supplier', 'Supplier bill']].map(([k, label]) => (
                                                 <label key={k} className="check">
