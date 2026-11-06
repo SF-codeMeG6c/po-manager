@@ -1690,6 +1690,22 @@
                 setForm(f); setEditOrig(f); setEditId(inv.id); setFile(null); setFormMsg(null); setListMsg(''); setShowAdd(true);
             };
 
+            // Edit from an all-jobs list: switch to the bill's job, then open the form once its invoices are there
+            const [pendingEdit, setPendingEdit] = useState(null);
+            const editFromList = (inv) => {
+                if (inQb(inv)) { window.alert('This bill is In QuickBooks. Bookkeeping clicks Undo on the Bookkeeping page before it can be edited.'); return; }
+                if (jobId === inv.jobId) { openEdit(inv); return; }
+                pickJob(inv.jobId); setPendingEdit(inv.id);
+            };
+            useEffect(() => {
+                if (!pendingEdit || !jobAll) return;
+                const inv = jobAll.find(i => i.id === pendingEdit);
+                setPendingEdit(null);
+                if (!inv) return;
+                openEdit(inv);
+                setTimeout(() => { const box = document.querySelector('.add-box'); if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+            }, [pendingEdit, jobAll]);
+
             // Hide (Owner/Admin). Nothing is deleted: the record is marked hidden and a history line is added.
             const hideInvoice = async (inv) => {
                 if (inQb(inv)) { window.alert('This bill is In QuickBooks. Bookkeeping clicks Undo on the Bookkeeping page before it can be hidden.'); return; }
@@ -2178,7 +2194,7 @@
                                             <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
                                                 {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
                                         {isPA && canEdit && i.deleted !== true && i.id !== reviewId && <button className="btn-secondary btn-sm" onClick={() => openReview(i)}>Review</button>}
-                                        {isAdmin && canEdit && i.deleted !== true && !inQb(i) && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)}>Edit</button>}
+                                        {isAdmin && i.deleted !== true && !inQb(i) && !isHolding(i) && i.jobId && i.id !== editId && <button className="btn-secondary btn-sm" onClick={() => canEdit ? openEdit(i) : editFromList(i)}>Edit</button>}
                                         {isAdmin && i.deleted !== true && !inQb(i) && <button className="btn-link" onClick={() => hideInvoice(i)}>Hide</button>}
                                         {isAdmin && i.deleted === true && <button className="btn-link" onClick={() => restoreInvoice(i)}>Restore</button>}
                                     </div></td>
