@@ -824,6 +824,9 @@
         const notSent = (k) => k === 'none' || k === 'agreed';
         // Exception (decided Nov 8): an early trade (TMP, DMO Interior) at a vendor agreed price is emailed to the vendor as a purchase order from here, once Complete
         const sendsPO = (r) => !!r && r.kind === 'agreed' && earlyTrade(r);
+        // "Hand off this PO now" button (Oct 27) is turned off (decided Nov 8): early POs are sent with Send PO and go to PO Manager
+        // with the other POs at the full handoff. POs already handed off early keep their "Handed off early" line. true = button back.
+        const SHOW_EARLY_HANDOFF = false;
         // Take the job's next PO number (the counter PO Manager uses) and put it on a request, in one step
         const takePoNumber = (jobId, fallbackCode, ref, extra) => db.runTransaction(async tx => {
             const jobRef = db.collection('jobs').doc(jobId);
@@ -1234,7 +1237,7 @@
                                                     </>);
                                                 })()}
                                             </div>
-                                            {earlyTrade(r) && !r.handedOffAt && (() => {
+                                            {SHOW_EARLY_HANDOFF && earlyTrade(r) && !r.handedOffAt && (() => {
                                                 const ready = r.status === 'Complete' && n(r.contractAmount) > 0;
                                                 const off = !ready || lk || !!act.earlyId;
                                                 return (
