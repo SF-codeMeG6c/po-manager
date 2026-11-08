@@ -817,14 +817,30 @@
         // Each request is its own record (tradesEst/{jobId}/requests), outside the trade list, so saving the
         // trade list never touches it. Field names match PO Manager's POs so the handoff at signing is a copy.
         const REQUEST_FIRST_LINE = 'REQUEST FOR PRICING - NOT A PURCHASE ORDER';
-        // ask = the sub gives the price; confirm = the sub is shown ours; none = our price, nothing is sent to anyone
-        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price'], ['none', 'Our price, not sent']];
+        // ask = the sub gives the price; confirm = the sub is shown ours; none = our price, nothing is sent to anyone;
+        // agreed = the vendor agreed to the amount (decided Nov 8): the amount prints, nothing is sent from here (the vendor gets the PO from PO Manager),
+        // and it takes its PO number when saved as agreed
+        const KINDS = [['ask', 'Ask for a price'], ['confirm', 'Confirm our price'], ['none', 'Our price, not sent'], ['agreed', 'Vendor agreed price']];
+        const notSent = (k) => k === 'none' || k === 'agreed';
+        // Exception (decided Nov 8): an early trade (TMP, DMO Interior) at a vendor agreed price is emailed to the vendor as a purchase order from here, once Complete
+        const sendsPO = (r) => !!r && r.kind === 'agreed' && earlyTrade(r);
+        // Take the job's next PO number (the counter PO Manager uses) and put it on a request, in one step
+        const takePoNumber = (jobId, fallbackCode, ref, extra) => db.runTransaction(async tx => {
+            const jobRef = db.collection('jobs').doc(jobId);
+            const snap = await tx.get(jobRef);
+            if (!snap.exists) throw new Error('Job not found.');
+            const next = (snap.data().poCounter || 0) + 1;
+            const n3 = `${snap.data().code || fallbackCode}-${String(next).padStart(3, '0')}`;
+            tx.update(jobRef, { poCounter: next });
+            tx.update(ref, { ...(extra || {}), poNumber: n3 });
+            return n3;
+        });
         // Quote has no price yet; Calculator is our own price list (not sent); the others produce a price for the sub to confirm
         const kindFor = (method) => method === 'quote' ? 'ask' : method === 'calculator' ? 'none' : 'confirm';
         // The first line belongs on anything that goes out for pricing; a PO that is not sent does not carry it
         const withFirstLine = (scope, kind) => {
             const body = String(scope || '').replace(REQUEST_FIRST_LINE, '').replace(/^\s+/, '');
-            return kind === 'none' ? body : REQUEST_FIRST_LINE + '\n\n' + body;
+            return notSent(kind) ? body : REQUEST_FIRST_LINE + '\n\n' + body;
         };
         const kindText = (k) => (KINDS.find(x => x[0] === k) || ['', ''])[1];
         const REQ_FIELDS = ['subName', 'contact', 'phone', 'email', 'subCode', 'category', 'kind', 'part', 'contractAmount', 'scope'];
@@ -937,12 +953,16 @@
             // Replies go to the job's estimator, or to whoever clicks this when none is picked (the function decides and reports back).
             const send = async (r) => {
                 if (!r.email || frozen(r)) return;
-                if (r.kind === 'none') { setNote(`Error: ${poLabel(r)} is "Our price, not sent". Edit it and change the kind to send it.`); return; }
+                const asPO = sendsPO(r);
+                if (notSent(r.kind) && !asPO) { setNote(`Error: ${poLabel(r)} is "${kindText(r.kind)}", which is not sent from here. The vendor gets the PO from PO Manager.`); return; }
+                if (asPO && (r.status !== 'Complete' || !r.poNumber)) { setNote(`Error: mark ${poLabel(r)} Complete before sending it as a purchase order.`); return; }
+                if (asPO && !(n(r.contractAmount) > 0)) { setNote(`Error: ${poLabel(r)} has no amount. Edit it to add the agreed amount.`); return; }
                 if (!window.POForm) { setNote('Error: the form builder did not load. Check that shared/po-form.js is in the repo, then refresh the page.'); return; }
-                const amountShown = r.kind === 'confirm' ? window.POForm.amountText(r.contractAmount) : '';
+                const amountShown = (r.kind === 'confirm' || asPO) ? window.POForm.amountText(r.contractAmount) : '';
                 if (r.kind === 'confirm' && !amountShown) { setNote(`Error: ${poLabel(r)} is "Confirm our price" but has no amount. Add the amount, or switch it to "Ask for a price".`); return; }
                 const ask = r.lastEmail
                     ? `Already sent on ${fmtTime(r.lastEmail.sentAt)} to ${r.lastEmail.to}. Send ${poLabel(r)} again to ${r.email}?`
+                    : asPO ? `Send purchase order ${poLabel(r)} for ${money(n(r.contractAmount))} to ${r.subName} at ${r.email}?\n\nIt goes to PO Manager with the other POs at the handoff.`
                     : `Send ${poLabel(r)} for pricing to ${r.subName} at ${r.email}?`;
                 if (!window.confirm(ask)) return;
                 setSendingId(r.id);
@@ -954,7 +974,7 @@
                     const d = new Date();
                     const dateStr = `${d.getMonth() + 1}-${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
                     const clean = (t) => (t || '').trim().replace(/[\/\\]/g, '-').replace(/\s+/g, '-');
-                    const fileName = ['RFP', clean(r.category), clean(r.subName), amountShown, r.poNumber, dateStr].filter(Boolean).join('_') + '.pdf';
+                    const fileName = [asPO ? 'PO' : 'RFP', clean(r.category), clean(r.subName), amountShown, r.poNumber, dateStr].filter(Boolean).join('_') + '.pdf';
                     const fileRef = storage.ref(`jobForms/${jobId}/${Date.now()}_${fileName}`);
                     await fileRef.put(new Blob([bytes], { type: 'application/pdf' }), cleanSaveName(fileName, 'application/pdf'));
                     const pdfUrl = await fileRef.getDownloadURL();
@@ -965,7 +985,7 @@
                     // What was sent is this saved version: an edit after this shows "Changed since sent"
                     await reqRef(r.id).update({ sentUpdatedAt: r.updatedAt || null });
                     const toMe = !reply.replyTo || reply.replyTo.toLowerCase() === ((auth.currentUser && auth.currentUser.email) || '').toLowerCase();
-                    setNote(`Request ${poLabel(r)} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
+                    setNote(`${asPO ? 'Purchase order' : 'Request'} ${poLabel(r)} sent to ${r.email}. ${toMe ? 'Replies come to you.' : `Replies go to ${reply.replyName || reply.replyTo}.`}`);
                 } catch (err) {
                     setNote('Error sending the request: ' + err.message);
                 }
@@ -1067,16 +1087,7 @@
                     if (amountDiffers(r, amount)) Object.assign(data, followUpdate(r, amount, me, now));
                     if (status === 'Complete' && !r.poNumber) {
                         // First time Complete: take the next PO number from the job's counter (the one PO Manager uses), in one step
-                        const jobRef = db.collection('jobs').doc(jobId);
-                        const num = await db.runTransaction(async tx => {
-                            const snap = await tx.get(jobRef);
-                            if (!snap.exists) throw new Error('Job not found.');
-                            const next = (snap.data().poCounter || 0) + 1;
-                            const n3 = `${snap.data().code || jobCode}-${String(next).padStart(3, '0')}`;
-                            tx.update(jobRef, { poCounter: next });
-                            tx.update(reqRef(r.id), { ...data, poNumber: n3, poNumberAt: now, poNumberBy: me });
-                            return n3;
-                        });
+                        const num = await takePoNumber(jobId, jobCode, reqRef(r.id), { ...data, poNumberAt: now, poNumberBy: me });
                         setNote(`Complete. PO number ${num}.`);
                         return;
                     }
@@ -1178,7 +1189,7 @@
                                     <tr>
                                         <td>
                                             <div>{titleOf(r)}</div>
-                                            <div style={{ marginTop: '2px' }}>{r.poNumber ? <span className="po-num">{r.poNumber}</span> : <span style={{ color: '#888', fontStyle: 'italic' }}>No PO # yet (given when marked Complete)</span>} <span style={{ color: '#555' }}>· {kindText(r.kind)}{r.part ? ` (${r.part})` : ''}</span></div>
+                                            <div style={{ marginTop: '2px' }}>{r.poNumber ? <span className="po-num">{r.poNumber}</span> : <span style={{ color: '#888', fontStyle: 'italic' }}>No PO # yet (given when marked Complete)</span>} <span style={{ color: '#555' }}>· {kindText(r.kind)}</span></div>
                                             <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{by}</div>
                                             {r.handedOffAt && (
                                                 <div style={{ fontSize: '11px', marginTop: '2px', fontWeight: 600, color: '#388e3c' }}>
@@ -1207,13 +1218,21 @@
                                             {(r.versions || []).length > 0 && <button className="btn-secondary btn-sm" onClick={() => setHistId(histId === r.id ? null : r.id)}>{histId === r.id ? 'Hide history' : 'History'}</button>}{' '}
                                             <button className="btn-x" onClick={() => act.hide(r)} disabled={lk} title={fzTip} style={fz ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}>Delete</button>
                                             <div style={{ marginTop: '4px' }}>
-                                                <button className="btn-sm" style={{ background: (r.kind === 'none' || !r.email || !!act.sendingId || lk) ? '#ccc' : '#0066cc', color: 'white', cursor: (r.kind === 'none' || !r.email || !!act.sendingId || lk) ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
-                                                    disabled={r.kind === 'none' || !r.email || !!act.sendingId || lk}
-                                                    title={fz ? fzTip : r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
-                                                    {act.sendingId === r.id ? 'Sending...' : 'Send for pricing'}
-                                                </button>
-                                                {r.kind === 'none' ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
-                                                    : !r.email && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>}
+                                                {(() => {
+                                                    const asPO = sendsPO(r);
+                                                    const notYet = asPO && status !== 'Complete';
+                                                    const off = (notSent(r.kind) && !asPO) || notYet || !r.email || !!act.sendingId || lk;
+                                                    return (<>
+                                                        <button className="btn-sm" style={{ background: off ? '#ccc' : '#0066cc', color: 'white', cursor: off ? 'not-allowed' : 'pointer' }} onClick={() => act.send(r)}
+                                                            disabled={off}
+                                                            title={fz ? fzTip : asPO ? (notYet ? 'Mark it Complete first. It is sent as a purchase order.' : `Email this purchase order to ${r.email || 'the vendor'}`) : r.kind === 'agreed' ? 'Vendor agreed price: not sent from here. The vendor gets the PO from PO Manager after the handoff.' : r.kind === 'none' ? 'Our price, not sent: this PO is not emailed. Edit it and change the kind to send it.' : r.email ? `Email this request to ${r.email}` : 'No sub email on this request. Edit it to add one.'}>
+                                                            {act.sendingId === r.id ? 'Sending...' : asPO ? 'Send PO' : 'Send for pricing'}
+                                                        </button>
+                                                        {notSent(r.kind) && !asPO ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Not sent</span>
+                                                            : !r.email ? <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>No sub email</span>
+                                                            : notYet && <span style={{ fontSize: '11px', color: '#888', marginLeft: '6px' }}>Mark Complete to send</span>}
+                                                    </>);
+                                                })()}
                                             </div>
                                             {earlyTrade(r) && !r.handedOffAt && (() => {
                                                 const ready = r.status === 'Complete' && n(r.contractAmount) > 0;
@@ -1338,17 +1357,16 @@
             const saved = savedIds.has(line.id);          // the trade is in the saved trade list
             const mine = (requests || []).filter(r => r.lineId === line.id).sort(byPoNumber);
             const live = mine.filter(r => !r.deleted);
-            // What the worksheet has right now for this trade (Allowance: one number and one vendor each for labor and material)
-            const wsAmount = (part) => isAllow ? (part === 'material' ? c.material : c.labor) : c.vendorPrice;
-            const wsVendor = (part) => ((isAllow && part === 'material' ? ws.matVendor : ws.vendor) || '').trim();
+            // What the worksheet has right now for this trade (Allowance: labor + material; the Labor/Material choice was removed Nov 8)
+            const wsAmount = () => c.vendorPrice;
+            const wsVendor = () => (ws.vendor || ws.matVendor || '').trim();
             const setF = (k, v) => setDraft(d => ({ ...d, [k]: v }));
 
             const stopVoice = () => { if (recRef.current) recRef.current.stop(); };
             // The line's template PO (decided Oct 31): saved on the job's line, or (jobs started before) the start list's line
             const tplPO = line.po || ((findStart(startLines, line) || {}).po) || null;
             const startNew = () => {
-                // Allowance: the second request starts on material when labor already has one
-                const part = isAllow ? (live.some(r => r.part === 'labor') && !live.some(r => r.part === 'material') ? 'material' : 'labor') : '';
+                const part = ''; // no Labor/Material choice any more (old requests keep theirs)
                 const t = tplPO || {};
                 const kind = KINDS.some(k => k[0] === t.kind) ? t.kind : kindFor(line.method);
                 const fixed = n(t.amount) > 0 ? amountText(n(t.amount)) : '';
@@ -1382,7 +1400,6 @@
                 if (r) { startEdit(r); toEditor(); }
                 po.clearJump();
             }, [po.jump, requests === null]);
-            const pickPart = (part) => setDraft(d => ({ ...d, part, contractAmount: amountText(wsAmount(part)) || d.contractAmount, subName: wsVendor(part) || d.subName }));
             const vendorOpts = vendorChoices(vendors, templates);
             const pickVendor = (name) => {
                 const v = vendorOpts.find(x => x.subName === name);
@@ -1462,6 +1479,7 @@
                 REQ_FIELDS.forEach(k => { f[k] = String(draft[k] == null ? '' : draft[k]).trim(); });
                 if (!whyByHand()) f.contractAmount = amountText(wsAmount(draft.part));
                 if (!f.subName || !f.category) { setNote('Error: Subcontractor and Category are required.'); return; }
+                if (f.kind === 'agreed' && !(n(f.contractAmount) > 0)) { setNote('Error: Vendor agreed price needs the agreed amount.'); return; }
                 // The first line stays on everything going out for pricing until the handoff; a PO that is not sent has none
                 f.scope = withFirstLine(f.scope, f.kind).trim();
                 stopVoice();
@@ -1471,12 +1489,17 @@
                     const now = new Date();
                     if (!draft.id) {
                         f.attachments = await storeFiles(draft.attachments);
-                        // New (decided Oct 31): saved with no PO number; the number is taken when it is first marked Complete
-                        await reqRef().set({
+                        // New (decided Oct 31): saved with no PO number; the number is taken when it is first marked Complete,
+                        // or right away when it is saved as a vendor agreed price (decided Nov 8)
+                        const ref = reqRef();
+                        await ref.set({
                             ...f, lineId: line.id, tradeCode: line.code || '', tradeName: line.name || '', poNumber: '',
                             status: 'Pending', deleted: false, createdBy: me, createdAt: now, updatedBy: me, updatedAt: now
                         });
-                        setNote('Request saved. It gets its PO number when you mark it Complete.');
+                        if (f.kind === 'agreed') {
+                            const num = await takePoNumber(jobId, jobCode, ref, { poNumberAt: now, poNumberBy: me });
+                            setNote(`Request saved as a vendor agreed price. PO number ${num}.`);
+                        } else setNote('Request saved. It gets its PO number when you mark it Complete.');
                     } else {
                         const old = mine.find(r => r.id === draft.id);
                         if (!old) throw new Error('This request is no longer on the list.');
@@ -1487,7 +1510,10 @@
                         const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null, replacedAt: now, replacedBy: me, attachments: old.attachments || [] };
                         REQ_FIELDS.forEach(k => { prev[k] = old[k] || ''; });
                         await reqRef(draft.id).update({ ...f, updatedBy: me, updatedAt: now, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
-                        setNote(`Request ${poLabel(old)} saved. The earlier version is kept.`);
+                        if (f.kind === 'agreed' && !old.poNumber) {
+                            const num = await takePoNumber(jobId, jobCode, reqRef(draft.id), { poNumberAt: now, poNumberBy: me });
+                            setNote(`Saved as a vendor agreed price. PO number ${num}. The earlier version is kept.`);
+                        } else setNote(`Request ${poLabel(old)} saved. The earlier version is kept.`);
                     }
                     setDraft(null);
                 } catch (err) {
@@ -1556,19 +1582,12 @@
                                 <label key={v} style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.kind === v} onChange={() => pickKind(v)} />{label}</label>
                             ))}
                         </div>
-                        {isAllow && (
-                            <div className="inline" style={{ margin: '8px 0 4px' }}>
-                                <span style={{ fontSize: '13px', color: '#555', fontWeight: 500 }}>This request is for</span>
-                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'labor'} onChange={() => pickPart('labor')} />Labor ({money(c.labor)})</label>
-                                <label style={radio}><input type="radio" style={{ width: 'auto' }} checked={draft.part === 'material'} onChange={() => pickPart('material')} />Material ({money(c.material)})</label>
-                            </div>
-                        )}
                         <div className="inline" style={{ margin: '8px 0 4px' }}>
                             <label>Amount</label>
                             {byHand
                                 ? <input className="num" style={{ width: '130px' }} value={draft.contractAmount} onChange={e => setF('contractAmount', e.target.value)} placeholder="0.00" />
                                 : <input className="num" style={{ width: '130px', background: '#f0f0f0' }} value={amountText(wsNow)} disabled title="From the worksheet" />}
-                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : 'The sub sees this as the Contract Amount.'}</span>
+                            <span style={{ fontSize: '13px', color: '#666' }}>{draft.kind === 'ask' ? 'Kept here only. The sub does not see it.' : draft.kind === 'none' ? 'Goes on the form as the Contract Amount. This PO is not sent.' : draft.kind === 'agreed' ? (earlyTrade({ ...draft, tradeCode: line.code, tradeName: line.name }) ? 'The price the vendor agreed to. It goes on the form as the Contract Amount. Gets its PO number when saved; Send PO works once it is Complete.' : 'The price the vendor agreed to. It goes on the form as the Contract Amount. Not sent from here; it gets its PO number when saved.') : 'The sub sees this as the Contract Amount.'}</span>
                             {FOLLOW_WORKSHEET && <span style={{ fontSize: '13px', color: '#666' }}>{byHand || 'Follows the worksheet until this PO is marked Complete.'}</span>}
                             {byHand && wsNow > 0 && n(draft.contractAmount) !== wsNow && (<>
                                 <span style={{ fontSize: '13px' }} className="short">Worksheet has {money(wsNow)}</span>
