@@ -88,6 +88,109 @@
         const functions = firebase.functions();
 
 
+        // ---- Pick a vendor / Pick a category (template POs step 4, decided Nov 8) ----
+        // Vendor list = saved vendors (vendors collection, shared with Trades-EST) plus the vendors on the old templates, one per name
+        const VARIOUS = 'Various \u2013 see scope'; // material bought from several suppliers: one PO, suppliers listed in the scope (decided Nov 1)
+        const vName = (x) => String((x && x.subName) || '').trim();
+        const vendorChoices = (vendors, templates) => {
+            const by = new Map();
+            (templates || []).filter(t => !t.deleted && vName(t)).forEach(t => { const k = vName(t).toLowerCase(); if (!by.has(k)) by.set(k, { subName: vName(t), contact: t.contact || '', phone: t.phone || '', email: t.email || '', subCode: t.subCode || '' }); });
+            (vendors || []).filter(v => !v.deleted && vName(v)).forEach(v => by.set(vName(v).toLowerCase(), { id: v.id, subName: vName(v), contact: v.contact || '', phone: v.phone || '', email: v.email || '', subCode: v.subCode || '' }));
+            by.delete(VARIOUS.toLowerCase());
+            return [...by.values()].sort((a, b) => a.subName.localeCompare(b.subName));
+        };
+        const PO_VENDOR_KEYS = ['subName', 'contact', 'phone', 'email', 'subCode'];
+        // Save the typed vendor to the list (same records Trades-EST saves). Returns the message to show.
+        const saveVendorToList = async (vendors, src, me) => {
+            const v = {};
+            PO_VENDOR_KEYS.forEach(k => { v[k] = String(src[k] || '').trim(); });
+            if (!v.subName) return 'Error: type the Subcontractor name first.';
+            if (v.subName.toLowerCase() === VARIOUS.toLowerCase()) return `"${VARIOUS}" is always on the list.`;
+            const old = (vendors || []).find(x => !x.deleted && vName(x).toLowerCase() === v.subName.toLowerCase());
+            if (old && !window.confirm(`${old.subName} is already on the vendor list. Replace its contact information with what is here?`)) return '';
+            const now = new Date();
+            if (old) {
+                const prev = { savedAt: old.updatedAt || old.createdAt || null, savedBy: old.updatedBy || old.createdBy || null };
+                PO_VENDOR_KEYS.forEach(k => { prev[k] = old[k] || ''; });
+                await db.collection('vendors').doc(old.id).update({ ...v, updatedAt: now, updatedBy: me, versions: firebase.firestore.FieldValue.arrayUnion(prev) });
+            } else {
+                await db.collection('vendors').add({ ...v, createdAt: now, createdBy: me, updatedAt: now, updatedBy: me, deleted: false });
+            }
+            return `${v.subName} ${old ? 'updated on' : 'saved to'} the vendor list.`;
+        };
+        // Approved categories = the trade codes on the Trades-EST start list (one per code), with the start list's descriptions
+        const categoryChoices = (startLines) => {
+            const by = new Map();
+            (startLines || []).filter(l => !l.deleted && String(l.code || '').trim()).forEach(l => {
+                const code = String(l.code).trim();
+                const k = code.toUpperCase();
+                if (!by.has(k)) by.set(k, { code, names: [] });
+                const nm = String(l.name || '').trim();
+                if (nm && !by.get(k).names.includes(nm)) by.get(k).names.push(nm);
+            });
+            return [...by.values()].map(x => ({ code: x.code, desc: x.names.join(', ') })).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+        };
+        const squash = (t) => String(t || '').toUpperCase().replace(/\s+/g, '');
+        const findCategory = (cats, text) => (cats || []).find(x => squash(x.code) === squash(text)) || null;
+        // Type to search: codes that start with what is typed first, then codes that contain it, then descriptions that contain it
+        const matchCategories = (cats, text) => {
+            const q = squash(text), ql = String(text || '').trim().toLowerCase();
+            if (!q) return cats;
+            const a = [], b = [], d = [];
+            cats.forEach(x => {
+                const c = squash(x.code);
+                if (c.startsWith(q)) a.push(x); else if (c.includes(q)) b.push(x); else if (ql.length > 1 && x.desc.toLowerCase().includes(ql)) d.push(x);
+            });
+            return [...a, ...b, ...d];
+        };
+        // Category box: type to search, pick from the list only (decided Nov 8)
+        function CategoryPicker({ value, cats, keepOld, onPick, bad }) {
+            const [text, setText] = useState(value || '');
+            const [open, setOpen] = useState(false);
+            const [hi, setHi] = useState(0);
+            // Follow the saved value when it is set from outside (a PO opened for Edit), never while it is being cleared by typing
+            useEffect(() => { if (value && squash(value) !== squash(text)) setText(value); }, [value]);
+            const list = matchCategories(cats, text).slice(0, 12);
+            const pick = (x) => { setText(x.code); setOpen(false); onPick(x.code); };
+            const leave = () => {
+                setTimeout(() => {
+                    setOpen(false);
+                    const hit = findCategory(cats, text);
+                    if (hit) { setText(hit.code); onPick(hit.code); }
+                    else if (keepOld && text === keepOld) onPick(keepOld);
+                    else onPick('', !String(text || '').trim()); // empty box: no red until Create
+                }, 150);
+            };
+            const onKey = (e) => {
+                if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHi(h => Math.min(h + 1, list.length - 1)); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+                else if (e.key === 'Enter') { e.preventDefault(); if (open && list[hi]) pick(list[hi]); }
+                else if (e.key === 'Escape') setOpen(false);
+            };
+            const old = keepOld && !findCategory(cats, keepOld) && text === keepOld;
+            return (
+                <div style={{ position: 'relative' }}>
+                    <input value={text} placeholder="Type to search, then pick" autoComplete="off"
+                        style={bad ? { borderColor: '#d32f2f', background: '#fff5f5' } : undefined}
+                        onChange={e => { const t = e.target.value; setText(t); setOpen(true); setHi(0);
+                            const hit = findCategory(cats, t); onPick(hit ? hit.code : (keepOld && t === keepOld ? keepOld : ''), true); }} onFocus={() => setOpen(true)} onBlur={leave} onKeyDown={onKey} />
+                    {open && list.length > 0 && (
+                        <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', zIndex: 20, background: 'white', border: '1px solid #ccc', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', maxHeight: '260px', overflowY: 'auto' }}>
+                            {list.map((x, i) => (
+                                <div key={x.code} onMouseDown={e => { e.preventDefault(); pick(x); }} onMouseEnter={() => setHi(i)}
+                                    style={{ padding: '6px 10px', cursor: 'pointer', fontSize: '13px', background: i === hi ? '#e8f0fe' : 'white' }}>
+                                    <b>{x.code}</b>{x.desc ? <span style={{ color: '#666' }}> {'\u2013'} {x.desc}</span> : null}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {open && text && list.length === 0 && <div style={{ fontSize: '12px', color: '#d32f2f', marginTop: '2px' }}>No category matches. Pick one from the list.</div>}
+                    {old && <div style={{ fontSize: '12px', color: '#cc6600', marginTop: '2px' }}>(not on the start list) Kept as it is until you pick another.</div>}
+                    {bad && !open && <div style={{ fontSize: '12px', color: '#d32f2f', marginTop: '2px' }}>Pick a category from the list.</div>}
+                </div>
+            );
+        }
+
         function POApp() {
             const [user, setUser] = useState(null);
             const [email, setEmail] = useState('');
@@ -116,6 +219,11 @@
 
             // Phase 4: PDF Metadata & Search
             const [formLibraryData, setFormLibraryData] = useState([]);
+            const [vendors, setVendors] = useState([]);          // saved vendor list (Pick a vendor), shared with Trades-EST
+            const [startLines, setStartLines] = useState(null);  // Trades-EST start list (approved categories); null = loading
+            const [startErr, setStartErr] = useState('');
+            const [catBad, setCatBad] = useState(false);         // Category box left without a category from the list
+            const [vendorBusy, setVendorBusy] = useState(false);
             const [formMetadata, setFormMetadata] = useState({
                 subName: '',
                 category: '',
@@ -186,7 +294,17 @@
                         forms.push({ id: doc.id, ...doc.data() });
                     });
                     setFormLibraryData(forms);
-                });
+                }, () => setFormLibraryData([]));
+                db.collection('vendors').onSnapshot(snapshot => {
+                    const list = [];
+                    snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+                    setVendors(list);
+                }, () => setVendors([]));
+                db.collection('tradesEstStart').doc('list').onSnapshot(doc => {
+                    const d = doc.exists ? doc.data() : null;
+                    setStartLines(d && Array.isArray(d.lines) ? d.lines : []);
+                    setStartErr('');
+                }, err => { setStartLines([]); setStartErr("Can't read the category list (Trades-EST start list): " + err.message); });
             };
 
             // Job list: all jobs, or only assigned jobs for Supers. Archived jobs are hidden.
@@ -364,6 +482,12 @@
     }
     if (!formMetadata.subName || !formMetadata.category) {
         setMessage('Subcontractor and Category required');
+        return;
+    }
+    // Category only from the start list (decided Nov 8); an older PO may keep the category it already has
+    if (!findCategory(categoryChoices(startLines), formMetadata.category) && !(editingPO && formMetadata.category === (editingPO.category || ''))) {
+        setCatBad(true);
+        setMessage('Pick a category from the list.');
         return;
     }
     if (!window.POForm) {
@@ -568,7 +692,7 @@
                 });
                 setMessage('');
                 setShowTemplates(false);
-                setPoWindow(true);
+                (setCatBad(false), setPoWindow(true));
             };
 
             const handleAddAttachments = (e) => {
@@ -603,7 +727,7 @@
             const openNewPO = () => {
                 handleCancelEditPO();
                 setShowTemplates(false);
-                setPoWindow(true);
+                (setCatBad(false), setPoWindow(true));
             };
             // Cancel: close the window; ask first if anything was typed or changed
             const closePoWindow = () => {
@@ -857,30 +981,36 @@
                             <div style={{ background: 'white', borderRadius: '8px', padding: '20px', width: '90%', maxWidth: '700px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                                     <div style={{ fontWeight: 700, fontSize: '16px' }}>{editingPO ? `Edit PO ${editingPO.poNumber}` : `New PO for ${jobCode}`}</div>
-                                    {!editingPO && <button type="button" className="btn-secondary" style={{ width: 'auto', marginTop: 0 }} onClick={() => setShowTemplates(!showTemplates)}>{showTemplates ? 'Hide templates' : '📋 Pick a template'}</button>}
                                 </div>
                                 <div style={{ fontSize: '12px', color: '#666', margin: '4px 0 12px' }}>Super: {superName || '(none on Customer Information)'}{editingPO ? '' : ' · Starts as New'}</div>
-                                {showTemplates && !editingPO && (
-                                    <div style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '8px', marginBottom: '12px', background: '#fafafa', maxHeight: '300px', overflowY: 'auto' }}>
-                                        {formLibraryData.filter(t => !t.deleted).length === 0 ? <div style={{ fontSize: '13px', color: '#666' }}>No templates yet. Templates are saved from Trades-EST.</div> : (
-                                            <table style={{ marginTop: 0 }}>
-                                                <thead><tr><th>Category</th><th>Subcontractor</th><th>Amount</th><th></th></tr></thead>
-                                                <tbody>
-                                                    {formLibraryData.filter(t => !t.deleted) // templates deleted (hidden) in Trades-EST are skipped
-                                                        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.subName || '').localeCompare(b.subName || ''))
-                                                        .map(t => (
-                                                            <tr key={t.id}>
-                                                                <td>{t.category}</td>
-                                                                <td>{t.subName}</td>
-                                                                <td>{t.contractAmount || '-'}</td>
-                                                                <td><button className="btn-secondary btn-sm" style={{ marginTop: 0 }} onClick={() => handleUseTemplate(t)}>Use</button></td>
-                                                            </tr>
-                                                        ))}
-                                                </tbody>
-                                            </table>
-                                        )}
-                                    </div>
-                                )}
+                                {(() => {
+                                    const opts = vendorChoices(vendors, formLibraryData);
+                                    const pickVendor = (name) => {
+                                        if (name === VARIOUS) { setFormMetadata(f => ({ ...f, subName: VARIOUS, contact: '', phone: '', email: '', subCode: '' })); return; }
+                                        const v = opts.find(x => x.subName === name);
+                                        if (v) setFormMetadata(f => ({ ...f, subName: v.subName, contact: v.contact, phone: v.phone, email: v.email, subCode: v.subCode }));
+                                    };
+                                    const saveVendor = async () => {
+                                        setVendorBusy(true);
+                                        try { const me = { uid: user.uid, name: (profile && profile.name) || user.email }; const m = await saveVendorToList(vendors, formMetadata, me); if (m) setMessage(m); }
+                                        catch (err) { setMessage('Error saving the vendor: ' + err.message); }
+                                        setVendorBusy(false);
+                                    };
+                                    return (
+                                        <div className="form-group">
+                                            <label>Pick a vendor</label>
+                                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                <select value="" onChange={e => pickVendor(e.target.value)} style={{ flex: 1 }}>
+                                                    <option value="">-- Pick a vendor --</option>
+                                                    <option value={VARIOUS}>{VARIOUS}</option>
+                                                    {opts.map(v => <option key={v.subName} value={v.subName}>{v.subName}{v.contact ? ' \u00b7 ' + v.contact : ''}</option>)}
+                                                </select>
+                                                <button type="button" className="btn-secondary btn-sm" style={{ width: 'auto', marginTop: 0, whiteSpace: 'nowrap' }} onClick={saveVendor} disabled={vendorBusy}>{vendorBusy ? 'Saving...' : 'Save vendor to list'}</button>
+                                            </div>
+                                            <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>Fills in the vendor name and contact information only. The scope and amount stay as they are.</div>
+                                        </div>
+                                    );
+                                })()}
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
                         <div className="form-group"><label>Subcontractor</label>
                             <input value={formMetadata.subName || ''} onChange={e => setFormMetadata({ ...formMetadata, subName: e.target.value })} /></div>
@@ -893,7 +1023,10 @@
                         <div className="form-group"><label>Sub Code</label>
                             <input value={formMetadata.subCode || ''} onChange={e => setFormMetadata({ ...formMetadata, subCode: e.target.value })} /></div>
                         <div className="form-group"><label>Category</label>
-                            <input value={formMetadata.category || ''} onChange={e => setFormMetadata({ ...formMetadata, category: e.target.value })} /></div>
+                            <CategoryPicker value={formMetadata.category || ''} cats={categoryChoices(startLines)} bad={catBad}
+                                keepOld={editingPO ? (editingPO.category || '') : ''}
+                                onPick={(code, quiet) => { setCatBad(quiet ? false : !code); setFormMetadata(f => ({ ...f, category: code })); }} />
+                            {startErr && <div style={{ fontSize: '12px', color: '#d32f2f', marginTop: '2px' }}>{startErr}</div>}</div>
                         <div className="form-group"><label>Contract Amount</label>
                             <input value={formMetadata.contractAmount || ''} onChange={e => setFormMetadata({ ...formMetadata, contractAmount: e.target.value })} /></div>
                         </div>
