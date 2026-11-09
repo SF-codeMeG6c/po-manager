@@ -69,6 +69,13 @@
         .btn-secondary { background: #f0f0f0; color: #333; }
         .btn-small { padding: 5px 10px; font-size: 13px; }
         .mic.on { background: #d32f2f; color: white; }
+        .sup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 40px; font-size: 14px; margin-bottom: 12px; }
+        .sup-grid div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
+        .sup-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 10px 0; }
+        .sup-form label { font-size: 12px; color: #555; display: flex; flex-direction: column; gap: 3px; }
+        .sup-form input { width: 140px; }
+        .sup-form input.wide { width: 240px; }
+        @media (max-width: 700px) { .sup-grid { grid-template-columns: 1fr; } }
         @media (max-width: 700px) { .summary { grid-template-columns: 1fr; } .container { padding: 16px; } body { padding: 8px; } .hide-sm { display: none; } }
     </style>
 </head>
@@ -139,7 +146,7 @@
         const extraCounts = (x) => (COUNTING[extraType(x)] || []).includes(x.status);
         const extraIncome = (x) => extraType(x) !== 'internal' && x.status === 'Signed' ? toNumber(x.total) : 0;
 
-        const buildJobCost = ({ lock, forms, extras, credits }) => {
+        const buildJobCost = ({ lock, forms, extras, credits, supPaid }) => {
             if (!lock) return null;
             const excluded = new Set(lock.excludedPoIds || []);
             const lockedPos = (lock.pos || []).filter(p => !excluded.has(p.id));
@@ -212,12 +219,13 @@
             const res = lock.results || {};
             const cesSelling = toNumber(res.sellingPrice);
             const creditsLessPA = toNumber(credits && credits.lessPA);
-            const sellingPrice = round2(cesSelling + extrasIncome - creditsLessPA);
+            const supervisionPaid = round2(toNumber(supPaid));
+            const sellingPrice = round2(cesSelling + extrasIncome - creditsLessPA + supervisionPaid);
             const inHouseLabor = round2(sellingPrice * IN_HOUSE_LABOR_PCT);
             const jobCost = round2(revisedBudget + inHouseLabor);
             const grossProfit = round2(sellingPrice - jobCost);
             const gpm = sellingPrice ? grossProfit / sellingPrice : 0;
-            return { cats, rows, left, counted, cesSelling, extrasIncome: round2(extrasIncome), creditsLessPA, sellingPrice,
+            return { cats, rows, left, counted, cesSelling, extrasIncome: round2(extrasIncome), creditsLessPA, supervisionPaid, sellingPrice,
                      originalBudget, revisedBudget, inHouseLabor, jobCost, grossProfit, gpm,
                      cesGpm: typeof res.gpm === 'number' ? res.gpm : null, cesPoTotal: toNumber(res.poTotal) };
         };
@@ -379,6 +387,182 @@
             );
         }
 
+        // ---------- Supervision hours (decided Nov 9) ----------
+        // Optional per job: blank = not tracked. Agreed hours (paid inside the CES) and the job's Xactimate supervision rate are typed per job.
+        // The Production Admin enters hours biweekly. Hours over the agreed amount are supplemented in Xactimate at rate x 1.2 (O&P).
+        // Income only, no expense. Only the PAID amount counts in the selling price and GPM.
+        // Record: jobCost/{jobId}/supervision/current { agreedHours, rate, entries [{id, period, hours, note, by, at, editedAt, editedBy}],
+        //   paidAmount, paidDate, startedAt, startedBy, updatedAt, updatedBy }. Each save keeps the previous record as supervision/v_{ms}.
+        // Owner and Admin enter; everyone else who sees Job Cost reads it.
+        const SUP_EDIT_ROLES = ['owner', 'admin'];
+        const SUP_OP = 1.2;
+        const hrs = (n) => { const v = Math.round((Number(n) || 0) * 100) / 100; return v.toLocaleString('en-US', { maximumFractionDigits: 2 }); };
+        const supMath = (s) => {
+            const agreed = toNumber(s && s.agreedHours);
+            const rate = toNumber(s && s.rate);
+            const used = round2(((s && s.entries) || []).reduce((a, e) => a + toNumber(e.hours), 0));
+            const over = round2(Math.max(0, used - agreed));
+            return { agreed, rate, used, over, toSupplement: round2(over * rate * SUP_OP), paid: round2(toNumber(s && s.paidAmount)) };
+        };
+
+        function SupervisionBox({ jobId, sup, profile }) {
+            const canEdit = SUP_EDIT_ROLES.includes(profile.role);
+            const [editTop, setEditTop] = useState(false);
+            const [shown, setShown] = useState(false);   // the box opens closed; Show / Hide (Spencer, Nov 9)
+            const [top, setTop] = useState({ agreedHours: '', rate: '', paidAmount: '', paidDate: '' });
+            const [entry, setEntry] = useState({ period: '', hours: '', note: '' });
+            const [editId, setEditId] = useState(null);
+            const [editEntry, setEditEntry] = useState({ period: '', hours: '', note: '' });
+            const [busy, setBusy] = useState(false);
+            const [err, setErr] = useState('');
+            const col = db.collection('jobCost').doc(jobId).collection('supervision');
+            const me = { uid: profile.uid, name: profile.name || '', role: profile.role };
+
+            // Every save: keep the previous record as v_{ms}, then write the new one
+            const save = async (next) => {
+                setBusy(true); setErr('');
+                try {
+                    const now = new Date();
+                    const batch = db.batch();
+                    if (sup) batch.set(col.doc('v_' + now.getTime()), { ...sup, replacedAt: now, replacedBy: me });
+                    batch.set(col.doc('current'), { ...next, updatedAt: now, updatedBy: me });
+                    await batch.commit();
+                    setBusy(false);
+                    return true;
+                } catch (e) { setErr('Could not save: ' + e.message); setBusy(false); return false; }
+            };
+            const openTop = () => {
+                setTop({ agreedHours: sup && sup.agreedHours !== undefined ? String(sup.agreedHours) : '', rate: sup && sup.rate !== undefined ? String(sup.rate) : '',
+                         paidAmount: sup && sup.paidAmount ? String(sup.paidAmount) : '', paidDate: (sup && sup.paidDate) || '' });
+                setEditTop(true); setErr('');
+            };
+            const saveTop = async () => {
+                if (top.agreedHours === '' || top.rate === '') { setErr('Type the agreed hours and the Xactimate rate.'); return; }
+                const paid = round2(toNumber(top.paidAmount));
+                if (paid > 0 && !top.paidDate) { setErr('Type the date it was paid.'); return; }
+                const base = sup ? { ...sup } : { entries: [], startedAt: new Date(), startedBy: me };
+                delete base.updatedAt; delete base.updatedBy;
+                const ok = await save({ ...base, agreedHours: toNumber(top.agreedHours), rate: round2(toNumber(top.rate)),
+                                        paidAmount: paid, paidDate: paid > 0 ? top.paidDate : '' });
+                if (ok) { setEditTop(false); if (!sup) setShown(true); } // open right after Start tracking
+            };
+            const addEntry = async () => {
+                const h = toNumber(entry.hours);
+                if (!entry.period.trim() || !h) { setErr('Type the period and the hours.'); return; }
+                const e = { id: String(Date.now()), period: entry.period.trim(), hours: h, note: entry.note.trim(), by: me, at: new Date() };
+                const base = { ...sup }; delete base.updatedAt; delete base.updatedBy;
+                const ok = await save({ ...base, entries: [...(sup.entries || []), e] });
+                if (ok) setEntry({ period: '', hours: '', note: '' });
+            };
+            const saveEntry = async (old) => {
+                const h = toNumber(editEntry.hours);
+                if (!editEntry.period.trim() || !h) { setErr('Type the period and the hours.'); return; }
+                const base = { ...sup }; delete base.updatedAt; delete base.updatedBy;
+                const entries = (sup.entries || []).map(e => e.id !== old.id ? e
+                    : { ...e, period: editEntry.period.trim(), hours: h, note: editEntry.note.trim(), editedAt: new Date(), editedBy: me });
+                const ok = await save({ ...base, entries });
+                if (ok) setEditId(null);
+            };
+
+            const topForm = (
+                <div>
+                    <div className="sup-form">
+                        <label>Agreed hours<input value={top.agreedHours} onChange={e => setTop({ ...top, agreedHours: e.target.value })} placeholder="50" /></label>
+                        <label>Xactimate rate ($/hour)<input value={top.rate} onChange={e => setTop({ ...top, rate: e.target.value })} placeholder="0.00" /></label>
+                        {sup && <label>Paid amount<input value={top.paidAmount} onChange={e => setTop({ ...top, paidAmount: e.target.value })} placeholder="blank until paid" /></label>}
+                        {sup && <label>Date paid<input type="date" value={top.paidDate} onChange={e => setTop({ ...top, paidDate: e.target.value })} /></label>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                        <button className="btn-primary btn-small" disabled={busy} onClick={saveTop}>{busy ? 'Saving...' : 'Save'}</button>
+                        <button className="btn-link" onClick={() => { setEditTop(false); setErr(''); }}>Cancel</button>
+                    </div>
+                </div>
+            );
+
+            if (!sup) {
+                return (
+                    <div className="section">
+                        <div className="section-title">SUPERVISION HOURS</div>
+                        <p className="muted">Not tracked on this job.</p>
+                        {canEdit && !editTop && <button className="btn-secondary btn-small" onClick={openTop}>Start tracking</button>}
+                        {canEdit && editTop && topForm}
+                        {err && <div className="error">{err}</div>}
+                    </div>
+                );
+            }
+
+            const m = supMath(sup);
+            const entries = [...(sup.entries || [])].sort((a, b) => tsMillis(a.at) - tsMillis(b.at));
+            return (
+                <div className="section">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: shown ? 10 : 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div className="section-title" style={{ marginBottom: 0 }}>SUPERVISION HOURS</div>
+                            <button className="btn-secondary btn-small" onClick={() => { if (shown) { setEditTop(false); setEditId(null); setErr(''); } setShown(!shown); }}>
+                                {shown ? 'Hide supervision hours' : 'Show supervision hours'}
+                            </button>
+                        </div>
+                        {shown && canEdit && !editTop && <button className="btn-link" onClick={openTop}>Edit hours, rate and paid</button>}
+                    </div>
+                    {shown && <>
+                    {editTop ? topForm : (
+                        <div className="sup-grid">
+                            <div><span>Agreed hours (in the CES)</span><span>{hrs(m.agreed)}</span></div>
+                            <div><span>Xactimate rate</span><span>{$(m.rate)}/hr</span></div>
+                            <div><span>Hours used</span><span>{hrs(m.used)}</span></div>
+                            <div><span>Hours over</span><span className={m.over > 0 ? 'up' : ''}>{hrs(m.over)}</span></div>
+                            <div><span>To supplement (over × rate × 1.2)</span><span><b>{$(m.toSupplement)}</b></span></div>
+                            <div><span>Paid</span><span>{m.paid > 0 ? <>{$(m.paid)} <span className="muted">{sup.paidDate ? new Date(sup.paidDate + 'T12:00:00').toLocaleDateString('en-US') : ''}</span></> : <span className="muted">Not paid</span>}</span></div>
+                        </div>
+                    )}
+                    {m.paid === 0 && m.toSupplement > 0 && <div className="info">{$(m.toSupplement)} is not counted in the selling price or GPM until it is paid.</div>}
+                    {m.paid > 0 && <div className="muted" style={{ marginBottom: 10 }}>The paid {$(m.paid)} is counted in the selling price above.</div>}
+                    {entries.length === 0 ? <p className="muted">No hours entered yet.</p> : (
+                        <table>
+                            <thead>
+                                <tr><th>Period</th><th className="num">Hours</th><th>Note</th><th className="hide-sm">Entered</th>{canEdit && <th></th>}</tr>
+                            </thead>
+                            <tbody>
+                                {entries.map(e => editId === e.id ? (
+                                    <tr key={e.id}>
+                                        <td><input value={editEntry.period} onChange={x => setEditEntry({ ...editEntry, period: x.target.value })} /></td>
+                                        <td className="num"><input style={{ width: 80 }} value={editEntry.hours} onChange={x => setEditEntry({ ...editEntry, hours: x.target.value })} /></td>
+                                        <td><input value={editEntry.note} onChange={x => setEditEntry({ ...editEntry, note: x.target.value })} /></td>
+                                        <td className="hide-sm"></td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-link" disabled={busy} onClick={() => saveEntry(e)}>Save</button>{' '}
+                                            <button className="btn-link" onClick={() => setEditId(null)}>Cancel</button>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    <tr key={e.id}>
+                                        <td>{e.period}</td>
+                                        <td className="num">{hrs(e.hours)}</td>
+                                        <td>{e.note}</td>
+                                        <td className="hide-sm muted">{e.by ? e.by.name : ''} {fmtWhen(e.at)}{e.editedAt ? ` · edited ${fmtWhen(e.editedAt)}` : ''}</td>
+                                        {canEdit && <td><button className="btn-link" onClick={() => { setEditId(e.id); setEditEntry({ period: e.period, hours: String(e.hours), note: e.note || '' }); setErr(''); }}>Edit</button></td>}
+                                    </tr>
+                                ))}
+                                <tr className="total"><td>Total</td><td className="num">{hrs(m.used)}</td><td colSpan={canEdit ? 3 : 2}></td></tr>
+                            </tbody>
+                        </table>
+                    )}
+                    {canEdit && !editTop && (
+                        <div className="sup-form">
+                            <label>Period<input value={entry.period} onChange={e => setEntry({ ...entry, period: e.target.value })} placeholder="11/1 - 11/14" /></label>
+                            <label>Hours<input value={entry.hours} onChange={e => setEntry({ ...entry, hours: e.target.value })} placeholder="0" /></label>
+                            <label>Note<input className="wide" value={entry.note} onChange={e => setEntry({ ...entry, note: e.target.value })} placeholder="optional" /></label>
+                            <button className="btn-primary btn-small" disabled={busy} onClick={addEntry}>{busy ? 'Saving...' : 'Add hours'}</button>
+                        </div>
+                    )}
+                    {err && <div className="error">{err}</div>}
+                    {!editTop && <div style={{ marginTop: 10 }}><button className="btn-secondary btn-small" onClick={() => { setEditId(null); setErr(''); setShown(false); }}>Hide supervision hours</button></div>}
+                    <div className="hint" style={{ marginTop: 6 }}>{canEdit ? 'Hours can be edited, not deleted; every save keeps the earlier version.' : 'Owner and Admin enter supervision hours.'} The supplement is made in Xactimate; this shows the amount to put in.</div>
+                    </>}
+                </div>
+            );
+        }
+
         // Before the CES lock (decided Oct 27): show the POs already in PO Manager, such as TMP and DMO #1 POs handed off early.
         // No GPM yet: that starts from the CES lock.
         const buildEarly = (forms) => {
@@ -412,6 +596,7 @@
             const [open, setOpen] = useState({});         // Cat -> true when its PO rows are shown
             const [messages, setMessages] = useState([]); // the job's notes (jobCost/{jobId}/messages)
             const [notesFor, setNotesFor] = useState(null); // { thread, title, poNotes } while the Notes pop-up is open
+            const [sup, setSup] = useState(null);           // supervision record; undefined = not tracked, null = loading
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -454,7 +639,7 @@
 
             // The picked job's records, all live and read-only
             useEffect(() => {
-                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null);
+                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null); setSup(null);
                 if (!allowed || !jobId) return;
                 const fail = (k, what) => (err) => setErr(k, `Can't read ${what}: ${err.message}`);
                 const u1 = db.collection('gpm').doc(jobId).onSnapshot(doc => {
@@ -473,7 +658,10 @@
                 const u5 = db.collection('jobCost').doc(jobId).collection('messages').onSnapshot(snap => {
                     const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setMessages(list);
                 }, (err) => { setMessages([]); fail('notes', 'the notes')(err); });
-                return () => { u1(); u2(); u3(); u4(); u5(); };
+                const u6 = db.collection('jobCost').doc(jobId).collection('supervision').doc('current').onSnapshot(doc => {
+                    setSup(doc.exists ? doc.data() : undefined);
+                }, (err) => { setSup(undefined); fail('supervision', 'the supervision hours')(err); });
+                return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
             }, [allowed, jobId]);
 
             const login = async () => {
@@ -514,8 +702,9 @@
             }
 
             const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
-            const loading = jobId && (lock === null || forms === null || extras === null || credits === null);
-            const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits }) : null;
+            const loading = jobId && (lock === null || forms === null || extras === null || credits === null || sup === null);
+            const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits, supPaid: sup && sup.paidAmount }) : null;
+            const supBox = jobId && !loading && !errors.supervision && <SupervisionBox jobId={jobId} sup={sup} profile={profile} />;
             const errList = Object.values(errors).filter(Boolean);
             const allOpen = jc && jc.cats.length > 0 && jc.cats.every(c => open[c.cat]);
             const openQuestions = messages.filter(m => m.question && !m.answered).length;
@@ -602,6 +791,7 @@
                             </div>
                         );
                     })()}
+                    {jobId && !loading && !lock && !errors.lock && supBox}
 
                     {jc && (
                         <div className="section">
@@ -614,6 +804,7 @@
                                 <div><span>+ Signed extras</span><span>{$(jc.extrasIncome)}</span></div>
                                 <div><span>Revised budget</span><span>{$(jc.revisedBudget)}</span></div>
                                 <div><span>− Credits less PA fee</span><span>({$(jc.creditsLessPA)})</span></div>
+                                {jc.supervisionPaid > 0 && <div><span>+ Supervision paid</span><span>{$(jc.supervisionPaid)}</span></div>}
                                 <div><span>In-house labor ({pct(IN_HOUSE_LABOR_PCT)} of selling price)</span><span>{$(jc.inHouseLabor)}</span></div>
                                 <div className="big"><span>Selling price</span><span>{$(jc.sellingPrice)}</span></div>
                                 <div className="big"><span>Job cost</span><span>{$(jc.jobCost)}</span></div>
@@ -627,6 +818,7 @@
                             )}
                         </div>
                     )}
+                    {jc && supBox}
 
                     {jc && (
                         <div className="section">
