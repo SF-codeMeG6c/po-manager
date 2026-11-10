@@ -486,11 +486,32 @@
         const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
         const PDFLIB_URL = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
         const scriptOnce = {};
+        const JSZIP_URL = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        // 3b: files are fetched through our own site (Netlify _redirects: /fbstorage/* -> firebasestorage.googleapis.com), so no
+        // Storage CORS setting is needed. If that isn't there, the direct link is tried (works once CORS is set on the bucket).
+        const FB_STORAGE = 'https://firebasestorage.googleapis.com/';
+        const fetchFile = async (url) => {
+            if (url.startsWith(FB_STORAGE)) {
+                // The file's path has encoded slashes (%2F); try it as is, then encoded twice, in case Netlify decodes it once
+                const rest = url.slice(FB_STORAGE.length);
+                for (const p of [rest, rest.replace(/%2F/gi, '%252F')]) {
+                    try {
+                        const res = await fetch('/fbstorage/' + p);
+                        const type = res.headers.get('content-type') || '';
+                        if (res.ok && !type.startsWith('text/html')) return await res.blob();
+                    } catch (e) { /* try the next way */ }
+                    if (p === rest && !/%2F/i.test(rest)) break;
+                }
+            }
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return await res.blob();
+        };
         const loadScript = (src) => scriptOnce[src] || (scriptOnce[src] = new Promise((resolve, reject) => {
             const el = document.createElement('script');
             el.src = src; el.async = true;
             el.onload = () => resolve();
-            el.onerror = () => { delete scriptOnce[src]; reject(new Error('Could not load the PDF reader. Check the internet connection.')); };
+            el.onerror = () => { delete scriptOnce[src]; reject(new Error(src === JSZIP_URL ? 'Could not load the zip maker. Check the internet connection.' : 'Could not load the PDF reader. Check the internet connection.')); };
             document.head.appendChild(el);
         }));
         const pdfPages = async (file) => {
@@ -1247,7 +1268,8 @@
                 try {
                     const now = new Date();
                     const qb = { ...fields, checked: !!d.checked, checkedAt: d.checked ? now : null, checkedBy: d.checked ? by() : null,
-                        ...(i.qb && i.qb.printedAt ? { printedAt: i.qb.printedAt, printedBy: i.qb.printedBy } : {}) };
+                        ...(i.qb && i.qb.printedAt ? { printedAt: i.qb.printedAt, printedBy: i.qb.printedBy } : {}),
+                        ...(i.qb && i.qb.zippedAt ? { zippedAt: i.qb.zippedAt, zippedBy: i.qb.zippedBy } : {}) };
                     const ref = db.collection('apInvoices').doc(i.id);
                     const b = db.batch();
                     b.update(ref, { qb });
@@ -1262,10 +1284,8 @@
                 setBusy(false);
             };
 
-            const printList = async () => {
-                if (!checked.length) return;
-                const now = new Date();
-                const who = profile.name || user.email;
+            // The checked list as a printable page (Print, and a copy inside the zip)
+            const listHtml = (now, who) => {
                 const pv = {};
                 checked.forEach(i => { const v = qbOf(i).vendor; (pv[v] = pv[v] || []).push(i); });
                 const rowsHtml = Object.keys(pv).sort((a, b) => a.localeCompare(b)).map(v => {
@@ -1283,6 +1303,13 @@
                     <h1>Bills for QuickBooks</h1><div class="sub">Freeman Restoration · printed ${esc(dateTime(now))} by ${esc(who)} · checked by Bookkeeping in Accounts Payable</div>
                     ${rowsHtml}<div class="grand">Total: ${checked.length} bill${checked.length === 1 ? '' : 's'} · ${esc(money(sum(checked)))}</div>
                     <div class="sign">Entered in QuickBooks by: ______________________ &nbsp;&nbsp; Date: ____________</div></body></html>`;
+                return html;
+            };
+            const printList = async () => {
+                if (!checked.length) return;
+                const now = new Date();
+                const who = profile.name || user.email;
+                const html = listHtml(now, who);
                 const w = window.open('', '_blank');
                 if (!w) { setMsg({ text: 'The print page was blocked. Allow pop-ups for this site, then click Print again.', ok: false }); return; }
                 w.document.open(); w.document.write(html); w.document.close();
@@ -1298,6 +1325,73 @@
                     await b.commit();
                     setMsg({ text: `Printed ${checked.length} checked bill${checked.length === 1 ? '' : 's'} (${money(sum(checked))}). After entering them in QuickBooks, click Mark checked bills In QuickBooks.`, ok: true });
                 } catch (error) { setMsg({ text: 'Printed, but the print record didn\'t save: ' + error.message, ok: false }); }
+            };
+
+            // 3b: the checked bills' files in one zip, a folder per supplier (QuickBooks name), with a copy of the printed list.
+            // Needs the one-time CORS setting on the Storage bucket so the page may download the files.
+            const [zipping, setZipping] = useState('');
+            const downloadZip = async () => {
+                if (!checked.length) return;
+                setZipping('Getting ready...'); setMsg(null);
+                const now = new Date();
+                const who = profile.name || user.email;
+                const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(now.getFullYear()).slice(-2)}`;
+                try {
+                    await loadScript(JSZIP_URL);
+                    const zip = new window.JSZip();
+                    const used = {};
+                    const missing = [];
+                    const got = [];
+                    let k = 0;
+                    for (const i of checked) {
+                        k++;
+                        setZipping(`Downloading ${k} of ${checked.length}...`);
+                        const folder = cleanPart(qbOf(i).vendor || i.vendor || 'Supplier').replace(/-/g, ' ');
+                        let name = (i.file && i.file.name) || `${i.invoiceNumber}.pdf`;
+                        const key = (folder + '/' + name).toLowerCase();
+                        if (used[key]) { const dot = name.lastIndexOf('.'); name = dot > 0 ? `${name.slice(0, dot)} (${used[key] + 1})${name.slice(dot)}` : `${name} (${used[key] + 1})`; }
+                        used[key] = (used[key] || 0) + 1;
+                        try {
+                            if (!i.file || !i.file.url) throw new Error('no file saved');
+                            zip.file(`${folder}/${name}`, await fetchFile(i.file.url));
+                            got.push(i);
+                        } catch (error) {
+                            missing.push(`${i.vendor} ${i.invoiceNumber} (${name}): ${error.message === 'Failed to fetch' ? 'blocked (the /fbstorage line in _redirects)' : error.message}`);
+                        }
+                    }
+                    if (!got.length) {
+                        setZipping('');
+                        setMsg({ text: missing.every(m => m.includes('blocked')) ? 'No files could be downloaded. The site\'s _redirects file (the /fbstorage line) is probably missing: see the AP handoff note, or ask Aubree.'
+                            : 'No files could be downloaded: ' + missing.join('; '), ok: false });
+                        return;
+                    }
+                    zip.file(`Bills for QuickBooks ${stamp}.html`, listHtml(now, who));
+                    if (missing.length) zip.file('MISSING FILES.txt', 'These bills are on the list but their files could not be downloaded:\r\n\r\n' + missing.join('\r\n') + '\r\n');
+                    setZipping('Making the zip...');
+                    const blob = await zip.generateAsync({ type: 'blob' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `AP for QuickBooks ${stamp}.zip`;
+                    document.body.appendChild(a); a.click(); a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+                    // Record it on each bill that made it into the zip
+                    try {
+                        const b = db.batch();
+                        got.forEach(i => {
+                            const ref = db.collection('apInvoices').doc(i.id);
+                            b.update(ref, { qb: { ...i.qb, zippedAt: now, zippedBy: by() } });
+                            b.set(ref.collection('history').doc(), { action: 'Downloaded in zip', at: now, by: by() });
+                        });
+                        await b.commit();
+                    } catch (error) { /* the zip is already downloaded; the record is only a note */ }
+                    setZipping('');
+                    setMsg({ text: `Downloaded AP for QuickBooks ${stamp}.zip: ${got.length} file${got.length === 1 ? '' : 's'} in a folder per supplier, plus the list.`
+                        + (missing.length ? ` ${missing.length} file${missing.length === 1 ? '' : 's'} couldn't be downloaded (listed in MISSING FILES.txt).` : '')
+                        + ' It went to your Downloads folder unless your browser asks where to save.', ok: !missing.length });
+                } catch (error) {
+                    setZipping('');
+                    setMsg({ text: 'Error making the zip: ' + error.message, ok: false });
+                }
             };
 
             const openMark = (ids) => { setMark({ ids, date: todayText(), qbBillNo: '' }); setMsg(null); };
@@ -1344,7 +1438,8 @@
                     <React.Fragment key={i.id}>
                         <tr className={editing ? 'editing-row' : ''}>
                             <td>{qbChecked(i) ? <span className="pill checked">Checked</span> : <span className="pill unchecked">Not checked</span>}
-                                {i.qb && i.qb.printedAt && <small>Printed {dateOnly(i.qb.printedAt)}</small>}</td>
+                                {i.qb && i.qb.printedAt && <small>Printed {dateOnly(i.qb.printedAt)}</small>}
+                                {i.qb && i.qb.zippedAt && <small>Files downloaded {dateOnly(i.qb.zippedAt)}</small>}</td>
                             <td>{q.customer}<small>{i.po ? i.po.poNumber : ''}</small></td>
                             <td>{q.billNo}{q.billNo !== i.invoiceNumber && <small>AP: {i.invoiceNumber}</small>}</td>
                             <td>{shortDate(q.billDate)}{q.dueDate && <small>Due {shortDate(q.dueDate)}</small>}</td>
@@ -1393,7 +1488,8 @@
                         <div className="list-sum">
                             <span>{toQb.length} bill{toQb.length === 1 ? '' : 's'} · {money(sum(toQb))} · {checked.length} checked</span>
                             <span className="row-btns">
-                                <button className="btn-secondary btn-auto btn-sm" onClick={printList} disabled={busy || !checked.length}>Print checked list ({checked.length})</button>
+                                <button className="btn-secondary btn-auto btn-sm" onClick={printList} disabled={busy || !!zipping || !checked.length}>Print checked list ({checked.length})</button>
+                                <button className="btn-secondary btn-auto btn-sm" onClick={downloadZip} disabled={busy || !!zipping || !checked.length}>{zipping || `Download checked files (${checked.length})`}</button>
                                 <button className="btn-primary btn-auto btn-sm" onClick={() => openMark(checked.map(i => i.id))} disabled={busy || !checked.length}>Mark checked bills In QuickBooks ({checked.length})</button>
                             </span>
                         </div>
