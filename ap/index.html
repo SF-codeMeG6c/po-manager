@@ -83,6 +83,8 @@
         .pill.inqb { background: #455a64; color: white; }
         .pill.coding { background: #fff3e0; color: #b45309; border: 1px solid #f5c98a; }
         .hold-line { margin-top: 6px; font-size: 13px; }
+        .read-note { font-size: 13px; color: #2e6b3a; background: #eef7ef; border-radius: 4px; padding: 6px 8px; }
+        .hold-note { color: #b45309; }
         .code-box { border: 1px solid #f5c98a; background: #fffaf2; border-radius: 6px; padding: 12px; margin: 10px 0; }
         .pill.checked { background: #e6f4ea; color: #2e7d32; }
         .pill.unchecked { background: #f5f5f5; color: #777; }
@@ -1043,21 +1045,35 @@
             );
         }
 
-        // Step 4b: Needs coding page (Owner/Admin). Pick the job, material PO and approver; the bill then waits on Production Admin.
-        function NeedsCoding({ allInvoices, jobs, approvers, user, profile, onHide }) {
+        // Step 4b / E1 (Nov 11): Needs coding page (Owner/Admin). Bills saved with no job or PO yet: batch-upload holds and, from
+        // email intake, every emailed bill (with the job and PO already filled in when the email or file gave them). Pick or check the
+        // job, PO, name, invoice # and amount; Save coding sends it to Production Admin like any other invoice.
+        function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide }) {
+            const BLANK = { kind: '', vendorPick: '', vendorOther: '', invoiceNumber: '', amount: '', previousPayment: '', dateReceived: '',
+                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '' };
             const [codeId, setCodeId] = useState(null);
-            const [f, setF] = useState({ jobId: '', formId: '', approverUid: '' });
-            const [jd, setJd] = useState(null);       // { jobId, pos: material POs | null (loading), superInfo, error }
+            const [f, setF] = useState(BLANK);
+            const [jd, setJd] = useState(null);       // { jobId, pos: all POs | null (loading), superInfo, error }
+            const [readNote, setReadNote] = useState('');
             const [msg, setMsg] = useState(null);
             const [saving, setSaving] = useState(false);
             const current = React.useRef('');
+            const opened = React.useRef('');
             const list = (allInvoices || []).filter(i => isHolding(i) && i.deleted !== true)
                 .sort((a, b) => (a.dateReceived || '').localeCompare(b.dateReceived || '') || (a.vendor || '').localeCompare(b.vendor || ''));
             const openJobs = (jobs || []).filter(j => !j.archived);
             const inv = codeId ? list.find(i => i.id === codeId) || null : null;
             const tradeOf = (i) => (i && i.hold && i.hold.trade) || '';
+            const names = vendorList || SUPPLIERS;
+            const pickName = (name) => {
+                const n = String(name || '').trim();
+                if (!n) return { vendorPick: '', vendorOther: '' };
+                const on = names.find(x => x.toLowerCase() === n.toLowerCase());
+                return on ? { vendorPick: on, vendorOther: '' } : { vendorPick: OTHER, vendorOther: n };
+            };
+            const set = (k, v) => setF(x => ({ ...x, [k]: v }));
 
-            const loadFor = async (jobId, trade) => {
+            const loadFor = async (jobId, trade, keepFormId) => {
                 current.current = jobId;
                 setJd(jobId ? { jobId, pos: null, superInfo: undefined } : null);
                 if (!jobId) return;
@@ -1073,48 +1089,111 @@
                         all.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
                             status: poStatus(d.status), amount: amountOf(d.contractAmount) });
                     });
-                    const mats = all.filter(isGeneralPO).sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
+                    all.sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
                     const t = cardSnap.exists ? (cardSnap.data().team || {}) : {};
                     const sup = t.super && t.super.uid ? t.super : null;
                     if (current.current !== jobId) return;
-                    setJd({ jobId, pos: mats, superInfo: sup });
-                    setF(x => x.jobId !== jobId ? x : { ...x, formId: x.formId || pickMaterialPO(mats, trade), approverUid: x.approverUid || (sup ? sup.uid : '') });
+                    setJd({ jobId, pos: all, superInfo: sup });
+                    setF(x => {
+                        if (x.jobId !== jobId) return x;
+                        let formId = x.formId && all.some(p => p.id === x.formId) ? x.formId : '';
+                        let kind = x.kind;
+                        const found = formId ? all.find(p => p.id === formId) : null;
+                        if (found && !kind) kind = isGeneralPO(found) ? 'supplier' : 'sub';
+                        if (!formId && kind === 'supplier') formId = pickMaterialPO(all.filter(isGeneralPO), trade);
+                        return { ...x, kind, formId, approverUid: x.approverUid || (sup ? sup.uid : '') };
+                    });
                 } catch (error) {
                     if (current.current !== jobId) return;
                     setJd({ jobId, pos: [], superInfo: null, error: 'Error loading the job: ' + error.message });
                 }
             };
-            const openCode = (i) => {
-                const jobId = i.hold && i.hold.jobId && openJobs.some(j => j.id === i.hold.jobId) ? i.hold.jobId : '';
-                setF({ jobId, formId: '', approverUid: '' }); setMsg(null); setCodeId(i.id);
-                loadFor(jobId, tradeOf(i));
+            // Supplier PDFs with nothing typed yet are read when the bill is opened (Home Depot, L&W, National, Ganahl)
+            const readStored = async (i) => {
+                if (!i.file || !i.file.url || !/pdf/i.test(i.file.type || i.file.name || '')) return;
+                if (i.invoiceNumber && typeof i.amount === 'number') return;
+                setReadNote('Reading the PDF...');
+                try {
+                    const blob = await fetchFile(i.file.url);
+                    const { pages } = await pdfPages(blob);
+                    const res = APReader.readSupplierPdf(pages);
+                    if (opened.current !== i.id) return;
+                    if (!res || res.unreadable || res.unknown || !res.invoices.length) {
+                        setReadNote(res && res.unreadable ? 'This PDF has no text (a scan or photo), so fill it in from the file.' : 'Not a supplier layout the page knows, so fill it in from the file.');
+                        return;
+                    }
+                    const r0 = res.invoices[0];
+                    const onList = names.find(n => n.toLowerCase().includes(res.keyword));
+                    setF(x => ({ ...x,
+                        kind: x.kind || 'supplier',
+                        ...(x.vendorPick || x.vendorOther ? {} : (onList ? { vendorPick: onList, vendorOther: '' } : { vendorPick: OTHER, vendorOther: res.supplier })),
+                        invoiceNumber: x.invoiceNumber || r0.invoiceNumber || '',
+                        amount: x.amount || (r0.amount !== null && r0.amount !== undefined ? String(r0.amount) : ''),
+                        invoiceDate: x.invoiceDate || r0.invoiceDate || '', dueDate: x.dueDate || r0.dueDate || '' }));
+                    setReadNote(`Read as a ${res.supplier} bill. Check every field.` + (res.invoices.length > 1 ? ` This PDF holds ${res.invoices.length} invoices: code the first here, and add the others with Batch upload.` : '')
+                        + (r0.note ? ' ' + r0.note : ''));
+                } catch (error) {
+                    if (opened.current === i.id) setReadNote('Could not read the PDF (' + error.message + '), so fill it in from the file.');
+                }
             };
-            const pickJob = (jobId) => { setF({ jobId, formId: '', approverUid: '' }); loadFor(jobId, tradeOf(inv)); };
-            const closeCode = () => { setCodeId(null); current.current = ''; setJd(null); };
+            const openCode = (i) => {
+                const h = i.hold || {};
+                const jobId = h.jobId && openJobs.some(j => j.id === h.jobId) ? h.jobId : '';
+                // A job code + trade on the bill (ABC.123/FRM) means the job's material PO, so it starts as a Supplier bill
+                setF({ ...BLANK, kind: i.kind === 'sub' || i.kind === 'supplier' ? i.kind : h.trade ? 'supplier' : '', ...pickName(i.vendor),
+                    invoiceNumber: i.invoiceNumber || '', amount: typeof i.amount === 'number' ? String(i.amount) : '',
+                    previousPayment: typeof i.previousPayment === 'number' ? String(i.previousPayment) : '',
+                    dateReceived: i.dateReceived || todayText(), invoiceDate: i.invoiceDate || '', dueDate: i.dueDate || '',
+                    jobId, formId: jobId && h.formId ? h.formId : '' });
+                setMsg(null); setReadNote(''); setCodeId(i.id); opened.current = i.id;
+                loadFor(jobId, tradeOf(i));
+                readStored(i);
+            };
+            const pickJob = (jobId) => { setF(x => ({ ...x, jobId, formId: '', approverUid: '' })); loadFor(jobId, tradeOf(inv)); };
+            const pickKind = (kind) => setF(x => {
+                const mats = jdNow && jdNow.pos ? jdNow.pos.filter(isGeneralPO) : [];
+                return { ...x, kind, formId: kind === 'supplier' && mats.length ? pickMaterialPO(mats, tradeOf(inv)) : '', previousPayment: kind === 'sub' ? x.previousPayment : '' };
+            });
+            const closeCode = () => { setCodeId(null); current.current = ''; opened.current = ''; setJd(null); setReadNote(''); };
 
             const job = f.jobId ? openJobs.find(j => j.id === f.jobId) || null : null;
             const jdNow = jd && jd.jobId === f.jobId ? jd : null;
-            const po = jdNow && jdNow.pos ? jdNow.pos.find(p => p.id === f.formId) || null : null;
+            const poChoices = jdNow && jdNow.pos ? jdNow.pos.filter(p => f.kind === 'supplier' ? isGeneralPO(p) : f.kind === 'sub' ? !isGeneralPO(p) : false) : [];
+            const po = poChoices.find(p => p.id === f.formId) || null;
+            const otherTyped = f.vendorOther.trim().replace(/\s+/g, ' ');
+            const otherOnList = otherTyped ? names.find(n => n.toLowerCase() === otherTyped.toLowerCase()) : null;
+            const vendor = f.kind === 'sub' ? (po ? po.subName : '') : f.vendorPick === OTHER ? (otherOnList || otherTyped) : f.vendorPick;
+            const amount = amountOf(f.amount);
+            const prevPay = f.previousPayment.trim() ? amountOf(f.previousPayment) : null;
             const approverList = [...(approvers || [])];
             if (jdNow && jdNow.superInfo && !approverList.some(a => a.uid === jdNow.superInfo.uid)) approverList.unshift({ uid: jdNow.superInfo.uid, name: jdNow.superInfo.name || 'Job Super', role: 'super' });
             const approver = approverList.find(a => a.uid === f.approverUid) || null;
+            const dupOf = inv && vendor && f.invoiceNumber.trim() && allInvoices
+                ? allInvoices.find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === dupKeyOf(vendor, f.invoiceNumber)) : null;
             const problem = !inv ? ''
                 : !f.jobId ? 'Pick the job.'
                 : !jdNow || jdNow.pos === null ? 'Loading the job...'
                 : jdNow.error ? jdNow.error
-                : jdNow.pos.length === 0 ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.'
-                : !po ? 'Pick the material PO.'
-                : !approver ? 'Pick who approves it.' : '';
+                : !f.kind ? 'Pick Sub invoice or Supplier bill.'
+                : !poChoices.length ? (f.kind === 'supplier' ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.' : 'This job has no sub POs in PO Manager yet.')
+                : !po ? (f.kind === 'supplier' ? 'Pick the material PO.' : 'Pick the PO.')
+                : !vendor ? 'Pick or type the supplier.'
+                : !f.invoiceNumber.trim() ? 'Type the invoice #.'
+                : !(amount > 0) ? 'Type the amount.'
+                : prevPay === null && f.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
+                : !/^\d{4}-\d{2}-\d{2}$/.test(f.dateReceived) ? 'Pick the date received.'
+                : !approver ? 'Pick who approves it.'
+                : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. It can't be added twice.` : '';
             let warn = '';
-            if (inv && po && typeof inv.amount === 'number') {
+            if (inv && po && amount > 0) {
                 if (po.amount === null) warn = 'This PO has no amount, so it can\'t pass until the PO is fixed in PO Manager.';
                 else {
                     const used = (allInvoices || []).filter(i => i.id !== inv.id && i.deleted !== true && i.po && i.po.formId === po.id).reduce((t, i) => t + (i.amount || 0), 0);
-                    if (used + inv.amount > po.amount + 0.005) warn = `With the invoices already on this PO, it would be over the PO's ${money(po.amount)} by ${money(used + inv.amount - po.amount)}. It can be coded, but it can't pass until a revised PO or a supplement covers it.`;
+                    if (used + amount > po.amount + 0.005) warn = `With the invoices already on this PO, it would be over the PO's ${money(po.amount)} by ${money(used + amount - po.amount)}. It can be coded, but it can't pass until a revised PO or a supplement covers it.`;
                 }
             }
-            const fileName = inv && po ? buildFileName({ category: po.category, vendor: inv.vendor, amount: inv.amount, poNumber: po.poNumber,
-                dateReceived: inv.dateReceived, file: { name: inv.file ? inv.file.name : '', type: inv.file ? inv.file.type : '' } }) : '';
+            const fileName = inv && po && vendor && amount > 0 && /^\d{4}-\d{2}-\d{2}$/.test(f.dateReceived) ? buildFileName({ category: po.category, vendor, amount, poNumber: po.poNumber,
+                dateReceived: f.dateReceived, file: { name: inv.file ? inv.file.name : '', type: inv.file ? inv.file.type : '' } }) : '';
 
             const save = async () => {
                 if (!inv || problem) return;
@@ -1129,8 +1208,12 @@
                     const name = same.length ? withRandom(fileName) : fileName;
                     const now = new Date();
                     const by = { uid: user.uid, name: profile.name || user.email };
+                    const next = { kind: f.kind, vendor, invoiceNumber: f.invoiceNumber.trim(), amount, previousPayment: f.kind === 'sub' ? prevPay : null,
+                        dateReceived: f.dateReceived, invoiceDate: f.invoiceDate || null, dueDate: f.dueDate || null };
+                    const changed = Object.keys(next).filter(k => (inv[k] === undefined ? null : inv[k]) !== next[k]);
                     const batch = db.batch();
                     batch.update(ref, {
+                        ...next,
                         jobId: f.jobId, jobCode: job.code,
                         po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
                         approver: { uid: approver.uid, name: approver.name },
@@ -1140,10 +1223,10 @@
                         dupFlag: same.length ? dupFlagFor(same, now) : (inv.dupFlag || null)
                     });
                     batch.set(ref.collection('history').doc(), { action: 'Coded', at: now, by, jobCode: job.code, poNumber: po.poNumber,
-                        approver: approver.name, fileName: name, ...(same.length ? { dupFlag: true } : {}) });
+                        approver: approver.name, fileName: name, filled: changed, ...(same.length ? { dupFlag: true } : {}) });
                     await batch.commit();
-                    setCodeId(null); current.current = ''; setJd(null);
-                    setMsg({ text: `Bill ${inv.invoiceNumber} from ${inv.vendor} coded to ${job.code}, PO ${po.poNumber}. It's now waiting on Production Admin.`
+                    closeCode();
+                    setMsg({ text: `Bill ${next.invoiceNumber} from ${vendor} coded to ${job.code}, PO ${po.poNumber}. It's now waiting on Production Admin.`
                         + (same.length ? ` Same file name as invoice ${same.map(m => m.invoiceNumber).join(', ')}, so a number was added and it's flagged as a possible duplicate.` : ''), ok: true });
                 } catch (error) {
                     setMsg({ text: 'Error saving: ' + error.message, ok: false });
@@ -1152,28 +1235,33 @@
             };
 
             const total = list.reduce((t, i) => t + (typeof i.amount === 'number' ? i.amount : 0), 0);
+            const fromOf = (i) => i.vendor || (i.hold && i.hold.email && (i.hold.email.fromName || i.hold.email.from)) || '';
             return (
                 <div className="section">
-                    <div className="section-title">Needs coding: bills saved with no job or PO yet</div>
-                    <p className="muted" style={{ marginBottom: '10px' }}>Pick the job, material PO and approver for each bill. It then goes to Production Admin like any other invoice. These bills aren't counted on any job or PO until they're coded.</p>
+                    <div className="section-title">Needs coding: bills with no job or PO yet, and bills from email</div>
+                    <p className="muted" style={{ marginBottom: '10px' }}>Check or pick the job, PO, name, invoice # and amount for each bill. It then goes to Production Admin like any other invoice. These bills aren't counted on any job or PO until they're coded.</p>
                     {allInvoices === null && <p className="muted">Loading invoices...</p>}
                     {msg && !(inv && !msg.ok) && <div className={msg.ok ? 'ok' : 'error'} style={{ marginBottom: '10px' }}>{msg.text}</div>}
                     {allInvoices && list.length === 0 && <p className="muted">Nothing waiting to be coded.</p>}
                     {list.length > 0 && (
                         <React.Fragment>
-                            <div className="list-sum"><span>{list.length} bill{list.length === 1 ? '' : 's'} · {money(total)}</span></div>
+                            <div className="list-sum"><span>{list.length} bill{list.length === 1 ? '' : 's'}{total ? ` · ${money(total)} typed so far` : ''}</span></div>
                             <div className="table-wrap"><table>
-                                <thead><tr><th>Received</th><th>Supplier</th><th>Invoice #</th><th className="num">Amount</th><th>The bill says</th><th>Saved by</th><th></th></tr></thead>
-                                <tbody>{list.map(i => (
+                                <thead><tr><th>Received</th><th>From</th><th>Invoice #</th><th className="num">Amount</th><th>Found / note</th><th>Saved by</th><th></th></tr></thead>
+                                <tbody>{list.map(i => {
+                                    const h = i.hold || {};
+                                    return (
                                     <React.Fragment key={i.id}>
                                         <tr className={codeId === i.id ? 'editing-row' : ''}>
-                                            <td>{shortDate(i.dateReceived)}</td>
-                                            <td>{i.vendor}{i.pdfRead ? <small>Read from PDF</small> : null}</td>
-                                            <td>{i.invoiceNumber}{dupOpen(i) ? <small><span className="pill pa-pending">Possible duplicate</span></small> : null}</td>
+                                            <td>{shortDate(i.dateReceived)}{h.email ? <small><span className="pill passed">Email</span></small> : null}</td>
+                                            <td>{fromOf(i) || <span className="muted">-</span>}{h.email && h.email.from && h.email.from !== fromOf(i) ? <small>{h.email.from}</small> : null}{i.pdfRead ? <small>Read from PDF</small> : null}</td>
+                                            <td>{i.invoiceNumber || <span className="muted">-</span>}{dupOpen(i) ? <small><span className="pill pa-pending">Possible duplicate</span></small> : null}</td>
                                             <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}</td>
-                                            <td>{i.hold && i.hold.jobText ? `"${i.hold.jobText}"` : <span className="muted">no job on it</span>}
-                                                {i.hold && i.hold.jobCode ? <small>Job {i.hold.jobCode} picked, no PO</small> : null}</td>
-                                            <td>{i.createdBy ? i.createdBy.name : ''}</td>
+                                            <td>{h.poNumber ? <span>PO {h.poNumber}</span> : h.jobText ? `"${h.jobText}"` : <span className="muted">no PO or job on it</span>}
+                                                {h.jobCode && !h.poNumber ? <small>Job {h.jobCode}{h.formId ? '' : ', no PO'}</small> : null}
+                                                {h.email && h.email.subject ? <small>Subject: {h.email.subject}</small> : null}
+                                                {h.note ? <small className="hold-note">{h.note}</small> : null}</td>
+                                            <td>{h.email ? 'Email' : (i.createdBy ? i.createdBy.name : '')}</td>
                                             <td><span className="row-btns">
                                                 {i.file && i.file.url && <a className="btn-link" href={i.file.url} target="_blank" rel="noopener">View</a>}
                                                 <button className="btn-link" onClick={() => codeId === i.id ? closeCode() : openCode(i)} disabled={saving}>{codeId === i.id ? 'Close' : 'Code'}</button>
@@ -1183,7 +1271,13 @@
                                         {codeId === i.id && (
                                             <tr><td colSpan="7">
                                                 <div className="code-box">
-                                                    <div className="section-title" style={{ marginBottom: '6px' }}>Code bill {i.invoiceNumber} from {i.vendor} ({typeof i.amount === 'number' ? money(i.amount) : ''})</div>
+                                                    <div className="section-title" style={{ marginBottom: '6px' }}>Code this bill{h.email ? ` (emailed ${h.email.from || ''})` : ''}</div>
+                                                    {readNote && <div className={readNote.startsWith('Reading') ? 'muted' : 'read-note'} style={{ marginBottom: '8px' }}>{readNote}</div>}
+                                                    <div className="kinds" style={{ marginBottom: '8px' }}>
+                                                        {[['sub', 'Sub invoice'], ['supplier', 'Supplier bill']].map(([k, label]) => (
+                                                            <label key={k}><input type="radio" name="nc-kind" checked={f.kind === k} onChange={() => pickKind(k)} disabled={saving} /> {label}</label>
+                                                        ))}
+                                                    </div>
                                                     <div className="bgrid">
                                                         <div>
                                                             <label htmlFor="nc-job">Job</label>
@@ -1193,21 +1287,48 @@
                                                             </select>
                                                         </div>
                                                         <div>
-                                                            <label htmlFor="nc-po">Material PO</label>
-                                                            <select id="nc-po" value={f.formId} onChange={e => setF(x => ({ ...x, formId: e.target.value }))} disabled={saving || !jdNow || !jdNow.pos}>
-                                                                <option value="">{f.jobId && jdNow && jdNow.pos === null ? 'Loading...' : '-- Pick the PO --'}</option>
-                                                                {(jdNow && jdNow.pos ? jdNow.pos : []).map(p => <option key={p.id} value={p.id}>{p.category} - {p.poNumber} - {p.subName}</option>)}
+                                                            <label htmlFor="nc-po">{f.kind === 'supplier' ? 'Material PO' : 'PO'}</label>
+                                                            <select id="nc-po" value={f.formId} onChange={e => set('formId', e.target.value)} disabled={saving || !jdNow || !jdNow.pos || !f.kind}>
+                                                                <option value="">{f.jobId && jdNow && jdNow.pos === null ? 'Loading...' : !f.kind ? '-- Pick Sub or Supplier first --' : '-- Pick the PO --'}</option>
+                                                                {poChoices.map(p => <option key={p.id} value={p.id}>{p.category} - {p.poNumber} - {p.subName}</option>)}
                                                             </select>
                                                         </div>
                                                         <div>
+                                                            <label htmlFor="nc-vendor">{f.kind === 'sub' ? 'Sub' : 'Supplier'}</label>
+                                                            {f.kind === 'sub'
+                                                                ? <input id="nc-vendor" type="text" value={po ? po.subName : ''} placeholder="From the PO" disabled />
+                                                                : <select id="nc-vendor" value={f.vendorPick} onChange={e => set('vendorPick', e.target.value)} disabled={saving}>
+                                                                    <option value="">-- Pick the supplier --</option>
+                                                                    {names.map(n => <option key={n} value={n}>{n}</option>)}
+                                                                    <option value={OTHER}>Other (type it)</option>
+                                                                </select>}
+                                                            {f.kind !== 'sub' && f.vendorPick === OTHER && <input id="nc-vendor-other" type="text" value={f.vendorOther} placeholder="Name as it is in QuickBooks" onChange={e => set('vendorOther', e.target.value)} disabled={saving} style={{ marginTop: '4px' }} />}
+                                                        </div>
+                                                        <div>
+                                                            <label htmlFor="nc-num">Invoice #</label>
+                                                            <input id="nc-num" type="text" value={f.invoiceNumber} onChange={e => set('invoiceNumber', e.target.value)} disabled={saving} />
+                                                        </div>
+                                                        <div>
+                                                            <label htmlFor="nc-amt">Amount</label>
+                                                            <input id="nc-amt" type="text" inputMode="decimal" value={f.amount} onChange={e => set('amount', e.target.value)} disabled={saving} />
+                                                        </div>
+                                                        <div>
+                                                            <label htmlFor="nc-date">Date received</label>
+                                                            <input id="nc-date" type="date" value={f.dateReceived} onChange={e => set('dateReceived', e.target.value)} disabled={saving} />
+                                                        </div>
+                                                        {f.kind === 'sub' && <div>
+                                                            <label htmlFor="nc-prev">Previous payment (on the sub's form)</label>
+                                                            <input id="nc-prev" type="text" inputMode="decimal" value={f.previousPayment} placeholder="Leave blank if none" onChange={e => set('previousPayment', e.target.value)} disabled={saving} />
+                                                        </div>}
+                                                        <div>
                                                             <label htmlFor="nc-appr">Approver</label>
-                                                            <select id="nc-appr" value={f.approverUid} onChange={e => setF(x => ({ ...x, approverUid: e.target.value }))} disabled={saving}>
+                                                            <select id="nc-appr" value={f.approverUid} onChange={e => set('approverUid', e.target.value)} disabled={saving}>
                                                                 <option value="">{approvers === null ? 'Loading people...' : '-- Pick who approves it --'}</option>
                                                                 {approverList.map(a => <option key={a.uid} value={a.uid}>{a.name}{jdNow && jdNow.superInfo && a.uid === jdNow.superInfo.uid ? ' (job Super)' : ` (${a.role})`}</option>)}
                                                             </select>
                                                         </div>
                                                     </div>
-                                                    {problem && <div className={problem.startsWith('Loading') ? 'muted' : 'warn'} style={{ marginTop: '6px' }}>{problem}</div>}
+                                                    {problem && <div className={problem.startsWith('Loading') ? 'muted' : problem.includes("can't be added twice") ? 'error' : 'warn'} style={{ marginTop: '6px' }}>{problem}</div>}
                                                     {warn && <div className="warn" style={{ marginTop: '6px' }}>{warn}</div>}
                                                     {fileName && <div className="fname" style={{ marginTop: '6px', marginBottom: 0 }}>File name becomes: {fileName}</div>}
                                                     {msg && !msg.ok && <div className="error" style={{ marginTop: '6px' }}>{msg.text}</div>}
@@ -1218,8 +1339,8 @@
                                                 </div>
                                             </td></tr>
                                         )}
-                                    </React.Fragment>
-                                ))}</tbody>
+                                    </React.Fragment>);
+                                })}</tbody>
                             </table></div>
                         </React.Fragment>
                     )}
@@ -2463,7 +2584,7 @@
                         </div>
                     )}
                     {isAdmin && !job && view === 'books' && <Bookkeeping allInvoices={allInvoices} user={user} profile={profile} />}
-                    {isAdmin && !job && view === 'coding' && <NeedsCoding allInvoices={allInvoices} jobs={jobs} approvers={approvers} user={user} profile={profile} onHide={hideInvoice} />}
+                    {isAdmin && !job && view === 'coding' && <NeedsCoding allInvoices={allInvoices} jobs={jobs} approvers={approvers} vendorList={vendorList} user={user} profile={profile} onHide={hideInvoice} />}
 
                     {isAdmin && !job && view === 'invoices' && (
                         <div className="section">
