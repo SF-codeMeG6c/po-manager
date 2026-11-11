@@ -243,6 +243,54 @@
         // Step 4b: a supplier bill whose job or PO isn't known yet is saved to the Needs coding list (no job, no PO, no approver).
         // Owner/Admin code it later; it then goes to Production Admin like any other invoice. Not counted on any job or PO until then.
         const isHolding = (i) => i.needsCoding === true;
+        // Any invoice layout (Nov 11): the invoice # after an "Invoice #" / "Invoice No." label, the amount after a
+        // "Total" / "Amount Due" / "Balance Due" label (the last one on the bill), and the invoice date. A best guess to check.
+        const guessInvoice = (pages) => {
+            const moneyIn = (t) => { const m = /\$?\s*\(?(-?[\d,]+\.\d{2})\)?/.exec(String(t || '')); return m ? Number(m[1].replace(/,/g, '')) : null; };
+            const lines = [];
+            pages.forEach((p, k) => {
+                const its = p.items.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+                its.forEach(it => {
+                    const ln = lines.find(l => l.k === k && Math.abs(l.y - it.y) <= 4);
+                    if (ln) ln.items.push(it); else lines.push({ k, y: it.y, items: [it] });
+                });
+            });
+            lines.forEach(l => { l.items.sort((a, b) => a.x - b.x); l.text = l.items.map(i => i.s).join(' ').replace(/\s+/g, ' ').trim(); });
+            const all = lines.map(l => l.text).join('\n');
+            const num = /invoice\s*(?:#|no\.?|number|num)\s*[:#.]?\s*([A-Za-z0-9][A-Za-z0-9\-\/]{0,24})/i.exec(all);
+            const date = /invoice\s*date\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all) || /\bdate\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all);
+            const due = /due\s*date\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all);
+            let amount = null;
+            lines.forEach(l => {
+                if (!/(total\s*due|amount\s*due|balance\s*due|invoice\s*total|grand\s*total|total\s*amount|amount\s*of\s*invoice|\btotal\b)/i.test(l.text)) return;
+                if (/sub\s*-?\s*total|tax|previous|paid|credit|retention/i.test(l.text) && !/total\s*due|amount\s*due|balance\s*due|grand\s*total/i.test(l.text)) return;
+                const after = l.text.replace(/^.*?(total\s*due|amount\s*due|balance\s*due|invoice\s*total|grand\s*total|total\s*amount|amount\s*of\s*invoice|\btotal\b)/i, '');
+                const v = moneyIn(after);
+                if (v !== null && v > 0) amount = v; // the last labelled total on the bill wins
+            });
+            return { invoiceNumber: num && !/^(date|no|number|total)$/i.test(num[1]) ? num[1] : '', amount,
+                invoiceDate: date ? APReader.isoDate(date[1]) : '', dueDate: due ? APReader.isoDate(due[1]) : '' };
+        };
+        // A known job code in some text, and right after it a PO number (-014) or a trade (/FRM). Longest codes first. (Nov 11)
+        const findJobInText = (text, jobs) => {
+            const t = String(text || ''); const low = t.toLowerCase();
+            let first = null;
+            for (const j of (jobs || []).filter(x => x.code).slice().sort((a, b) => b.code.length - a.code.length)) {
+                const code = String(j.code).toLowerCase();
+                let i = low.indexOf(code);
+                while (i >= 0) {
+                    if (i === 0 || !/[a-z0-9.]/.test(low[i - 1])) {
+                        const rest = t.slice(i + code.length);
+                        const po = /^\s*-\s*(\d{3})(?!\d)/.exec(rest);
+                        if (po) return { jobId: j.id, code: j.code, poNumber: `${j.code}-${po[1]}`, trade: '' };
+                        const tr = /^[\s_\/\-]+([A-Za-z]{3})(?![A-Za-z])/.exec(rest);
+                        if (!first) first = { jobId: j.id, code: j.code, poNumber: '', trade: tr ? tr[1].toUpperCase() : '' };
+                    }
+                    i = low.indexOf(code, i + 1);
+                }
+            }
+            return first;
+        };
         const HOLD_FOLDER = '_needs-coding';
         const holdFileName = ({ vendor, amount, dateReceived, file }) => {
             const [y, m, d] = dateReceived.split('-');
@@ -1050,7 +1098,7 @@
         // job, PO, name, invoice # and amount; Save coding sends it to Production Admin like any other invoice.
         function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide }) {
             const BLANK = { kind: '', vendorPick: '', vendorOther: '', invoiceNumber: '', amount: '', previousPayment: '', dateReceived: '',
-                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '' };
+                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '' };
             const [codeId, setCodeId] = useState(null);
             const [f, setF] = useState(BLANK);
             const [jd, setJd] = useState(null);       // { jobId, pos: all POs | null (loading), superInfo, error }
@@ -1100,6 +1148,10 @@
                         let kind = x.kind;
                         const found = formId ? all.find(p => p.id === formId) : null;
                         if (found && !kind) kind = isGeneralPO(found) ? 'supplier' : 'sub';
+                        if (!formId && x.poWanted) {
+                            const w = all.find(p => p.poNumber.toLowerCase() === x.poWanted.toLowerCase());
+                            if (w) { formId = w.id; kind = isGeneralPO(w) ? 'supplier' : 'sub'; }
+                        }
                         if (!formId && kind === 'supplier') formId = pickMaterialPO(all.filter(isGeneralPO), trade);
                         return { ...x, kind, formId, approverUid: x.approverUid || (sup ? sup.uid : '') };
                     });
@@ -1111,15 +1163,39 @@
             // Supplier PDFs with nothing typed yet are read when the bill is opened (Home Depot, L&W, National, Ganahl)
             const readStored = async (i) => {
                 if (!i.file || !i.file.url || !/pdf/i.test(i.file.type || i.file.name || '')) return;
-                if (i.invoiceNumber && typeof i.amount === 'number') return;
+                const hasJob = !!(i.hold && i.hold.jobId);
+                if (i.invoiceNumber && typeof i.amount === 'number' && hasJob) return;
                 setReadNote('Reading the PDF...');
                 try {
                     const blob = await fetchFile(i.file.url);
                     const { pages } = await pdfPages(blob);
                     const res = APReader.readSupplierPdf(pages);
                     if (opened.current !== i.id) return;
+                    // Any layout: a job code or PO number printed on the PDF picks the job and PO
+                    let foundNote = '';
+                    if (!hasJob) {
+                        const text = pages.map(p => p.items.slice().sort((a, b) => b.y - a.y || a.x - b.x).map(it => it.s).join(' ')).join('\n');
+                        const hit = findJobInText(text, openJobs);
+                        if (hit) {
+                            foundNote = hit.poNumber ? `Found PO ${hit.poNumber} on the PDF.` : `Found job ${hit.code} on the PDF${hit.trade ? ` (trade ${hit.trade})` : ''}.`;
+                            setF(x => x.jobId ? x : { ...x, jobId: hit.jobId, poWanted: hit.poNumber, kind: x.kind || (hit.trade && !hit.poNumber ? 'supplier' : '') });
+                            loadFor(hit.jobId, hit.trade || tradeOf(i));
+                        }
+                    }
                     if (!res || res.unreadable || res.unknown || !res.invoices.length) {
-                        setReadNote(res && res.unreadable ? 'This PDF has no text (a scan or photo), so fill it in from the file.' : 'Not a supplier layout the page knows, so fill it in from the file.');
+                        if (res && res.unreadable) {
+                            setReadNote((foundNote ? foundNote + ' ' : '') + 'This PDF has no text (a scan or photo), so fill in the rest from the file.');
+                            return;
+                        }
+                        const g = guessInvoice(pages);
+                        setF(x => ({ ...x,
+                            invoiceNumber: x.invoiceNumber || g.invoiceNumber,
+                            amount: x.amount || (g.amount !== null ? String(g.amount) : ''),
+                            invoiceDate: x.invoiceDate || g.invoiceDate, dueDate: x.dueDate || g.dueDate }));
+                        const got = [g.invoiceNumber && 'invoice #', g.amount !== null && 'amount', g.invoiceDate && 'bill date'].filter(Boolean);
+                        setReadNote((foundNote ? foundNote + ' ' : '')
+                            + (got.length ? `Read the ${got.join(', ')} from the PDF: check ${got.length === 1 ? 'it' : 'them'} against the file.` : '')
+                            + (!g.invoiceNumber || g.amount === null ? ` Type the ${[!g.invoiceNumber && 'invoice #', g.amount === null && 'amount'].filter(Boolean).join(' and ')} from the file.` : ''));
                         return;
                     }
                     const r0 = res.invoices[0];
@@ -1130,7 +1206,7 @@
                         invoiceNumber: x.invoiceNumber || r0.invoiceNumber || '',
                         amount: x.amount || (r0.amount !== null && r0.amount !== undefined ? String(r0.amount) : ''),
                         invoiceDate: x.invoiceDate || r0.invoiceDate || '', dueDate: x.dueDate || r0.dueDate || '' }));
-                    setReadNote(`Read as a ${res.supplier} bill. Check every field.` + (res.invoices.length > 1 ? ` This PDF holds ${res.invoices.length} invoices: code the first here, and add the others with Batch upload.` : '')
+                    setReadNote((foundNote ? foundNote + ' ' : '') + `Read as a ${res.supplier} bill. Check every field.` + (res.invoices.length > 1 ? ` This PDF holds ${res.invoices.length} invoices: code the first here, and add the others with Batch upload.` : '')
                         + (r0.note ? ' ' + r0.note : ''));
                 } catch (error) {
                     if (opened.current === i.id) setReadNote('Could not read the PDF (' + error.message + '), so fill it in from the file.');
@@ -2939,3 +3015,4 @@
     </script>
 </body>
 </html>
+
