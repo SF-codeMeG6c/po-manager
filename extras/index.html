@@ -420,10 +420,11 @@
             if (extra.description) { wrap(extra.description, font, 10, W - 2 * M).forEach(l => { need(13); text(l, M, y, 10); y -= 13; }); }
             y -= 10;
 
-            // Lines (charged lines only; "We absorb" lines are left off)
-            const colCat = M, colDesc = M + 70, colAmt = W - M, descW = (W - M - 90) - colDesc;
+            // Lines (charged lines only; "We absorb" lines are left off). No Category column on the customer's copy (Spencer, Nov 11);
+            // the category stays on each saved line for POs, budgets and Job Cost.
+            const colDesc = M, colAmt = W - M, descW = (W - M - 90) - colDesc;
             const header = () => {
-                text('Category', colCat, y, 10, bold); text('Description', colDesc, y, 10, bold); right('Amount', colAmt, y, 10, bold);
+                text('Description', colDesc, y, 10, bold); right('Amount', colAmt, y, 10, bold);
                 y -= 5; page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 1, color: black }); y -= 13;
             };
             need(40); header();
@@ -431,7 +432,6 @@
                 const d = wrap(l.description || '', font, 10, descW);
                 const h = Math.max(1, d.length) * 13 + 4;
                 if (y - h < BOTTOM) { newPage(); text(`Extra #${number} (continued)`, M, y, 10, bold); y -= 20; header(); }
-                text(l.cat || '', colCat, y, 10);
                 d.forEach((t, i) => text(t, colDesc, y - i * 13, 10));
                 right($(linePrice(l)), colAmt, y, 10);
                 y -= h;
