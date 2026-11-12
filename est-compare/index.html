@@ -497,13 +497,39 @@
         }
 
         // Insurance version vs version
-        function VersionCompare() {
+        function VersionCompare({ profile }) {
             const [older, setOlder] = useState({ est: null, error: '', busy: false });
             const [newer, setNewer] = useState({ est: null, error: '', busy: false });
             const [rows, setRows] = useState(null);
             const [show, setShow] = useState({ ADDED: true, REMOVED: true, CHANGED: true, PRICE: false });
             const [ours, setOurs] = useState({ est: null, error: '', busy: false });   // our estimate, read only for its room names
             const [pairs, setPairs] = useState({});                                    // adjuster room -> our room ('' = keep the adjuster's name)
+            // Step 2b (Nov 12): per job, our room list and the pairings are saved in estCompare/{jobId} with the Save button.
+            // Each save first copies the old one to estCompare/{jobId}/versions. Nothing else is saved.
+            const [jobs, setJobs] = useState([]);
+            const [jobId, setJobId] = useState('');
+            const [saved, setSaved] = useState(null);       // estCompare/{jobId}: null = no job or loading, false = nothing saved yet
+            const [newRooms, setNewRooms] = useState([]);   // adjuster rooms with no saved pairing (the tool's guess is shown)
+            const [saveMsg, setSaveMsg] = useState('');
+            const [saving, setSaving] = useState(false);
+
+            useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
+                const list = [];
+                snapshot.forEach(doc => { const d = doc.data(); if (d.archived !== true) list.push({ id: doc.id, ...d }); });
+                list.sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+                setJobs(list);
+            }, e => setSaveMsg('Error loading jobs: ' + e.message)), []);
+
+            useEffect(() => {
+                setSaved(null);
+                setSaveMsg('');
+                if (!jobId) return;
+                let live = true;
+                db.collection('estCompare').doc(jobId).get()
+                    .then(snap => { if (live) setSaved(snap.exists ? snap.data() : false); })
+                    .catch(e => { if (live) { setSaved(false); setSaveMsg('Could not load saved pairings: ' + e.message); } });
+                return () => { live = false; };
+            }, [jobId]);
 
             const pick = (set) => async (file) => {
                 setRows(null);
@@ -528,7 +554,12 @@
                     setOurs({ est: null, error: 'Could not read this PDF: ' + e.message, busy: false });
                 }
             };
-            const ourRooms = useMemo(() => ours.est ? ours.est.roomCheck.map(c => c.room) : [], [ours.est]);
+            const ourRooms = useMemo(() => ours.est ? ours.est.roomCheck.map(c => c.room) : (saved && saved.ourRooms) || [], [ours.est, saved]);
+            const savedPairs = useMemo(() => {
+                const m = {};
+                ((saved && saved.pairs) || []).forEach(p => { m[p.adj] = p.ours; });
+                return m;
+            }, [saved]);
             // adjuster rooms that have something to enter
             const adjRooms = useMemo(() => {
                 if (!rows) return [];
@@ -537,11 +568,50 @@
                 return list;
             }, [rows]);
             // start each adjuster room on the tool's best guess
+            // start each adjuster room on its saved pairing (if our room is still on the list), else the tool's best guess
             useEffect(() => {
                 const p = {};
-                if (ourRooms.length) adjRooms.forEach(r => { p[r] = EstCompare.suggestRoom(r, ourRooms); });
+                const fresh = [];
+                if (ourRooms.length) adjRooms.forEach(r => {
+                    const s = savedPairs[r];
+                    if (s !== undefined && (s === '' || ourRooms.includes(s))) p[r] = s;
+                    else { p[r] = EstCompare.suggestRoom(r, ourRooms); fresh.push(r); }
+                });
                 setPairs(p);
-            }, [adjRooms, ourRooms]);
+                setNewRooms(fresh);
+            }, [adjRooms, ourRooms, savedPairs]);
+
+            const savePairs = async () => {
+                setSaving(true);
+                setSaveMsg('');
+                try {
+                    const ref = db.collection('estCompare').doc(jobId);
+                    // keep saved pairings for adjuster rooms not in this comparison; this comparison's rooms take the screen's choice
+                    const merged = { ...savedPairs };
+                    adjRooms.forEach(r => { merged[r] = pairs[r] || ''; });
+                    const job = jobs.find(j => j.id === jobId) || {};
+                    const now = firebase.firestore.FieldValue.serverTimestamp();
+                    const data = {
+                        jobCode: job.code || '',
+                        ourRooms,
+                        ourFile: ours.est ? ours.est.fileName : (saved && saved.ourFile) || '',
+                        ourTotal: ours.est ? ours.est.readTotal : (saved && saved.ourTotal != null ? saved.ourTotal : null),
+                        pairs: Object.keys(merged).map(adj => ({ adj, ours: merged[adj] })),
+                        savedBy: { uid: profile.uid, name: profile.name || profile.email || '' },
+                        savedAt: now
+                    };
+                    const batch = db.batch();
+                    if (saved) batch.set(ref.collection('versions').doc(), { ...saved, copiedAt: now });
+                    batch.set(ref, data);
+                    await batch.commit();
+                    setSaved({ ...data, savedAt: firebase.firestore.Timestamp.now() });
+                    setSaveMsg('Saved.');
+                } catch (e) {
+                    setSaveMsg('Could not save: ' + e.message);
+                }
+                setSaving(false);
+            };
+            const savedWhen = saved && saved.savedAt && saved.savedAt.toDate ? saved.savedAt.toDate().toLocaleString() : '';
 
             const warnings = [];
             if (older.est && newer.est) {
@@ -579,6 +649,23 @@
                 <div>
                     <div className="section">
                         <div className="section-title">Insurance version vs version</div>
+                        <div style={{ marginBottom: '16px' }}>
+                            <label>Job (optional — pick one to use and save its room pairings)</label>
+                            <select value={jobId} onChange={e => setJobId(e.target.value)}>
+                                <option value="">-- No job --</option>
+                                {jobs.map(j => <option key={j.id} value={j.id}>{j.code} - {j.address}</option>)}
+                            </select>
+                            {jobId && saved === null && <div className="muted">Loading…</div>}
+                            {saveMsg && saveMsg.startsWith('Error') || saveMsg.startsWith('Could not load') ? <div className="read bad">{saveMsg}</div> : null}
+                            {jobId && saved === false && <div className="muted">No room pairings saved for this job yet. Upload our estimate below, then Save after Compare.</div>}
+                            {jobId && saved && (
+                                <div className="read ok">
+                                    Saved for this job: our rooms from {saved.ourFile || 'our estimate'} ({(saved.ourRooms || []).length} rooms{saved.ourTotal != null ? ', ' + money(saved.ourTotal) : ''}), {(saved.pairs || []).length} pairings
+                                    {(saved.savedBy || savedWhen) && <span> — saved{saved.savedBy && saved.savedBy.name ? ' by ' + saved.savedBy.name : ''}{savedWhen ? ' ' + savedWhen : ''}</span>}.
+                                    {' '}You don't need to upload our estimate again unless it was revised.
+                                </div>
+                            )}
+                        </div>
                         <div className="files">
                             <EstimateFile label="Older estimate (PDF)" {...older} onPick={pick(setOlder)} />
                             <EstimateFile label="Newer estimate (PDF)" {...newer} onPick={pick(setNewer)} />
@@ -586,7 +673,7 @@
                         </div>
                         {warnings.map((w, i) => <div key={i} className="read bad" style={{ marginBottom: '10px' }}>{w}</div>)}
                         <button className="btn-primary" disabled={!older.est || !newer.est} onClick={compare}>Compare</button>
-                        <div className="muted">The PDFs are read in this browser. Nothing is uploaded or saved.</div>
+                        <div className="muted">The PDFs are read in this browser and never uploaded. Only our room names and the pairings are saved, when you click Save.</div>
                     </div>
 
                     {rows && (
@@ -599,9 +686,9 @@
                                         <tbody>
                                             {adjRooms.map(r => (
                                                 <tr key={r}>
-                                                    <td>{r}</td>
+                                                    <td>{r}{saved && newRooms.includes(r) && <span className="small" style={{ color: '#b3261e', fontWeight: 600 }}> new</span>}</td>
                                                     <td>
-                                                        <select value={pairs[r] || ''} onChange={e => setPairs(p => ({ ...p, [r]: e.target.value }))}>
+                                                        <select value={pairs[r] || ''} onChange={e => { setSaveMsg(''); setPairs(p => ({ ...p, [r]: e.target.value })); }}>
                                                             <option value="">(keep the adjuster's name)</option>
                                                             {ourRooms.map(o => <option key={o} value={o}>{o}</option>)}
                                                         </select>
@@ -610,7 +697,14 @@
                                             ))}
                                         </tbody>
                                     </table>
-                                    <div className="muted">The tool's best guess is filled in. Fix any that are wrong before you download. These are not remembered yet.</div>
+                                    <div className="muted">
+                                        {saved ? 'Saved pairings are filled in. Rooms marked "new" have the tool\'s best guess; check those.' : 'The tool\'s best guess is filled in.'} Fix any that are wrong before you download.
+                                    </div>
+                                    <div className="bar">
+                                        <button className="btn-primary" disabled={!jobId || saved === null || saving} onClick={savePairs}>{saving ? 'Saving…' : 'Save room pairings'}</button>
+                                        {!jobId && <span className="small">Pick a job above to save these.</span>}
+                                        {saveMsg && <span className="small" style={{ color: saveMsg === 'Saved.' ? '#1b6e2b' : '#b3261e', fontWeight: 600 }}>{saveMsg}</span>}
+                                    </div>
                                 </div>
                             )}
                             <div className="section">
@@ -726,7 +820,7 @@
             if (mode === 'versions') return (
                 <div>
                     <button className="back" onClick={() => setMode(null)}>← Comparison types</button>
-                    <VersionCompare />
+                    <VersionCompare profile={profile} />
                 </div>
             );
             return (
