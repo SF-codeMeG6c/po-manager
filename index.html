@@ -123,6 +123,7 @@
             extras:  ['M12 4v8', 'M8 8h8', 'M8 18h8'],   // plus over minus: extras and credits
             stmt:    ['M6 3h12v18H6z', 'M9 7h6', 'M9 11h6', 'M9 15h4'],
             approve: ['M4 12l5 5L20 6'],
+            estcompare: ['M4 4h7v16H4z', 'M13 4h7v16h-7z', 'M6 9h3', 'M15 9h3', 'M6 13h3', 'M15 13h3'],   // two estimates side by side
             ar:      ['M3 7h18v10H3z', 'M12 10v4', 'M7 12h.01', 'M17 12h.01'],
             wip:     ['M12 3a9 9 0 1 0 9 9', 'M12 7v5l3 2'],
             users:   ['M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1', 'M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M21 19v-1a4 4 0 0 0-3-3.87', 'M15.5 4.13a3 3 0 0 1 0 5.74']
@@ -163,6 +164,7 @@ ${from || ''}`;
             { key: 'extras',  name: 'Extras & Credits', roles: ['owner', 'admin', 'estimator', 'super'],     url: '/extras/' },
             { key: 'cost',    name: 'Job Cost',       roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/jobcost/' }, // everyone sees it (decided Oct 27)
             { key: 'approve', name: 'Accounts Payable', roles: ['owner', 'admin', 'estimator', 'super', 'office'], url: '/ap/' }, // was "PO Approval - Coming soon" (Oct 30); in Job tools so Supers see it
+            { key: 'estcompare', name: 'Estimate Comparisons', roles: ['owner', 'admin', 'estimator'], url: '/est-compare/' },
             { key: 'stmt',    name: 'Statement',      url: null }
         ];
 
