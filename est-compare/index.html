@@ -141,6 +141,8 @@
                         out.printedTotal = coded ? nums[nums.length - 1] : (nums.length >= 3 ? nums[2] : nums[nums.length - 1]);
                         continue;
                     }
+                    if ((m = t.match(new RegExp('^Line Item Total (' + NUM + ')$')))) { out.summaryLineTotal = (out.summaryLineTotal || 0) + num(m[1]); continue; }
+                    if ((m = t.match(new RegExp('^Replacement Cost Value \\$?(' + NUM + ')$')))) { out.summaryRcv = (out.summaryRcv || 0) + num(m[1]); continue; }
                     if ((m = t.match(totalsRe))) {
                         const nums = m[2].split(' ').map(num);
                         out.roomTotals[m[1]] = coded ? nums[nums.length - 1] : (nums.length >= 3 ? nums[2] : nums[nums.length - 1]);
@@ -217,6 +219,7 @@
                         it.note = block[k];
                         break;
                     }
+                    it.pre = Math.round(((it.total || 0) - (it.tax || 0) - (it.op || 0)) * 100) / 100;
                     seenItems = true;
                     pending.push(it);
                 }
@@ -260,7 +263,7 @@
                         out.push({ room, kind, cat: ref.cat, sel: ref.sel, act: ref.act, desc: cleanDesc(ref.desc), unit: ref.unit,
                             oldNo: a ? a.no : null, newNo: b ? b.no : null, oldQty: a ? a.qty : null, newQty: b ? b.qty : null,
                             oldPrice: a && priced(a) ? a.price : null, newPrice: b && priced(b) ? b.price : null,
-                            oldExt, newExt, change: r2(newExt - oldExt), what, note: ref.note || '', sort: b ? b.no : a.no + 0.5 });
+                            oldExt, newExt, change: r2(newExt - oldExt), oldPre: a ? (a.pre || 0) : 0, newPre: b ? (b.pre || 0) : 0, what, note: ref.note || '', sort: b ? b.no : a.no + 0.5 });
                     };
                     pairs.forEach(([a, b]) => {
                         if (priced(a) && !priced(b)) return row('REMOVED', a, b, 'Marked ' + b.status + ' in the newer version');
@@ -279,6 +282,42 @@
                 const order = {};
                 rooms.forEach((r, i) => { order[r] = i; });
                 out.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
+                return out;
+            };
+
+            // Rows to key into Xactimate: adds and credits per room, plus ONE "Minor price differences" row (CAT USR, in General Items)
+            // for all unit price changes, so the rows add up to the difference between the two estimates (before tax and O&P).
+            const entryRows = (rows, oldItems, newItems) => {
+                const rooms = [];
+                oldItems.concat(newItems).forEach(it => { if (!rooms.includes(it.room)) rooms.push(it.room); });
+                const sumPre = (items, room) => items.filter(i => i.room === room).reduce((a, i) => a + (i.pre || 0), 0);
+                const out = [];
+                let explicit = 0;
+                rooms.forEach(room => {
+                    const push = (entry, r, qty, price, amount, note) => {
+                        explicit += amount;
+                        out.push({ room, entry, cat: r.cat, sel: r.sel, act: r.act, desc: r.desc, qty, unit: r.unit, price, amount: r2(amount), oldNo: r.oldNo, newNo: r.newNo, note });
+                    };
+                    rows.filter(r => r.room === room && r.kind !== 'PRICE').forEach(r => {
+                        if (r.kind === 'ADDED') push('Add', r, r.newQty, r.newPrice, r.newPre, r.what);
+                        else if (r.kind === 'REMOVED') push('Credit', r, r.oldQty, r.oldPrice, -r.oldPre, r.what);
+                        else if (r.oldPrice != null && r.newPrice != null) {
+                            push('Credit', r, r.oldQty, r.oldPrice, -r.oldPre, 'Was: ' + r.what);
+                            push('Add', r, r.newQty, r.newPrice, r.newPre, 'Now: ' + r.what);
+                        }
+                    });
+                });
+                // everything the Add / Credit rows do not cover = the unit price changes, as one line
+                const rest = r2(rooms.reduce((a, room) => a + sumPre(newItems, room) - sumPre(oldItems, room), 0) - explicit);
+                if (Math.abs(rest) >= 0.005) {
+                    const n = rows.filter(r => r.kind === 'PRICE').length;
+                    const line = { room: 'General Items', entry: rest < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: 'Minor price differences',
+                        qty: 1, unit: 'EA', price: Math.abs(rest), amount: rest, oldNo: null, newNo: null,
+                        note: 'Unit price changes on ' + n + (n === 1 ? ' line' : ' lines') + ' (see the Unit price only tab)' };
+                    let at = -1;
+                    out.forEach((r, i) => { if (r.room.toLowerCase() === 'general items') at = i; });
+                    if (at >= 0) { line.room = out[at].room; out.splice(at + 1, 0, line); } else out.push(line);
+                }
                 return out;
             };
 
@@ -329,12 +368,37 @@
                 ws0['!cols'] = [{ wch: 50 }, { wch: 44 }, { wch: 26 }, { wch: 14 }];
                 const wb = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
+                if (meta.entry) {
+                    const e = meta.entry, last = e.length + 1;
+                    const aoa = [['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Adjuster unit price', 'Amount', 'Old line #', 'New line #', 'Note']];
+                    e.forEach(r => aoa.push([r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.oldNo, r.newNo, r.note]));
+                    const total = r2(e.reduce((a, r) => a + r.amount, 0));
+                    const t = last + 2;
+                    const line = (label, cell) => { const row = new Array(13).fill(null); row[5] = label; row[9] = cell; return row; };
+                    aoa.push([]);
+                    aoa.push(line('Total of the rows above', { t: 'n', v: total, f: 'SUM(J2:J' + last + ')' }));
+                    aoa.push(line('Older estimate, line items before tax and O&P', meta.oldLineTotal));
+                    aoa.push(line('Newer estimate, line items before tax and O&P', meta.newLineTotal));
+                    aoa.push(line('Difference between the two estimates', { t: 'n', v: r2(meta.newLineTotal - meta.oldLineTotal), f: 'J' + (t + 2) + '-J' + (t + 1) }));
+                    aoa.push(line('Rows match the difference?', { t: 's', v: Math.abs(total - (meta.newLineTotal - meta.oldLineTotal)) < 0.005 ? 'Yes' : 'No', f: 'IF(ABS(J' + t + '-J' + (t + 3) + ')<0.005,"Yes","No")' }));
+                    if (meta.rcvChange != null) aoa.push(line('Difference with tax and O&P (RCV), for the final check in Xactimate', meta.rcvChange));
+                    aoa.push(line('Amounts are the adjuster\u2019s printed line amounts before tax and O&P. Credits are negative.', null));
+                    const wsE = XLSX.utils.aoa_to_sheet(aoa);
+                    wsE['!cols'] = [24, 12, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 46].map(w => ({ wch: w }));
+                    if (e.length) wsE['!autofilter'] = { ref: 'A1:M' + last };
+                    Object.keys(wsE).forEach(k => {
+                        if (k[0] === '!') return;
+                        const col = k.replace(/\d+/g, '');
+                        if ('GIJ'.includes(col) && wsE[k].t === 'n') wsE[k].z = '#,##0.00';
+                    });
+                    XLSX.utils.book_append_sheet(wb, wsE, 'Enter in Xactimate');
+                }
                 XLSX.utils.book_append_sheet(wb, sheet(main), 'Changes by room');
                 XLSX.utils.book_append_sheet(wb, sheet(price), 'Unit price only');
                 return wb;
             };
 
-            return { pageRows, parseEstimate, diffVersions, versionWorkbook };
+            return { pageRows, parseEstimate, diffVersions, entryRows, versionWorkbook };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -417,10 +481,15 @@
             const shown = (rows || []).filter(r => show[r.kind]);
             const coded = newer.est && newer.est.format === 'coded';
 
+            // line items before tax and O&P: the estimate's own summary figure when it prints one, else the lines added up
+            const lineTotal = (est) => Math.round((est.summaryLineTotal != null ? est.summaryLineTotal : est.items.reduce((a, i) => a + (i.pre || 0), 0)) * 100) / 100;
             const download = () => {
                 const wb = EstCompare.versionWorkbook(window.XLSX, rows, {
                     oldName: older.est.fileName, newName: newer.est.fileName, oldEstimate: older.est.estimate, newEstimate: newer.est.estimate,
-                    oldTotal: older.est.readTotal, newTotal: newer.est.readTotal, made: new Date().toLocaleString()
+                    oldTotal: older.est.readTotal, newTotal: newer.est.readTotal, made: new Date().toLocaleString(),
+                    entry: EstCompare.entryRows(rows, older.est.items, newer.est.items),
+                    oldLineTotal: lineTotal(older.est), newLineTotal: lineTotal(newer.est),
+                    rcvChange: older.est.summaryRcv != null && newer.est.summaryRcv != null ? Math.round((newer.est.summaryRcv - older.est.summaryRcv) * 100) / 100 : null
                 });
                 const base = (newer.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
                 window.XLSX.writeFile(wb, 'Version_Compare_' + base + '.xlsx');
@@ -576,4 +645,3 @@
     </script>
 </body>
 </html>
-
