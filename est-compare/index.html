@@ -386,6 +386,8 @@
                     aoa.push(line('Newer estimate, line items before tax and O&P', meta.newLineTotal));
                     aoa.push(line('Difference between the two estimates', { t: 'n', v: r2(meta.newLineTotal - meta.oldLineTotal), f: 'J' + (t + 2) + '-J' + (t + 1) }));
                     aoa.push(line('Rows match the difference?', { t: 's', v: Math.abs(total - (meta.newLineTotal - meta.oldLineTotal)) < 0.005 ? 'Yes' : 'No', f: 'IF(ABS(J' + t + '-J' + (t + 3) + ')<0.005,"Yes","No")' }));
+                    aoa.push(line('Total of the "Minor price differences" lines, whole estimate (already in the rows above)',
+                        { t: 'n', v: r2(e.filter(r => r.cat === 'USR' && r.desc === 'Minor price differences').reduce((a, r) => a + r.amount, 0)), f: 'SUMIFS(J2:J' + last + ',C2:C' + last + ',"USR",F2:F' + last + ',"Minor price differences")' }));
                     if (meta.rcvChange != null) aoa.push(line('Difference with tax and O&P (RCV), for the final check in Xactimate', meta.rcvChange));
                     aoa.push(line('Amounts are the adjuster\u2019s printed line amounts before tax and O&P. Credits are negative.', null));
                     const wsE = XLSX.utils.aoa_to_sheet(aoa);
