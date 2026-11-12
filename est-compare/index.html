@@ -15,6 +15,7 @@
         .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
         label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; font-family: inherit; background: white; min-width: 220px; }
         input[type=file] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; background: white; }
         button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
         .btn-primary { background: #0066cc; color: white; padding: 10px 18px; }
@@ -290,26 +291,33 @@
             // and the room's remaining unit price changes as one "Minor price differences" line (CAT USR).
             // Credits carry a negative unit price.
             const PRICE_LINE_MIN = 100;
-            const entryRows = (rows, oldItems, newItems) => {
+            // pairs: { adjuster room: our room } (missing or '' = keep the adjuster's name). ourRooms: our room names in our order.
+            // Without pairs the rows stay under the adjuster's rooms, in the adjuster's order.
+            const entryRows = (rows, oldItems, newItems, pairs, ourRooms) => {
                 const rooms = [];
                 oldItems.concat(newItems).forEach(it => { if (!rooms.includes(it.room)) rooms.push(it.room); });
                 const sumPre = (items, room) => items.filter(i => i.room === room).reduce((a, i) => a + (i.pre || 0), 0);
-                const out = [];
+                const target = (room) => (pairs && pairs[room]) || room;
+                const groups = {};   // our room -> { rows, rest, minor }
+                const order = [];
                 rooms.forEach(room => {
-                    let explicit = 0, minor = 0;
+                    const key = target(room);
+                    if (!groups[key]) { groups[key] = { rows: [], rest: 0, minor: 0 }; order.push(key); }
+                    const g = groups[key];
+                    let explicit = 0;
                     const push = (entry, r, qty, price, amount, note) => {
                         explicit += amount;
-                        out.push({ room, entry, cat: r.cat, sel: r.sel, act: r.act, desc: r.desc, qty, unit: r.unit,
+                        g.rows.push({ room: key, adjRoom: room, entry, cat: r.cat, sel: r.sel, act: r.act, desc: r.desc, qty, unit: r.unit,
                             price: price == null ? null : (entry === 'Credit' ? -price : price), amount: r2(amount), oldNo: r.oldNo, newNo: r.newNo, note });
                     };
                     rows.filter(r => r.room === room).forEach(r => {
                         if (r.kind === 'ADDED') push('Add', r, r.newQty, r.newPrice, r.newPre, r.what);
                         else if (r.kind === 'REMOVED') push('Credit', r, r.oldQty, r.oldPrice, -r.oldPre, r.what);
-                        else if (r.kind === 'PRICE' && Math.abs(r.newPre - r.oldPre) <= PRICE_LINE_MIN) minor++;
+                        else if (r.kind === 'PRICE' && Math.abs(r.newPre - r.oldPre) <= PRICE_LINE_MIN) g.minor++;
                         else if (r.kind === 'PRICE') {
                             const d = r2(r.newPre - r.oldPre);
                             explicit += d;
-                            out.push({ room, entry: d < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: r.desc, qty: 1, unit: 'EA', price: d, amount: d, oldNo: r.oldNo, newNo: r.newNo,
+                            g.rows.push({ room: key, adjRoom: room, entry: d < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: r.desc, qty: 1, unit: 'EA', price: d, amount: d, oldNo: r.oldNo, newNo: r.newNo,
                                 note: 'Price difference: ' + r.what + ' on ' + r.newQty.toFixed(2) + ' ' + r.unit });
                         }
                         else if (r.oldPrice != null && r.newPrice != null) {
@@ -317,13 +325,46 @@
                             push('Add', r, r.newQty, r.newPrice, r.newPre, 'Now: ' + r.what);
                         }
                     });
-                    // what the rows above do not cover = this room's smaller unit price changes, as one line
-                    const rest = r2(sumPre(newItems, room) - sumPre(oldItems, room) - explicit);
-                    if (Math.abs(rest) >= 0.005) out.push({ room, entry: rest < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: 'Minor price differences',
+                    // what the rows above do not cover = this room's smaller unit price changes
+                    g.rest += sumPre(newItems, room) - sumPre(oldItems, room) - explicit;
+                });
+                // our rooms first, in our order; rooms kept under the adjuster's name after them
+                const pos = (key) => { const i = (ourRooms || []).indexOf(key); return i < 0 ? 1e6 + order.indexOf(key) : i; };
+                const out = [];
+                order.slice().sort((x, y) => pos(x) - pos(y)).forEach(key => {
+                    const g = groups[key], rest = r2(g.rest);
+                    g.rows.forEach(r => out.push(r));
+                    // one line per room for the smaller unit price changes
+                    if (Math.abs(rest) >= 0.005) out.push({ room: key, adjRoom: '', entry: rest < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: 'Minor price differences',
                         qty: 1, unit: 'EA', price: rest, amount: rest, oldNo: null, newNo: null,
-                        note: minor ? 'Unit price changes on ' + minor + (minor === 1 ? ' line' : ' lines') + ' of $' + PRICE_LINE_MIN + ' or less each (see the Unit price only tab)' : 'Other difference in this room (check)' });
+                        note: g.minor ? 'Unit price changes on ' + g.minor + (g.minor === 1 ? ' line' : ' lines') + ' of $' + PRICE_LINE_MIN + ' or less each (see the Unit price only tab)' : 'Other difference in this room (check)' });
                 });
                 return out;
+            };
+
+            // Best guess at which of our rooms an adjuster room is. '' = no good match (keep the adjuster's name).
+            // Words that only say where a room is (upstairs, left, front...) count half, so "Upstairs Hallway" is not taken for "Bath Upstairs".
+            const WHERE_WORDS = ['upstairs', 'downstairs', 'top', 'left', 'right', 'center', 'front', 'rear', 'back', 'main', 'level', 'master', 'upper', 'lower'];
+            const roomWords = (name) => name.toLowerCase().replace(/(\d+)/g, ' $1 ').replace(/[^a-z0-9]+/g, ' ').split(' ')
+                .map(w => ({ elevation: 'ext', exterior: 'ext' }[w] || w)).filter(w => w && w !== 'room');
+            const sameWord = (a, b) => {
+                if (a === b) return true;
+                let n = 0;
+                while (n < a.length && n < b.length && a[n] === b[n]) n++;
+                return n >= Math.max(3, Math.min(a.length, b.length) - 1);   // bed = bedroom, bath = bathroom, stairs = stairway
+            };
+            const suggestRoom = (adjRoom, ourRooms) => {
+                const weight = (w) => WHERE_WORDS.includes(w) ? 0.5 : 1;
+                const sum = (words) => words.reduce((t, w) => t + weight(w), 0);
+                const a = roomWords(adjRoom);
+                let best = '', bestScore = 0;
+                ourRooms.forEach(o => {
+                    const b = roomWords(o);
+                    if (!a.length || !b.length) return;
+                    const score = (sum(a.filter(w => b.some(x => sameWord(w, x)))) + sum(b.filter(w => a.some(x => sameWord(w, x))))) / (sum(a) + sum(b));
+                    if (score > bestScore) { bestScore = score; best = o; }
+                });
+                return bestScore >= 0.5 ? best : '';
             };
 
             // Excel report for a version comparison. XLSX = the SheetJS library.
@@ -375,8 +416,10 @@
                 XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
                 if (meta.entry) {
                     const e = meta.entry, last = e.length + 1;
-                    const aoa = [['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Adjuster unit price', 'Amount', 'Old line #', 'New line #', 'Note']];
-                    e.forEach(r => aoa.push([r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.oldNo, r.newNo, r.note]));
+                    const head = ['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Adjuster unit price', 'Amount', 'Old line #', 'New line #', 'Note'];
+                    if (meta.ourNames) head.push('Adjuster room');
+                    const aoa = [head];
+                    e.forEach(r => aoa.push([r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.oldNo, r.newNo, r.note].concat(meta.ourNames ? [r.adjRoom] : [])));
                     const total = r2(e.reduce((a, r) => a + r.amount, 0));
                     const t = last + 2;
                     const line = (label, cell) => { const row = new Array(13).fill(null); row[5] = label; row[9] = cell; return row; };
@@ -391,8 +434,8 @@
                     if (meta.rcvChange != null) aoa.push(line('Difference with tax and O&P (RCV), for the final check in Xactimate', meta.rcvChange));
                     aoa.push(line('Amounts are the adjuster\u2019s printed line amounts before tax and O&P. Credits are negative.', null));
                     const wsE = XLSX.utils.aoa_to_sheet(aoa);
-                    wsE['!cols'] = [24, 12, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 46].map(w => ({ wch: w }));
-                    if (e.length) wsE['!autofilter'] = { ref: 'A1:M' + last };
+                    wsE['!cols'] = [24, 12, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 46, 24].map(w => ({ wch: w }));
+                    if (e.length) wsE['!autofilter'] = { ref: (meta.ourNames ? 'A1:N' : 'A1:M') + last };
                     Object.keys(wsE).forEach(k => {
                         if (k[0] === '!') return;
                         const col = k.replace(/\d+/g, '');
@@ -405,7 +448,7 @@
                 return wb;
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, versionWorkbook };
+            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -459,6 +502,8 @@
             const [newer, setNewer] = useState({ est: null, error: '', busy: false });
             const [rows, setRows] = useState(null);
             const [show, setShow] = useState({ ADDED: true, REMOVED: true, CHANGED: true, PRICE: false });
+            const [ours, setOurs] = useState({ est: null, error: '', busy: false });   // our estimate, read only for its room names
+            const [pairs, setPairs] = useState({});                                    // adjuster room -> our room ('' = keep the adjuster's name)
 
             const pick = (set) => async (file) => {
                 setRows(null);
@@ -471,6 +516,32 @@
                     set({ est: null, error: 'Could not read this PDF: ' + e.message, busy: false });
                 }
             };
+
+            // our estimate does not change the comparison, so picking it keeps the results on screen
+            const pickOurs = async (file) => {
+                setOurs({ est: null, error: '', busy: true });
+                try {
+                    const est = await readEstimateFile(file);
+                    if (!est.items.length) setOurs({ est: null, error: 'No Xactimate line items were found in this PDF.', busy: false });
+                    else setOurs({ est, error: '', busy: false });
+                } catch (e) {
+                    setOurs({ est: null, error: 'Could not read this PDF: ' + e.message, busy: false });
+                }
+            };
+            const ourRooms = useMemo(() => ours.est ? ours.est.roomCheck.map(c => c.room) : [], [ours.est]);
+            // adjuster rooms that have something to enter
+            const adjRooms = useMemo(() => {
+                if (!rows) return [];
+                const list = [];
+                EstCompare.entryRows(rows, older.est.items, newer.est.items).forEach(r => { if (!list.includes(r.room)) list.push(r.room); });
+                return list;
+            }, [rows]);
+            // start each adjuster room on the tool's best guess
+            useEffect(() => {
+                const p = {};
+                if (ourRooms.length) adjRooms.forEach(r => { p[r] = EstCompare.suggestRoom(r, ourRooms); });
+                setPairs(p);
+            }, [adjRooms, ourRooms]);
 
             const warnings = [];
             if (older.est && newer.est) {
@@ -494,7 +565,8 @@
                 const wb = EstCompare.versionWorkbook(window.XLSX, rows, {
                     oldName: older.est.fileName, newName: newer.est.fileName, oldEstimate: older.est.estimate, newEstimate: newer.est.estimate,
                     oldTotal: older.est.readTotal, newTotal: newer.est.readTotal, made: new Date().toLocaleString(),
-                    entry: EstCompare.entryRows(rows, older.est.items, newer.est.items),
+                    entry: EstCompare.entryRows(rows, older.est.items, newer.est.items, ourRooms.length ? pairs : null, ourRooms),
+                    ourNames: ourRooms.length > 0,
                     oldLineTotal: lineTotal(older.est), newLineTotal: lineTotal(newer.est),
                     rcvChange: older.est.summaryRcv != null && newer.est.summaryRcv != null ? Math.round((newer.est.summaryRcv - older.est.summaryRcv) * 100) / 100 : null
                 });
@@ -510,6 +582,7 @@
                         <div className="files">
                             <EstimateFile label="Older estimate (PDF)" {...older} onPick={pick(setOlder)} />
                             <EstimateFile label="Newer estimate (PDF)" {...newer} onPick={pick(setNewer)} />
+                            <EstimateFile label="Our estimate (PDF) — optional, for our room names" {...ours} onPick={pickOurs} />
                         </div>
                         {warnings.map((w, i) => <div key={i} className="read bad" style={{ marginBottom: '10px' }}>{w}</div>)}
                         <button className="btn-primary" disabled={!older.est || !newer.est} onClick={compare}>Compare</button>
@@ -518,6 +591,28 @@
 
                     {rows && (
                         <div>
+                            {ourRooms.length > 0 && adjRooms.length > 0 && (
+                                <div className="section">
+                                    <div className="section-title">Room names for the "Enter in Xactimate" tab</div>
+                                    <table className="sumtable">
+                                        <thead><tr><th>Adjuster room</th><th>Our room</th></tr></thead>
+                                        <tbody>
+                                            {adjRooms.map(r => (
+                                                <tr key={r}>
+                                                    <td>{r}</td>
+                                                    <td>
+                                                        <select value={pairs[r] || ''} onChange={e => setPairs(p => ({ ...p, [r]: e.target.value }))}>
+                                                            <option value="">(keep the adjuster's name)</option>
+                                                            {ourRooms.map(o => <option key={o} value={o}>{o}</option>)}
+                                                        </select>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                    <div className="muted">The tool's best guess is filled in. Fix any that are wrong before you download. These are not remembered yet.</div>
+                                </div>
+                            )}
                             <div className="section">
                                 <div className="section-title">What changed</div>
                                 <table className="sumtable">
