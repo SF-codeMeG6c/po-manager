@@ -1,1 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estimate Comparisons - Freeman Restoration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1300px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .back { display: inline-block; color: #0066cc; text-decoration: none; font-size: 14px; margin-bottom: 12px; background: none; padding: 0; }
+        .back:hover { text-decoration: underline; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section-title { font-weight: 600; color: #333; margin-bottom: 15px; font-size: 15px; }
+        label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+        input[type=file] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; background: white; }
+        button { padding: 10px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #0066cc; color: white; padding: 10px 18px; }
+        .btn-primary:hover { background: #0052a3; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 18px; }
+        .btn-secondary:hover { background: #e0e0e0; }
+        .muted { font-size: 13px; color: #666; margin-top: 8px; }
+        .msg { margin-top: 15px; padding: 10px; text-align: center; font-weight: 500; }
+        .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+        .choice { text-align: left; border: 1px solid #ddd; border-radius: 8px; padding: 20px; background: white; color: #333; }
+        .choice:hover { border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+        .choice.soon { cursor: default; background: #fafafa; color: #999; border-style: dashed; }
+        .choice.soon:hover { border-color: #ddd; box-shadow: none; }
+        .choice b { display: block; font-size: 16px; margin-bottom: 6px; }
+        .choice span { font-size: 13px; font-weight: 400; color: inherit; line-height: 1.4; }
+        .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 16px; }
+        .read { font-size: 13px; margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: #f9f9f9; }
+        .read.ok { background: #edf7ed; color: #1e4620; }
+        .read.bad { background: #fdecea; color: #8a1c14; }
+        .read ul { margin: 4px 0 0 18px; }
+        .bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin: 14px 0; }
+        .bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
+        .bar .grow { flex: 1; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 6px 6px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; white-space: nowrap; }
+        td { padding: 4px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+        td.n, th.n { text-align: right; white-space: nowrap; }
+        .sumtable { max-width: 560px; }
+        .sumtable tr.sum td { font-weight: 700; border-top: 2px solid #ddd; }
+        tr.room td { background: #f3f6fa; font-weight: 600; border-top: 2px solid #d5dde8; }
+        tr.ADDED td.kind { color: #1b6e2b; font-weight: 600; }
+        tr.REMOVED td.kind { color: #b3261e; font-weight: 600; }
+        tr.CHANGED td.kind { color: #8a5a00; font-weight: 600; }
+        tr.PRICE td.kind { color: #666; }
+        .neg { color: #b3261e; }
+        .scroll { overflow-x: auto; }
+        .small { font-size: 12px; color: #777; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a class="back" href="/">← Dashboard</a>
+        <h1>Estimate Comparisons</h1>
+        <p class="subtitle">Compare two Xactimate estimate PDFs line by line</p>
+        <div id="app"></div>
+    </div>
+
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // Same Firebase project as the other Job Tools
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy41rudb08QDJ1yhQweqrBUihGSZ8KiRw",
+            authDomain: "po-project-ea1ca.firebaseapp.com",
+            projectId: "po-project-ea1ca",
+            storageBucket: "po-project-ea1ca.firebasestorage.app",
+            messagingSenderId: "589238434084",
+            appId: "1:589238434084:web:a97e8382c585362a7c1bb1"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        const ALLOWED = ['owner', 'admin', 'estimator'];
+        const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // ---- Estimate reading and comparison (no page code in here, so it can be tested on its own) ----
+        const EstCompare = (() => {
+            const NUM = '-?[\\d,]+\\.\\d\\d';
+            const UNITS = '(?:EA|SF|LF|SY|HR|MO|DA|WK|CF|CY|SQ|TN|LB|GL|BX|RL|BF|MN|KT|PR|YR)';
+            const num = (s) => parseFloat(String(s).replace(/,/g, ''));
+            const QTY_RE = new RegExp('(' + NUM + ') (' + UNITS + ')\\b');
+            const TAIL_RE = new RegExp('(?:(' + NUM + ') )?(' + NUM + ') ?\\+ (' + NUM + ') ?= (' + NUM + ') (' + NUM + ') (' + NUM + ')');
+            const FURNITURE = /Page: \d+$|^CONTINUED - |^CAT SEL|^CALC QTY|^QUANTITY UNIT|Height: /;
+
+            // pdf.js text items of one page -> rows of text, top to bottom
+            const pageRows = (items) => {
+                const rows = [];
+                items.forEach(it => {
+                    const s = (it.s || '').trim();
+                    if (!s) return;
+                    let row = rows.find(r => Math.abs(r.y - it.y) < 2);
+                    if (!row) { row = { y: it.y, parts: [] }; rows.push(row); }
+                    row.parts.push({ x: it.x, s });
+                });
+                rows.sort((a, b) => b.y - a.y);
+                return rows.map(r => {
+                    r.parts.sort((a, b) => a.x - b.x);
+                    return r.parts.map(q => q.s).join(' ').replace(/\s+/g, ' ').trim();
+                });
+            };
+
+            // pages: [{ items: [{ s, x, y }] }]  ->  { format, items, roomTotals, printedTotal, estimate, priceList, problems }
+            // format 'coded' = prints CAT / SEL columns (ours, and some carriers); 'plain' = description only (most carrier prints)
+            const parseEstimate = (pages) => {
+                const rows = [];
+                pages.forEach(p => pageRows(p.items).forEach(t => rows.push(t)));
+                const coded = rows.some(t => /^CAT SEL/.test(t));
+                const out = { format: coded ? 'coded' : 'plain', items: [], roomTotals: {}, printedTotal: null, estimate: '', priceList: '', problems: [] };
+                const headRe = coded ? /^(\d+)\. ([A-Z]{3}) (\S+) ([+\-&A-Z]) (.+)$/ : /^(\d+)\. (.+)$/;
+                const totalsRe = new RegExp('^Totals: (.+?) (' + NUM + '(?: ' + NUM + ')*)$');
+                const totalRe = new RegExp('^Total: (.+?) (' + NUM + '(?: ' + NUM + ')*)$');
+                let pending = [];
+                let seenItems = false;
+                const close = (room) => { pending.forEach(it => { it.room = room; out.items.push(it); }); pending = []; };
+                for (let i = 0; i < rows.length; i++) {
+                    const t = rows[i];
+                    let m;
+                    if ((m = t.match(/Estimate: (\S+)/)) && !out.estimate) out.estimate = m[1];
+                    if ((m = t.match(/Price List: (\S+)/)) && !out.priceList) out.priceList = m[1];
+                    if ((m = t.match(new RegExp('^Line Item Totals: .*? (' + NUM + '(?: ' + NUM + ')*)$')))) {
+                        // coded prints tax, O&P, total; plain prints tax, O&P, RCV, depreciation, ACV
+                        const nums = m[1].split(' ').map(num);
+                        out.printedTotal = coded ? nums[nums.length - 1] : (nums.length >= 3 ? nums[2] : nums[nums.length - 1]);
+                        continue;
+                    }
+                    if ((m = t.match(totalsRe))) {
+                        const nums = m[2].split(' ').map(num);
+                        out.roomTotals[m[1]] = coded ? nums[nums.length - 1] : (nums.length >= 3 ? nums[2] : nums[nums.length - 1]);
+                        close(m[1]);
+                        continue;
+                    }
+                    if ((m = t.match(totalRe))) { if (pending.length) close(coded ? m[1] : m[1] + ' (general)'); continue; }
+                    if (!(m = t.match(headRe))) continue;
+                    // rows that belong to this item: up to the next item or totals row
+                    const block = [];
+                    for (let j = i + 1; j < rows.length && block.length < 8; j++) {
+                        if (headRe.test(rows[j]) || /^Totals?: /.test(rows[j])) break;
+                        block.push(rows[j]);
+                    }
+                    const it = coded
+                        ? { no: +m[1], cat: m[2], sel: m[3], act: m[4], desc: m[5].trim(), note: '', status: '' }
+                        : { no: +m[1], cat: '', sel: '', act: '', desc: m[2].trim(), note: '', status: '' };
+                    const qi = block.findIndex(b => QTY_RE.test(b));
+                    if (qi < 0 || qi > 2) { if (coded || seenItems) { /* numbered text that is not a line item */ } continue; }
+                    const q = block[qi].match(QTY_RE);
+                    it.qty = num(q[1]); it.unit = q[2];
+                    const rest = block[qi].slice(q.index + q[0].length).trim();
+                    let ok = false;
+                    if (coded) {
+                        let tail = block[qi].match(TAIL_RE);
+                        if (!tail) {
+                            // typed notes on a marked-up copy can push the numbers onto the next rows
+                            const joined = block.slice(qi, qi + 3).map(b => b.replace(/[A-Za-z]+/g, ' ')).join(' ').replace(/\s+/g, ' ');
+                            tail = joined.slice(joined.indexOf(q[1])).match(TAIL_RE);
+                        }
+                        if (tail) {
+                            let reset = tail[1];
+                            if (reset && reset === q[1] && block[qi].indexOf(reset) === q.index) reset = null;
+                            it.reset = reset ? num(reset) : 0; it.remove = num(tail[2]); it.replace = num(tail[3]);
+                            it.tax = num(tail[4]); it.op = num(tail[5]); it.total = num(tail[6]);
+                            it.price = Math.round((it.reset + it.remove + it.replace) * 100) / 100;
+                            ok = true;
+                        } else {
+                            const nums = (rest.match(new RegExp(NUM, 'g')) || []).map(num);
+                            if (nums.length >= 4) {
+                                // shifted columns: trust the last three numbers (tax, O&P, total)
+                                it.tax = nums[nums.length - 3]; it.op = nums[nums.length - 2]; it.total = nums[nums.length - 1];
+                                it.price = it.qty ? Math.round((it.total - it.tax - it.op) / it.qty * 100) / 100 : 0;
+                                it.reset = 0; it.remove = 0; it.replace = it.price;
+                                ok = true;
+                            } else {
+                                const st = rest.replace(/\[\S+\]/g, '').trim();
+                                if (st) { it.status = st; it.price = 0; it.tax = 0; it.op = 0; it.total = 0; it.reset = 0; it.remove = 0; it.replace = 0; ok = true; }
+                            }
+                        }
+                    } else {
+                        const cut = rest.search(/\d+\/\S+|\bAvg\.|\bNA\b/);
+                        const head = cut >= 0 ? rest.slice(0, cut) : rest;
+                        const nums = (head.match(new RegExp('(?<![\\d(])' + NUM, 'g')) || []).map(num);
+                        if (/AS INCURRED|OPEN ITEM/.test(block.slice(qi, qi + 2).join(' '))) {
+                            it.status = /OPEN ITEM/.test(block.slice(qi, qi + 2).join(' ')) ? 'OPEN ITEM' : 'AS INCURRED';
+                            it.price = 0; it.tax = 0; it.op = 0; it.total = 0; ok = true;
+                        } else if (nums.length >= 4) {
+                            it.price = nums[0]; it.tax = nums[1]; it.op = nums[2]; it.total = nums[3];
+                            ok = true;
+                        } else {
+                            // typed notes can split the numbers over two rows
+                            const joined = block.slice(qi, qi + 3).join(' ');
+                            const c2 = joined.search(/\d+\/\S+|\bAvg\.|\bNA\b/);
+                            const n2 = ((c2 >= 0 ? joined.slice(0, c2) : joined).slice(joined.indexOf(q[0]) + q[0].length).match(new RegExp('(?<![\\d(])' + NUM, 'g')) || []).map(num);
+                            if (n2.length >= 4) { it.price = n2[0]; it.tax = n2[1]; it.op = n2[2]; it.total = n2[3]; ok = true; }
+                        }
+                    }
+                    if (!ok) { out.problems.push('Line ' + it.no + ' (' + it.desc + ') could not be read'); it.price = 0; it.tax = 0; it.op = 0; it.total = 0; it.unreadable = true; }
+                    // the note is the first plain text row after the numbers
+                    for (let k = qi + 1; k < block.length; k++) {
+                        if (FURNITURE.test(block[k])) break;
+                        if (new RegExp('^' + NUM).test(block[k]) || /^\d+$/.test(block[k])) continue;
+                        it.note = block[k];
+                        break;
+                    }
+                    seenItems = true;
+                    pending.push(it);
+                }
+                close('(no room)');
+                // check every room against its printed total
+                const sums = {};
+                out.items.forEach(it => { sums[it.room] = (sums[it.room] || 0) + (it.total || 0); });
+                out.roomCheck = Object.keys(sums).map(r => ({ room: r, read: Math.round(sums[r] * 100) / 100, printed: out.roomTotals[r] }));
+                out.roomCheck.forEach(c => { if (c.printed != null && Math.abs(c.read - c.printed) > 0.05) out.problems.push('Room "' + c.room + '" reads $' + c.read.toFixed(2) + ' but the estimate prints $' + c.printed.toFixed(2)); });
+                out.readTotal = Math.round(out.items.reduce((a, it) => a + (it.total || 0), 0) * 100) / 100;
+                if (out.printedTotal != null && Math.abs(out.readTotal - out.printedTotal) > 0.05) out.problems.push('All lines read $' + out.readTotal.toFixed(2) + ' but the estimate prints $' + out.printedTotal.toFixed(2));
+                return out;
+            };
+
+            const cleanDesc = (d) => d.replace(/\s{2,}\S.*$/, '').trim();
+            const priced = (it) => !it.status;
+            const ident = (it) => it.cat ? it.cat + '|' + it.sel + '|' + it.act : cleanDesc(it.desc).toLowerCase() + '|' + it.unit;
+            const r2 = (n) => Math.round(n * 100) / 100;
+
+            // What changed from the older version to the newer one, room by room, with both line numbers
+            const diffVersions = (oldItems, newItems) => {
+                const rooms = [];
+                oldItems.concat(newItems).forEach(it => { if (!rooms.includes(it.room)) rooms.push(it.room); });
+                const out = [];
+                rooms.forEach(room => {
+                    const o = oldItems.filter(i => i.room === room), n = newItems.filter(i => i.room === room);
+                    const usedN = new Set(), usedO = new Set(), pairs = [];
+                    const tests = [
+                        (a, b) => ident(a) === ident(b) && Math.abs(a.qty - b.qty) < 0.005,   // same item, same quantity
+                        (a, b) => ident(a) === ident(b),                                       // same item
+                        (a, b) => a.cat === b.cat && cleanDesc(a.desc) === cleanDesc(b.desc)   // same wording, code changed
+                    ];
+                    tests.forEach(test => o.forEach((a, ai) => {
+                        if (usedO.has(ai)) return;
+                        const j = n.findIndex((b, bj) => !usedN.has(bj) && test(a, b));
+                        if (j >= 0) { pairs.push([a, n[j]]); usedO.add(ai); usedN.add(j); }
+                    }));
+                    const row = (kind, a, b, what) => {
+                        const ref = b || a;
+                        const oldExt = a && priced(a) ? r2(a.qty * a.price) : 0, newExt = b && priced(b) ? r2(b.qty * b.price) : 0;
+                        out.push({ room, kind, cat: ref.cat, sel: ref.sel, act: ref.act, desc: cleanDesc(ref.desc), unit: ref.unit,
+                            oldNo: a ? a.no : null, newNo: b ? b.no : null, oldQty: a ? a.qty : null, newQty: b ? b.qty : null,
+                            oldPrice: a && priced(a) ? a.price : null, newPrice: b && priced(b) ? b.price : null,
+                            oldExt, newExt, change: r2(newExt - oldExt), what, note: ref.note || '', sort: b ? b.no : a.no + 0.5 });
+                    };
+                    pairs.forEach(([a, b]) => {
+                        if (priced(a) && !priced(b)) return row('REMOVED', a, b, 'Marked ' + b.status + ' in the newer version');
+                        if (!priced(a) && priced(b)) return row('ADDED', a, b, 'Was ' + a.status + ' in the older version, now priced');
+                        if (!priced(a) && !priced(b)) { if (a.status !== b.status) row('CHANGED', a, b, 'Status ' + a.status + ' -> ' + b.status); return; }
+                        const bits = [];
+                        if (Math.abs(a.qty - b.qty) > 0.005) bits.push('Qty ' + a.qty.toFixed(2) + ' -> ' + b.qty.toFixed(2));
+                        if (Math.abs(a.price - b.price) > 0.005) bits.push('Unit price ' + a.price.toFixed(2) + ' -> ' + b.price.toFixed(2));
+                        if (ident(a) !== ident(b)) bits.push('Code ' + a.cat + ' ' + a.sel + ' ' + a.act + ' -> ' + b.cat + ' ' + b.sel + ' ' + b.act);
+                        if (cleanDesc(a.desc) !== cleanDesc(b.desc)) bits.push('Description was "' + cleanDesc(a.desc) + '"');
+                        if (bits.length) row(bits.length === 1 && bits[0].startsWith('Unit price') ? 'PRICE' : 'CHANGED', a, b, bits.join('; '));
+                    });
+                    o.forEach((a, ai) => { if (!usedO.has(ai)) row('REMOVED', a, null, 'Not in the newer version'); });
+                    n.forEach((b, bj) => { if (!usedN.has(bj)) row('ADDED', null, b, 'New line'); });
+                });
+                const order = {};
+                rooms.forEach((r, i) => { order[r] = i; });
+                out.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
+                return out;
+            };
+
+            // Excel report for a version comparison. XLSX = the SheetJS library.
+            const versionWorkbook = (XLSX, rows, meta) => {
+                const COLS = ['Room', 'Change', 'Old line #', 'New line #', 'CAT', 'SEL', 'Description', 'Unit', 'Old qty', 'New qty',
+                    'Old unit price', 'New unit price', 'Old extended', 'New extended', '$ change', 'What changed', 'Adjuster note'];
+                const WIDTHS = [24, 10, 9, 9, 6, 11, 50, 6, 10, 10, 12, 12, 13, 13, 12, 46, 40];
+                const sheet = (data) => {
+                    const aoa = [COLS];
+                    data.forEach((r, i) => {
+                        const n = i + 2;
+                        aoa.push([r.room, r.kind, r.oldNo, r.newNo, r.cat, r.sel, r.desc, r.unit, r.oldQty, r.newQty, r.oldPrice, r.newPrice,
+                            { t: 'n', v: r.oldExt, f: 'IF(K' + n + '="",0,I' + n + '*K' + n + ')' },
+                            { t: 'n', v: r.newExt, f: 'IF(L' + n + '="",0,J' + n + '*L' + n + ')' },
+                            { t: 'n', v: r.change, f: 'N' + n + '-M' + n }, r.what, r.note]);
+                    });
+                    const last = data.length + 1;
+                    if (data.length) {
+                        const tot = new Array(COLS.length).fill(null);
+                        tot[13] = 'Total';
+                        tot[14] = { t: 'n', v: r2(data.reduce((a, r) => a + r.change, 0)), f: 'SUM(O2:O' + last + ')' };
+                        aoa.push([], tot);
+                    }
+                    const ws = XLSX.utils.aoa_to_sheet(aoa);
+                    ws['!cols'] = WIDTHS.map(w => ({ wch: w }));
+                    if (data.length) ws['!autofilter'] = { ref: 'A1:Q' + last };
+                    Object.keys(ws).forEach(k => {
+                        if (k[0] === '!') return;
+                        const col = k.replace(/\d+/g, '');
+                        if ('KLMNO'.includes(col) && ws[k].t === 'n') ws[k].z = '#,##0.00';
+                        if ('IJ'.includes(col) && ws[k].t === 'n') ws[k].z = '#,##0.00';
+                    });
+                    return ws;
+                };
+                const main = rows.filter(r => r.kind !== 'PRICE'), price = rows.filter(r => r.kind === 'PRICE');
+                const kinds = [['ADDED', 'Added - new line in the newer estimate'], ['REMOVED', 'Removed - gone, or marked REMOVED / SEE SUB BID'],
+                    ['CHANGED', 'Changed - quantity, code or description changed']];
+                const sum = [['Estimate version comparison'], ['Older', meta.oldName, meta.oldEstimate, meta.oldTotal], ['Newer', meta.newName, meta.newEstimate, meta.newTotal],
+                    ['Dollars are before tax and O&P. Made ' + meta.made], [], ['Type of change', 'Lines', '$ change']];
+                kinds.forEach(([k, label]) => sum.push([label,
+                    { t: 'n', v: main.filter(r => r.kind === k).length, f: "COUNTIF('Changes by room'!$B:$B,\"" + k + "\")" },
+                    { t: 'n', v: r2(main.filter(r => r.kind === k).reduce((a, r) => a + r.change, 0)), f: "SUMIF('Changes by room'!$B:$B,\"" + k + "\",'Changes by room'!$O:$O)", z: '#,##0.00' }]));
+                sum.push(['Unit price only (separate tab)', price.length,
+                    price.length ? { t: 'n', v: r2(price.reduce((a, r) => a + r.change, 0)), f: "SUM('Unit price only'!$O$2:$O$" + (price.length + 1) + ')', z: '#,##0.00' } : 0]);
+                sum.push(['Total', { t: 'n', v: rows.length, f: 'SUM(B7:B10)' }, { t: 'n', v: r2(rows.reduce((a, r) => a + r.change, 0)), f: 'SUM(C7:C10)', z: '#,##0.00' }]);
+                const ws0 = XLSX.utils.aoa_to_sheet(sum);
+                ws0['!cols'] = [{ wch: 50 }, { wch: 44 }, { wch: 26 }, { wch: 14 }];
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
+                XLSX.utils.book_append_sheet(wb, sheet(main), 'Changes by room');
+                XLSX.utils.book_append_sheet(wb, sheet(price), 'Unit price only');
+                return wb;
+            };
+
+            return { pageRows, parseEstimate, diffVersions, versionWorkbook };
+        })();
+
+        const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const qty = (n) => n == null ? '' : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const KIND_LABEL = { ADDED: 'Added', REMOVED: 'Removed', CHANGED: 'Changed', PRICE: 'Unit price only' };
+
+        // Open a PDF file and read it into line items. Nothing is uploaded; the file is read in this browser.
+        const readEstimateFile = async (file) => {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const doc = await window.pdfjsLib.getDocument({ data: bytes, disableFontFace: true }).promise;
+            const pages = [];
+            for (let n = 1; n <= doc.numPages; n++) {
+                const tc = await (await doc.getPage(n)).getTextContent();
+                pages.push({ items: tc.items.filter(i => i.str && i.str.trim()).map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5] })) });
+            }
+            const est = EstCompare.parseEstimate(pages);
+            est.fileName = file.name;
+            return est;
+        };
+
+        // One file picker with its read check underneath
+        function EstimateFile({ label, est, error, busy, onPick }) {
+            return (
+                <div>
+                    <label>{label}</label>
+                    <input type="file" accept="application/pdf" onChange={e => e.target.files[0] && onPick(e.target.files[0])} />
+                    {busy && <div className="read">Reading…</div>}
+                    {error && <div className="read bad">{error}</div>}
+                    {est && !busy && (
+                        <div className={'read ' + (est.problems.length ? 'bad' : 'ok')}>
+                            {est.estimate && <b>{est.estimate} · </b>}
+                            {est.items.length} lines in {est.roomCheck.length} rooms, {money(est.readTotal)}
+                            {est.problems.length === 0 && (est.printedTotal != null ? ' — matches the printed total and every room total' : ' — every room matches its printed total')}
+                            {est.problems.length > 0 && (
+                                <div>
+                                    This PDF did not read cleanly. Check these before trusting the comparison:
+                                    <ul>{est.problems.slice(0, 8).map((p, i) => <li key={i}>{p}</li>)}</ul>
+                                    {est.problems.length > 8 && <div>…and {est.problems.length - 8} more</div>}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Insurance version vs version
+        function VersionCompare() {
+            const [older, setOlder] = useState({ est: null, error: '', busy: false });
+            const [newer, setNewer] = useState({ est: null, error: '', busy: false });
+            const [rows, setRows] = useState(null);
+            const [show, setShow] = useState({ ADDED: true, REMOVED: true, CHANGED: true, PRICE: false });
+
+            const pick = (set) => async (file) => {
+                setRows(null);
+                set({ est: null, error: '', busy: true });
+                try {
+                    const est = await readEstimateFile(file);
+                    if (!est.items.length) set({ est: null, error: 'No Xactimate line items were found in this PDF.', busy: false });
+                    else set({ est, error: '', busy: false });
+                } catch (e) {
+                    set({ est: null, error: 'Could not read this PDF: ' + e.message, busy: false });
+                }
+            };
+
+            const warnings = [];
+            if (older.est && newer.est) {
+                if (older.est.format !== newer.est.format) warnings.push('The two PDFs are printed in different layouts, so some lines may not pair up.');
+                if (older.est.readTotal === newer.est.readTotal && older.est.items.length === newer.est.items.length) warnings.push('Both files have the same line count and total. Check that they are two different versions.');
+            }
+
+            const compare = () => setRows(EstCompare.diffVersions(older.est.items, newer.est.items));
+
+            const counts = useMemo(() => {
+                const c = { ADDED: { n: 0, d: 0 }, REMOVED: { n: 0, d: 0 }, CHANGED: { n: 0, d: 0 }, PRICE: { n: 0, d: 0 } };
+                (rows || []).forEach(r => { c[r.kind].n++; c[r.kind].d += r.change; });
+                return c;
+            }, [rows]);
+            const shown = (rows || []).filter(r => show[r.kind]);
+            const coded = newer.est && newer.est.format === 'coded';
+
+            const download = () => {
+                const wb = EstCompare.versionWorkbook(window.XLSX, rows, {
+                    oldName: older.est.fileName, newName: newer.est.fileName, oldEstimate: older.est.estimate, newEstimate: newer.est.estimate,
+                    oldTotal: older.est.readTotal, newTotal: newer.est.readTotal, made: new Date().toLocaleString()
+                });
+                const base = (newer.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
+                window.XLSX.writeFile(wb, 'Version_Compare_' + base + '.xlsx');
+            };
+
+            let lastRoom = null;
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">Insurance version vs version</div>
+                        <div className="files">
+                            <EstimateFile label="Older estimate (PDF)" {...older} onPick={pick(setOlder)} />
+                            <EstimateFile label="Newer estimate (PDF)" {...newer} onPick={pick(setNewer)} />
+                        </div>
+                        {warnings.map((w, i) => <div key={i} className="read bad" style={{ marginBottom: '10px' }}>{w}</div>)}
+                        <button className="btn-primary" disabled={!older.est || !newer.est} onClick={compare}>Compare</button>
+                        <div className="muted">The PDFs are read in this browser. Nothing is uploaded or saved.</div>
+                    </div>
+
+                    {rows && (
+                        <div>
+                            <div className="section">
+                                <div className="section-title">What changed</div>
+                                <table className="sumtable">
+                                    <thead><tr><th>Type of change</th><th className="n">Lines</th><th className="n">$ change</th></tr></thead>
+                                    <tbody>
+                                        {['ADDED', 'REMOVED', 'CHANGED', 'PRICE'].map(k => (
+                                            <tr key={k}><td>{KIND_LABEL[k]}</td><td className="n">{counts[k].n}</td><td className={'n' + (counts[k].d < 0 ? ' neg' : '')}>{money(counts[k].d)}</td></tr>
+                                        ))}
+                                        <tr className="sum"><td>Total</td><td className="n">{rows.length}</td><td className="n">{money(rows.reduce((a, r) => a + r.change, 0))}</td></tr>
+                                    </tbody>
+                                </table>
+                                <div className="muted">Dollars are before tax and O&P. Line totals went from {money(older.est.readTotal)} to {money(newer.est.readTotal)} with tax and O&P.</div>
+                            </div>
+
+                            <div className="bar">
+                                {['ADDED', 'REMOVED', 'CHANGED', 'PRICE'].map(k => (
+                                    <label key={k}><input type="checkbox" checked={show[k]} onChange={e => setShow(s => ({ ...s, [k]: e.target.checked }))} /> {KIND_LABEL[k]} ({counts[k].n})</label>
+                                ))}
+                                <span className="grow"></span>
+                                <button className="btn-secondary" onClick={download}>Download Excel</button>
+                            </div>
+
+                            {rows.length === 0 && <div className="msg">No differences found between these two estimates.</div>}
+                            {rows.length > 0 && shown.length === 0 && <div className="msg">Nothing to show. Tick a type of change above.</div>}
+                            {shown.length > 0 && (
+                                <div className="scroll">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th className="n">Old #</th><th className="n">New #</th><th>Change</th>{coded && <th>Code</th>}<th>Description</th>
+                                                <th className="n">Old qty</th><th className="n">New qty</th><th className="n">Old price</th><th className="n">New price</th><th className="n">$ change</th><th>What changed</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {shown.map((r, i) => {
+                                                const head = r.room !== lastRoom;
+                                                lastRoom = r.room;
+                                                const roomSum = head ? shown.filter(x => x.room === r.room).reduce((a, x) => a + x.change, 0) : 0;
+                                                return (
+                                                    <React.Fragment key={i}>
+                                                        {head && <tr className="room"><td colSpan={coded ? 9 : 8}>{r.room}</td><td className={'n' + (roomSum < 0 ? ' neg' : '')}>{money(roomSum)}</td><td></td></tr>}
+                                                        <tr className={r.kind}>
+                                                            <td className="n">{r.oldNo}</td><td className="n">{r.newNo}</td><td className="kind">{KIND_LABEL[r.kind]}</td>
+                                                            {coded && <td style={{ whiteSpace: 'nowrap' }}>{r.cat} {r.sel}</td>}
+                                                            <td>{r.desc}{r.note && <div className="small">{r.note}</div>}</td>
+                                                            <td className="n">{qty(r.oldQty)}{r.oldQty != null && ' ' + r.unit}</td><td className="n">{qty(r.newQty)}{r.newQty != null && ' ' + r.unit}</td>
+                                                            <td className="n">{r.oldPrice == null ? '' : qty(r.oldPrice)}</td><td className="n">{r.newPrice == null ? '' : qty(r.newPrice)}</td>
+                                                            <td className={'n' + (r.change < 0 ? ' neg' : '')}>{money(r.change)}</td><td>{r.what}</td>
+                                                        </tr>
+                                                    </React.Fragment>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function App() {
+            const [user, setUser] = useState(undefined); // undefined = still checking
+            const [profile, setProfile] = useState(null); // null = loading, false = no access
+            const [authError, setAuthError] = useState('');
+            const [mode, setMode] = useState(null); // null = pick, 'versions'
+
+            // Sign-in and role check (this page never creates user records)
+            useEffect(() => {
+                return auth.onAuthStateChanged(async u => {
+                    setUser(u);
+                    setProfile(null);
+                    if (!u) return;
+                    try {
+                        const snap = await db.collection('users').doc(u.uid).get();
+                        const d = snap.exists ? snap.data() : null;
+                        if (d && d.active === true && ALLOWED.includes(d.role)) setProfile({ uid: u.uid, ...d });
+                        else setProfile(false);
+                    } catch (e) {
+                        setProfile(false);
+                    }
+                });
+            }, []);
+
+            const login = async () => {
+                setAuthError('');
+                try {
+                    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+                    provider.setCustomParameters({ tenant: '977675c3-2808-4305-ac2e-f4418dc1d69c', prompt: 'select_account' });
+                    await auth.signInWithPopup(provider);
+                } catch (e) {
+                    setAuthError(e.message);
+                }
+            };
+
+            if (user === undefined || (user && profile === null)) return <div className="msg">Loading…</div>;
+            if (!user) return (
+                <div>
+                    <button className="btn-primary" onClick={login}>Sign in with Microsoft</button>
+                    {authError && <div className="msg" style={{ color: '#d32f2f' }}>{authError}</div>}
+                </div>
+            );
+            if (profile === false) return (
+                <div>
+                    <p>No access. Estimate Comparisons is for Owner, Admin and Estimator. Contact an admin.</p>
+                    <button className="btn-secondary" style={{ marginTop: '12px' }} onClick={() => auth.signOut()}>Sign out</button>
+                </div>
+            );
+
+            if (mode === 'versions') return (
+                <div>
+                    <button className="back" onClick={() => setMode(null)}>← Comparison types</button>
+                    <VersionCompare />
+                </div>
+            );
+            return (
+                <div className="choices">
+                    <button className="choice" onClick={() => setMode('versions')}>
+                        <b>Insurance version vs version</b>
+                        <span>See what the adjuster changed between two versions of their estimate, room by room, with the line numbers from both.</span>
+                    </button>
+                    <div className="choice soon" aria-disabled="true">
+                        <b>Ours vs insurance</b>
+                        <span>Compare our estimate to the insurance estimate and list what to enter in the differences estimate. Coming next.</span>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('app'));
+    </script>
+</body>
+</html>
 
