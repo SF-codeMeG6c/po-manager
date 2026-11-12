@@ -285,39 +285,44 @@
                 return out;
             };
 
-            // Rows to key into Xactimate: adds and credits per room, plus ONE "Minor price differences" row (CAT USR, in General Items)
-            // for all unit price changes, so the rows add up to the difference between the two estimates (before tax and O&P).
+            // Rows to key into Xactimate, room by room, so the rows add up to the difference between the two estimates (before tax and O&P):
+            // adds and credits; a unit price change worth more than PRICE_LINE_MIN on one line as its own USR line for the difference;
+            // and the room's remaining unit price changes as one "Minor price differences" line (CAT USR).
+            // Credits carry a negative unit price.
+            const PRICE_LINE_MIN = 100;
             const entryRows = (rows, oldItems, newItems) => {
                 const rooms = [];
                 oldItems.concat(newItems).forEach(it => { if (!rooms.includes(it.room)) rooms.push(it.room); });
                 const sumPre = (items, room) => items.filter(i => i.room === room).reduce((a, i) => a + (i.pre || 0), 0);
                 const out = [];
-                let explicit = 0;
                 rooms.forEach(room => {
+                    let explicit = 0, minor = 0;
                     const push = (entry, r, qty, price, amount, note) => {
                         explicit += amount;
-                        out.push({ room, entry, cat: r.cat, sel: r.sel, act: r.act, desc: r.desc, qty, unit: r.unit, price, amount: r2(amount), oldNo: r.oldNo, newNo: r.newNo, note });
+                        out.push({ room, entry, cat: r.cat, sel: r.sel, act: r.act, desc: r.desc, qty, unit: r.unit,
+                            price: price == null ? null : (entry === 'Credit' ? -price : price), amount: r2(amount), oldNo: r.oldNo, newNo: r.newNo, note });
                     };
-                    rows.filter(r => r.room === room && r.kind !== 'PRICE').forEach(r => {
+                    rows.filter(r => r.room === room).forEach(r => {
                         if (r.kind === 'ADDED') push('Add', r, r.newQty, r.newPrice, r.newPre, r.what);
                         else if (r.kind === 'REMOVED') push('Credit', r, r.oldQty, r.oldPrice, -r.oldPre, r.what);
+                        else if (r.kind === 'PRICE' && Math.abs(r.newPre - r.oldPre) <= PRICE_LINE_MIN) minor++;
+                        else if (r.kind === 'PRICE') {
+                            const d = r2(r.newPre - r.oldPre);
+                            explicit += d;
+                            out.push({ room, entry: d < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: r.desc, qty: 1, unit: 'EA', price: d, amount: d, oldNo: r.oldNo, newNo: r.newNo,
+                                note: 'Price difference: ' + r.what + ' on ' + r.newQty.toFixed(2) + ' ' + r.unit });
+                        }
                         else if (r.oldPrice != null && r.newPrice != null) {
                             push('Credit', r, r.oldQty, r.oldPrice, -r.oldPre, 'Was: ' + r.what);
                             push('Add', r, r.newQty, r.newPrice, r.newPre, 'Now: ' + r.what);
                         }
                     });
+                    // what the rows above do not cover = this room's smaller unit price changes, as one line
+                    const rest = r2(sumPre(newItems, room) - sumPre(oldItems, room) - explicit);
+                    if (Math.abs(rest) >= 0.005) out.push({ room, entry: rest < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: 'Minor price differences',
+                        qty: 1, unit: 'EA', price: rest, amount: rest, oldNo: null, newNo: null,
+                        note: minor ? 'Unit price changes on ' + minor + (minor === 1 ? ' line' : ' lines') + ' of $' + PRICE_LINE_MIN + ' or less each (see the Unit price only tab)' : 'Other difference in this room (check)' });
                 });
-                // everything the Add / Credit rows do not cover = the unit price changes, as one line
-                const rest = r2(rooms.reduce((a, room) => a + sumPre(newItems, room) - sumPre(oldItems, room), 0) - explicit);
-                if (Math.abs(rest) >= 0.005) {
-                    const n = rows.filter(r => r.kind === 'PRICE').length;
-                    const line = { room: 'General Items', entry: rest < 0 ? 'Credit' : 'Add', cat: 'USR', sel: '', act: '+', desc: 'Minor price differences',
-                        qty: 1, unit: 'EA', price: Math.abs(rest), amount: rest, oldNo: null, newNo: null,
-                        note: 'Unit price changes on ' + n + (n === 1 ? ' line' : ' lines') + ' (see the Unit price only tab)' };
-                    let at = -1;
-                    out.forEach((r, i) => { if (r.room.toLowerCase() === 'general items') at = i; });
-                    if (at >= 0) { line.room = out[at].room; out.splice(at + 1, 0, line); } else out.push(line);
-                }
                 return out;
             };
 
