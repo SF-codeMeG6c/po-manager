@@ -257,7 +257,20 @@
             });
             lines.forEach(l => { l.items.sort((a, b) => a.x - b.x); l.text = l.items.map(i => i.s).join(' ').replace(/\s+/g, ' ').trim(); });
             const all = lines.map(l => l.text).join('\n');
-            const num = /invoice\s*(?:#|no\.?|number|num)\s*[:#.]?\s*([A-Za-z0-9][A-Za-z0-9\-\/]{0,24})/i.exec(all);
+            // "Invoice #  1039" on one line, or "Invoice #" as a column heading with the number just under it
+            let num = null;
+            for (const l of lines) {
+                const lab = l.items.find(it => /^invoice\s*(?:#|no\.?|number|num)\.?:?$/i.test(it.s.trim()));
+                const inline = /invoice\s*(?:#|no\.?|number|num)\s*[:#.]?\s*([A-Za-z0-9][A-Za-z0-9\-\/]{0,24})/i.exec(l.text);
+                if (inline && !(lab && l.text.trim().toLowerCase().endsWith(lab.s.trim().toLowerCase()))) { num = inline; break; }
+                if (lab) {
+                    const lo = lab.x - 15, hi = lab.x + (lab.w || 50) + 15;
+                    const under = lines.filter(o => o.k === l.k && o.y < l.y - 3 && o.y > l.y - 40)
+                        .map(o => o.items.find(it => it.x + (it.w || 0) >= lo && it.x <= hi && /^[A-Za-z0-9][A-Za-z0-9\-\/]{0,24}$/.test(it.s.trim())))
+                        .filter(Boolean)[0];
+                    if (under) { num = [null, under.s.trim()]; break; }
+                }
+            }
             const date = /invoice\s*date\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all) || /\bdate\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all);
             const due = /due\s*date\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all);
             let amount = null;
@@ -270,6 +283,14 @@
             });
             return { invoiceNumber: num && !/^(date|no|number|total)$/i.test(num[1]) ? num[1] : '', amount,
                 invoiceDate: date ? APReader.isoDate(date[1]) : '', dueDate: due ? APReader.isoDate(due[1]) : '' };
+        };
+        // The one sub PO (not material) whose sub name or sub code appears in the text, else null
+        const subOnText = (pos, lowText) => {
+            const norm = (v) => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            const t = norm(lowText);
+            const hits = (pos || []).filter(p => !isGeneralPO(p) && ((norm(p.subName).length >= 4 && t.includes(norm(p.subName)))
+                || (norm(p.subCode).length >= 3 && new RegExp('(^|[^a-z0-9])' + norm(p.subCode).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])').test(t))));
+            return hits.length === 1 ? hits[0] : null;
         };
         // A known job code in some text, and right after it a PO number (-014) or a trade (/FRM). Longest codes first. (Nov 11)
         const findJobInText = (text, jobs) => {
@@ -1098,7 +1119,7 @@
         // job, PO, name, invoice # and amount; Save coding sends it to Production Admin like any other invoice.
         function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide }) {
             const BLANK = { kind: '', vendorPick: '', vendorOther: '', invoiceNumber: '', amount: '', previousPayment: '', dateReceived: '',
-                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '' };
+                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '', textHint: '' };
             const [codeId, setCodeId] = useState(null);
             const [f, setF] = useState(BLANK);
             const [jd, setJd] = useState(null);       // { jobId, pos: all POs | null (loading), superInfo, error }
@@ -1134,7 +1155,7 @@
                     formsSnap.forEach(doc => {
                         const d = doc.data();
                         if (d.deleted === true) return;
-                        all.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '',
+                        all.push({ id: doc.id, poNumber: d.poNumber || '', category: d.category || '', subName: d.subName || '', subCode: d.subCode || '',
                             status: poStatus(d.status), amount: amountOf(d.contractAmount) });
                     });
                     all.sort((a, b) => a.poNumber.localeCompare(b.poNumber, undefined, { numeric: true }));
@@ -1152,6 +1173,11 @@
                             const w = all.find(p => p.poNumber.toLowerCase() === x.poWanted.toLowerCase());
                             if (w) { formId = w.id; kind = isGeneralPO(w) ? 'supplier' : 'sub'; }
                         }
+                        // No PO number printed (older Freeman PO forms): the job's one sub PO whose sub name or sub code is on the PDF
+                        if (!formId && x.textHint) {
+                            const w = subOnText(all, x.textHint);
+                            if (w) { formId = w.id; kind = 'sub'; }
+                        }
                         if (!formId && kind === 'supplier') formId = pickMaterialPO(all.filter(isGeneralPO), trade);
                         return { ...x, kind, formId, approverUid: x.approverUid || (sup ? sup.uid : '') };
                     });
@@ -1164,7 +1190,8 @@
             const readStored = async (i) => {
                 if (!i.file || !i.file.url || !/pdf/i.test(i.file.type || i.file.name || '')) return;
                 const hasJob = !!(i.hold && i.hold.jobId);
-                if (i.invoiceNumber && typeof i.amount === 'number' && hasJob) return;
+                const needPo = !(i.hold && i.hold.formId);
+                if (i.invoiceNumber && typeof i.amount === 'number' && !needPo) return;
                 setReadNote('Reading the PDF...');
                 try {
                     const blob = await fetchFile(i.file.url);
@@ -1173,12 +1200,16 @@
                     if (opened.current !== i.id) return;
                     // Any layout: a job code or PO number printed on the PDF picks the job and PO
                     let foundNote = '';
-                    if (!hasJob) {
+                    if (needPo) {
                         const text = pages.map(p => p.items.slice().sort((a, b) => b.y - a.y || a.x - b.x).map(it => it.s).join(' ')).join('\n');
-                        const hit = findJobInText(text, openJobs);
-                        if (hit) {
+                        const hit = hasJob ? null : findJobInText(text, openJobs);
+                        if (hasJob) {
+                            // Job known from the email: look for the sub's name or code on the PDF to pick its PO
+                            setF(x => ({ ...x, textHint: text.toLowerCase() }));
+                            loadFor(i.hold.jobId, tradeOf(i));
+                        } else if (hit) {
                             foundNote = hit.poNumber ? `Found PO ${hit.poNumber} on the PDF.` : `Found job ${hit.code} on the PDF${hit.trade ? ` (trade ${hit.trade})` : ''}.`;
-                            setF(x => x.jobId ? x : { ...x, jobId: hit.jobId, poWanted: hit.poNumber, kind: x.kind || (hit.trade && !hit.poNumber ? 'supplier' : '') });
+                            setF(x => x.jobId ? x : { ...x, jobId: hit.jobId, poWanted: hit.poNumber, textHint: text.toLowerCase(), kind: x.kind || (hit.trade && !hit.poNumber ? 'supplier' : '') });
                             loadFor(hit.jobId, hit.trade || tradeOf(i));
                         }
                     }
@@ -3015,4 +3046,3 @@
     </script>
 </body>
 </html>
-
