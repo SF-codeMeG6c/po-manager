@@ -83,6 +83,8 @@
         .pill.inqb { background: #455a64; color: white; }
         .pill.coding { background: #fff3e0; color: #b45309; border: 1px solid #f5c98a; }
         .hold-line { margin-top: 6px; font-size: 13px; }
+        .check-line { display: block; font-size: 13px; margin-top: 4px; color: #333; font-weight: normal; }
+        .check-line input { width: auto; margin-right: 6px; }
         .read-note { font-size: 13px; color: #2e6b3a; background: #eef7ef; border-radius: 4px; padding: 6px 8px; }
         .hold-note { color: #b45309; }
         .code-box { border: 1px solid #f5c98a; background: #fffaf2; border-radius: 6px; padding: 12px; margin: 10px 0; }
@@ -177,6 +179,11 @@
         // Duplicate check (1c): same vendor + same invoice #, ignoring capitals, spaces, dashes and other punctuation
         const normKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         const dupKeyOf = (vendor, number) => normKey(vendor) + '|' + normKey(number);
+        // Sub invoices have no invoice # (Aubree, Nov 13). Their duplicate check is the same PO + the same amount, which is
+        // blocked unless "Not a duplicate" is ticked (a second payment of the same amount on one PO can be real).
+        const sameSubBill = (list, poId, amount, exceptId) => (list || []).filter(i => i.id !== exceptId && i.deleted !== true && i.kind === 'sub'
+            && i.po && i.po.formId === poId && typeof i.amount === 'number' && Math.abs(i.amount - amount) < 0.005);
+        const billName = (i) => i.invoiceNumber ? `invoice ${i.invoiceNumber}` : `the ${money(i.amount || 0)} bill`;
         // Firestore Timestamp or Date -> Date
         const asDate = (t) => t && t.toDate ? t.toDate() : t instanceof Date ? t : null;
         const dateOnly = (t) => { const d = asDate(t); return d ? `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}` : ''; };
@@ -325,7 +332,7 @@
         const tradeCode = (cat) => { const m = /^[A-Za-z]+/.exec(String(cat || '').trim()); return m ? m[0].toUpperCase() : ''; };
         const qbItemFor = (i) => { const c = tradeCode(i.po && i.po.category); return c ? (i.kind === 'supplier' ? c + ' MATERIAL' : c) : ''; };
         const QB_FIELDS = ['vendor', 'customer', 'billNo', 'billDate', 'dueDate', 'item', 'memo'];
-        const qbDefaults = (i) => ({ vendor: i.vendor || '', customer: i.jobCode || '', billNo: i.invoiceNumber || '', billDate: i.invoiceDate || i.dateReceived || '',
+        const qbDefaults = (i) => ({ vendor: i.vendor || '', customer: i.jobCode || '', billNo: i.kind === 'sub' ? '' : (i.invoiceNumber || ''), billDate: i.invoiceDate || i.dateReceived || '',
             dueDate: i.dueDate || '', item: qbItemFor(i), memo: i.po && i.po.poNumber ? 'PO ' + i.po.poNumber : '' });
         const qbOf = (i) => ({ ...qbDefaults(i), ...(i.qb || {}) });
         const inQb = (i) => !!(i.qbEntered && i.qbEntered.date);
@@ -388,7 +395,7 @@
             return { contentType: type || undefined, contentDisposition: `inline; filename="${nm.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(nm)}` };
         };
 
-        const blankForm = () => ({ kind: 'sub', formId: '', vendorPick: '', vendorOther: '', addVendor: false, invoiceNumber: '', amount: '',
+        const blankForm = () => ({ kind: 'sub', formId: '', notDup: false, vendorPick: '', vendorOther: '', addVendor: false, invoiceNumber: '', amount: '',
             dateReceived: todayText(), previousPayment: '', approverUid: '' });
 
         // Step 1d: batch upload of supplier bills (Owner/Admin). Each file becomes a card; a card saves when it's complete.
@@ -1119,7 +1126,7 @@
         // job, PO, name, invoice # and amount; Save coding sends it to Production Admin like any other invoice.
         function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide }) {
             const BLANK = { kind: '', vendorPick: '', vendorOther: '', invoiceNumber: '', amount: '', previousPayment: '', dateReceived: '',
-                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '', textHint: '' };
+                invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '', textHint: '', notDup: false };
             const [codeId, setCodeId] = useState(null);
             const [f, setF] = useState(BLANK);
             const [jd, setJd] = useState(null);       // { jobId, pos: all POs | null (loading), superInfo, error }
@@ -1220,9 +1227,10 @@
                         }
                         const g = guessInvoice(pages);
                         setF(x => ({ ...x,
-                            invoiceNumber: x.invoiceNumber || g.invoiceNumber,
+                            invoiceNumber: forSub(x) ? '' : (x.invoiceNumber || g.invoiceNumber),
                             amount: x.amount || (g.amount !== null ? String(g.amount) : ''),
                             invoiceDate: x.invoiceDate || g.invoiceDate, dueDate: x.dueDate || g.dueDate }));
+                        const forSub = (x) => x.kind === 'sub';
                         const got = [g.invoiceNumber && 'invoice #', g.amount !== null && 'amount', g.invoiceDate && 'bill date'].filter(Boolean);
                         setReadNote((foundNote ? foundNote + ' ' : '')
                             + (got.length ? `Read the ${got.join(', ')} from the PDF: check ${got.length === 1 ? 'it' : 'them'} against the file.` : '')
@@ -1275,8 +1283,9 @@
             const approverList = [...(approvers || [])];
             if (jdNow && jdNow.superInfo && !approverList.some(a => a.uid === jdNow.superInfo.uid)) approverList.unshift({ uid: jdNow.superInfo.uid, name: jdNow.superInfo.name || 'Job Super', role: 'super' });
             const approver = approverList.find(a => a.uid === f.approverUid) || null;
-            const dupOf = inv && vendor && f.invoiceNumber.trim() && allInvoices
-                ? allInvoices.find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === dupKeyOf(vendor, f.invoiceNumber)) : null;
+            const dupOf = inv && f.kind === 'supplier' && vendor && f.invoiceNumber.trim() && allInvoices
+                ? allInvoices.find(i => i.id !== inv.id && i.deleted !== true && i.invoiceNumber && dupKeyOf(i.vendor, i.invoiceNumber) === dupKeyOf(vendor, f.invoiceNumber)) : null;
+            const subDup = inv && f.kind === 'sub' && po && amount > 0 ? sameSubBill(allInvoices, po.id, amount, inv.id) : [];
             const problem = !inv ? ''
                 : !f.jobId ? 'Pick the job.'
                 : !jdNow || jdNow.pos === null ? 'Loading the job...'
@@ -1285,12 +1294,13 @@
                 : !poChoices.length ? (f.kind === 'supplier' ? 'This job has no material PO (sub name "General Material" or "Various – see scope"). Make one in PO Manager first.' : 'This job has no sub POs in PO Manager yet.')
                 : !po ? (f.kind === 'supplier' ? 'Pick the material PO.' : 'Pick the PO.')
                 : !vendor ? 'Pick or type the supplier.'
-                : !f.invoiceNumber.trim() ? 'Type the invoice #.'
+                : f.kind === 'supplier' && !f.invoiceNumber.trim() ? 'Type the invoice #.'
                 : !(amount > 0) ? 'Type the amount.'
                 : prevPay === null && f.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
                 : !/^\d{4}-\d{2}-\d{2}$/.test(f.dateReceived) ? 'Pick the date received.'
                 : !approver ? 'Pick who approves it.'
-                : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. It can't be added twice.` : '';
+                : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. It can't be added twice.`
+                : subDup.length && !f.notDup ? `${vendor} already has a ${money(amount)} bill on PO ${po.poNumber}. Tick "Not a duplicate" if this is a second payment.` : '';
             let warn = '';
             if (inv && po && amount > 0) {
                 if (po.amount === null) warn = 'This PO has no amount, so it can\'t pass until the PO is fixed in PO Manager.';
@@ -1315,7 +1325,7 @@
                     const name = same.length ? withRandom(fileName) : fileName;
                     const now = new Date();
                     const by = { uid: user.uid, name: profile.name || user.email };
-                    const next = { kind: f.kind, vendor, invoiceNumber: f.invoiceNumber.trim(), amount, previousPayment: f.kind === 'sub' ? prevPay : null,
+                    const next = { kind: f.kind, vendor, invoiceNumber: f.kind === 'sub' ? '' : f.invoiceNumber.trim(), amount, previousPayment: f.kind === 'sub' ? prevPay : null,
                         dateReceived: f.dateReceived, invoiceDate: f.invoiceDate || null, dueDate: f.dueDate || null };
                     const changed = Object.keys(next).filter(k => (inv[k] === undefined ? null : inv[k]) !== next[k]);
                     const batch = db.batch();
@@ -1327,13 +1337,14 @@
                         needsCoding: false,
                         coded: { at: now, by, holdFileName: inv.file ? inv.file.name : '' },
                         file: { ...(inv.file || {}), name },
-                        dupFlag: same.length ? dupFlagFor(same, now) : (inv.dupFlag || null)
+                        dupFlag: same.length ? dupFlagFor(same, now) : (inv.dupFlag || null),
+                        ...(subDup.length ? { notDuplicate: { at: now, by, of: subDup.map(x => x.id) } } : {})
                     });
                     batch.set(ref.collection('history').doc(), { action: 'Coded', at: now, by, jobCode: job.code, poNumber: po.poNumber,
                         approver: approver.name, fileName: name, filled: changed, ...(same.length ? { dupFlag: true } : {}) });
                     await batch.commit();
                     closeCode();
-                    setMsg({ text: `Bill ${next.invoiceNumber} from ${vendor} coded to ${job.code}, PO ${po.poNumber}. It's now waiting on Production Admin.`
+                    setMsg({ text: `${next.invoiceNumber ? 'Bill ' + next.invoiceNumber : 'The ' + money(amount) + ' bill'} from ${vendor} coded to ${job.code}, PO ${po.poNumber}. It's now waiting on Production Admin.`
                         + (same.length ? ` Same file name as invoice ${same.map(m => m.invoiceNumber).join(', ')}, so a number was added and it's flagged as a possible duplicate.` : ''), ok: true });
                 } catch (error) {
                     setMsg({ text: 'Error saving: ' + error.message, ok: false });
@@ -1379,7 +1390,9 @@
                                             <tr><td colSpan="7">
                                                 <div className="code-box">
                                                     <div className="section-title" style={{ marginBottom: '6px' }}>Code this bill{h.email ? ` (emailed ${h.email.from || ''})` : ''}</div>
-                                                    {readNote && <div className={readNote.startsWith('Reading') ? 'muted' : 'read-note'} style={{ marginBottom: '8px' }}>{readNote}</div>}
+                                                    {readNote && <div className={readNote.startsWith('Reading') ? 'muted' : 'read-note'} style={{ marginBottom: '8px' }}>{f.kind === 'sub'
+                                                        ? readNote.replace(/invoice #, /g, '').replace(/the invoice # and /g, 'the ').replace(/Read the invoice # from the PDF: check it against the file\.\s*/g, '').replace(/Type the invoice # from the file\.?/g, '').replace(/\s+$/, '')
+                                                        : readNote}</div>}
                                                     <div className="kinds" style={{ marginBottom: '8px' }}>
                                                         {[['sub', 'Sub invoice'], ['supplier', 'Supplier bill']].map(([k, label]) => (
                                                             <label key={k}><input type="radio" name="nc-kind" checked={f.kind === k} onChange={() => pickKind(k)} disabled={saving} /> {label}</label>
@@ -1411,10 +1424,10 @@
                                                                 </select>}
                                                             {f.kind !== 'sub' && f.vendorPick === OTHER && <input id="nc-vendor-other" type="text" value={f.vendorOther} placeholder="Name as it is in QuickBooks" onChange={e => set('vendorOther', e.target.value)} disabled={saving} style={{ marginTop: '4px' }} />}
                                                         </div>
-                                                        <div>
+                                                        {f.kind !== 'sub' && <div>
                                                             <label htmlFor="nc-num">Invoice #</label>
                                                             <input id="nc-num" type="text" value={f.invoiceNumber} onChange={e => set('invoiceNumber', e.target.value)} disabled={saving} />
-                                                        </div>
+                                                        </div>}
                                                         <div>
                                                             <label htmlFor="nc-amt">Amount</label>
                                                             <input id="nc-amt" type="text" inputMode="decimal" value={f.amount} onChange={e => set('amount', e.target.value)} disabled={saving} />
@@ -1435,6 +1448,7 @@
                                                             </select>
                                                         </div>
                                                     </div>
+                                                    {subDup.length > 0 && <label className="check-line" style={{ marginTop: '6px' }}><input type="checkbox" checked={!!f.notDup} onChange={e => set('notDup', e.target.checked)} disabled={saving} /> Not a duplicate: {vendor} already has a {money(amount)} bill on this PO (received {subDup.map(i => shortDate(i.dateReceived)).join(', ')}), and this is a second payment</label>}
                                                     {problem && <div className={problem.startsWith('Loading') ? 'muted' : problem.includes("can't be added twice") ? 'error' : 'warn'} style={{ marginTop: '6px' }}>{problem}</div>}
                                                     {warn && <div className="warn" style={{ marginTop: '6px' }}>{warn}</div>}
                                                     {fileName && <div className="fname" style={{ marginTop: '6px', marginBottom: 0 }}>File name becomes: {fileName}</div>}
@@ -1484,7 +1498,7 @@
                 const fields = {};
                 QB_FIELDS.forEach(k => { fields[k] = String(d[k] || '').trim(); });
                 const missing = !fields.vendor ? 'Type the supplier as it is in QuickBooks.' : !fields.customer ? 'Type the Customer/Job.'
-                    : !fields.billNo ? 'Type the bill #.' : !/^\d{4}-\d{2}-\d{2}$/.test(fields.billDate) ? 'Pick the bill date.'
+                    : !fields.billNo && i.kind !== 'sub' ? 'Type the bill #.' : !/^\d{4}-\d{2}-\d{2}$/.test(fields.billDate) ? 'Pick the bill date.'
                     : fields.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(fields.dueDate) ? 'The due date isn\'t a date.'
                     : !QB_ITEMS.includes(fields.item) ? 'Pick the QuickBooks item.' : '';
                 if (missing) { setMsg({ text: missing, ok: false, id: i.id }); return; }
@@ -1669,7 +1683,7 @@
                                 {i.qb && i.qb.printedAt && <small>Printed {dateOnly(i.qb.printedAt)}</small>}
                                 {i.qb && i.qb.zippedAt && <small>Files downloaded {dateOnly(i.qb.zippedAt)}</small>}</td>
                             <td>{q.customer}<small>{i.po ? i.po.poNumber : ''}</small></td>
-                            <td>{q.billNo}{q.billNo !== i.invoiceNumber && <small>AP: {i.invoiceNumber}</small>}</td>
+                            <td>{q.billNo}{i.kind !== 'sub' && q.billNo !== i.invoiceNumber && <small>AP: {i.invoiceNumber}</small>}</td>
                             <td>{shortDate(q.billDate)}{q.dueDate && <small>Due {shortDate(q.dueDate)}</small>}</td>
                             <td>{q.item || <span className="warn">none</span>}<small>{q.memo}</small></td>
                             <td className="num">{money(i.amount || 0)}<small>{i.appr && i.appr.by ? 'Pay: ' + i.appr.by.name : ''}</small></td>
@@ -2231,8 +2245,8 @@
             };
 
             const restoreInvoice = async (inv) => {
-                const key = dupKeyOf(inv.vendor, inv.invoiceNumber);
-                const other = (allInvoices || []).find(i => i.id !== inv.id && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === key);
+                const key = inv.invoiceNumber ? dupKeyOf(inv.vendor, inv.invoiceNumber) : '';
+                const other = key ? (allInvoices || []).find(i => i.id !== inv.id && i.deleted !== true && i.invoiceNumber && dupKeyOf(i.vendor, i.invoiceNumber) === key) : null;
                 if (other) {
                     window.alert(`It can't be restored: invoice ${other.invoiceNumber} from ${other.vendor} is already in AP on ${other.jobCode || 'the Needs coding list'}. Hide that one first if this is the one to keep.`);
                     return;
@@ -2330,11 +2344,13 @@
             const approvedSoFar = po ? passedOn(po.id, editId) : 0; // passed invoices on this PO (2a); approver Pay comes in 2b
             const waitingOnPo = po ? notPassedOn(po.id, editId) : 0;
             // Same vendor + invoice # already in AP (any job, not hidden) = blocked. Same PO + same amount = a warning only.
-            const typedKey = vendor && form.invoiceNumber.trim() ? dupKeyOf(vendor, form.invoiceNumber) : '';
+            const typedKey = form.kind === 'supplier' && vendor && form.invoiceNumber.trim() ? dupKeyOf(vendor, form.invoiceNumber) : '';
             const dupOf = typedKey && allInvoices
                 ? allInvoices.find(i => i.id !== editId && i.deleted !== true && dupKeyOf(i.vendor, i.invoiceNumber) === typedKey) : null;
             const sameAmount = po && amount > 0
                 ? activeJob.filter(i => i.id !== editId && i.po && i.po.formId === po.id && typeof i.amount === 'number' && Math.abs(i.amount - amount) < 0.005) : [];
+            // Sub invoice: same PO + same amount already in AP is blocked until "Not a duplicate" is ticked
+            const subDup = form.kind === 'sub' && po && amount > 0 ? sameSubBill(allInvoices, po.id, amount, editId) : [];
             const balance = po && po.amount !== null ? po.amount - approvedSoFar : null;
             const approverList = (() => {
                 const list = [...(approvers || [])];
@@ -2350,12 +2366,13 @@
                 ? buildFileName({ category: po.category, vendor, amount, poNumber: po.poNumber, dateReceived: form.dateReceived, file }) : '';
 
             const handleSave = async () => {
-                const missing = !po ? 'Pick the PO.' : !vendor ? 'Pick or type the vendor.' : !form.invoiceNumber.trim() ? 'Type the invoice #.'
+                const missing = !po ? 'Pick the PO.' : !vendor ? 'Pick or type the vendor.' : form.kind === 'supplier' && !form.invoiceNumber.trim() ? 'Type the invoice #.'
                     : !(amount > 0) ? 'Type the invoice amount.' : !/^\d{4}-\d{2}-\d{2}$/.test(form.dateReceived) ? 'Pick the date received.'
                     : prevPay === null && form.previousPayment.trim() ? 'Previous payment must be an amount, or left blank.'
                     : !approver ? 'Pick who approves it.' : !file && !editId ? 'Add the invoice file (PDF or photo).'
                     : allInvoices === null ? 'Still loading the invoice list. Try again in a moment.'
-                    : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. The same invoice can't be added twice.` : '';
+                    : dupOf ? `Invoice ${dupOf.invoiceNumber} from ${dupOf.vendor} is already in AP on ${dupOf.jobCode || 'the Needs coding list'}. The same invoice can't be added twice.`
+                    : subDup.length && !form.notDup ? `${vendor} already has a ${money(amount)} bill on PO ${po.poNumber}. Tick "Not a duplicate" if this is a second payment.` : '';
                 if (missing) { setFormMsg({ text: missing, ok: false }); return; }
                 if (editId) { await saveEdit(); return; }
                 setSaving(true); setFormMsg(null);
@@ -2381,7 +2398,8 @@
                     }
                     batch.set(invRef, {
                         jobId, jobCode: job.code, kind: form.kind, vendor,
-                        invoiceNumber: form.invoiceNumber.trim(), amount, previousPayment: form.kind === 'sub' ? prevPay : null,
+                        invoiceNumber: form.kind === 'sub' ? '' : form.invoiceNumber.trim(), amount, previousPayment: form.kind === 'sub' ? prevPay : null,
+                        ...(form.kind === 'sub' && subDup.length ? { notDuplicate: { at: now, by, of: subDup.map(x => x.id) } } : {}),
                         dateReceived: form.dateReceived,
                         po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
                         approver: { uid: approver.uid, name: approver.name },
@@ -2407,7 +2425,7 @@
                 if (!inv) { setFormMsg({ text: 'This invoice is no longer on the list.', ok: false }); return; }
                 if (inQb(inv)) { setFormMsg({ text: 'Bookkeeping marked this bill In QuickBooks meanwhile, so it can\'t be edited. Undo that on the Bookkeeping page first.', ok: false }); return; }
                 const next = {
-                    kind: form.kind, vendor, invoiceNumber: form.invoiceNumber.trim(), amount,
+                    kind: form.kind, vendor, invoiceNumber: form.kind === 'sub' ? (inv.kind === 'sub' ? (inv.invoiceNumber || '') : '') : form.invoiceNumber.trim(), amount,
                     previousPayment: form.kind === 'sub' ? prevPay : null, dateReceived: form.dateReceived,
                     po: { formId: po.id, poNumber: po.poNumber, category: po.category, subName: po.subName },
                     approver: { uid: approver.uid, name: approver.name }
@@ -2899,14 +2917,14 @@
                                                     </div>
                                                 )}
                                             </div>
-                                            <div className="form-group">
+                                            {form.kind === 'supplier' && <div className="form-group">
                                                 <label htmlFor="inv-num">Invoice #</label>
                                                 <input id="inv-num" type="text" value={form.invoiceNumber} onChange={e => setField('invoiceNumber', e.target.value)} />
                                                 {dupOf && (
                                                     <div className="dup">Already in AP: invoice {dupOf.invoiceNumber} from {dupOf.vendor} on {dupOf.jobCode}
                                                         {dupOf.dateReceived ? `, received ${shortDate(dupOf.dateReceived)}` : ''}. The same invoice can't be added twice.</div>
                                                 )}
-                                            </div>
+                                            </div>}
                                             <div className="form-group">
                                                 <label htmlFor="inv-amt">Invoice amount</label>
                                                 <input id="inv-amt" type="text" inputMode="decimal" value={form.amount} placeholder="$0.00" onChange={e => setField('amount', e.target.value)} />
@@ -2916,8 +2934,11 @@
                                                 {amount > 0 && balance !== null && waitingOnPo > 0 && amount + waitingOnPo > balance && (
                                                     <div className="warn">With the {money(waitingOnPo)} already added and not yet passed, this PO would be over by {money(amount + waitingOnPo - balance)}.</div>
                                                 )}
-                                                {sameAmount.length > 0 && (
-                                                    <div className="warn">Same amount as invoice {sameAmount.map(i => i.invoiceNumber).join(', ')} on this PO. Check it isn't the same bill.</div>
+                                                {form.kind === 'sub' && subDup.length > 0 ? (
+                                                    <div className="dup">{vendor} already has a {money(amount)} bill on this PO (received {subDup.map(i => shortDate(i.dateReceived)).join(', ')}).
+                                                        <label className="check-line"><input type="checkbox" checked={!!form.notDup} onChange={e => setField('notDup', e.target.checked)} /> Not a duplicate (a second payment of the same amount)</label></div>
+                                                ) : sameAmount.length > 0 && (
+                                                    <div className="warn">Same amount as {sameAmount.map(billName).join(', ')} on this PO. Check it isn't the same bill.</div>
                                                 )}
                                             </div>
                                             <div className="form-group">
