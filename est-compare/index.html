@@ -448,7 +448,296 @@
                 return wb;
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook };
+            // AutoHotkey v2 script that keys the "Enter in Xactimate" rows into Xactimate desktop Quick Entry (Nov 13).
+            // Same rules as the Stark script that passed its full run (claude/xact-entry/make.py + template.ahk in the Job Tools project),
+            // plus a stop log (XactEntry_stops.txt) and its own progress key, so each downloaded script starts at its first row.
+            // Row numbers match the Excel "Enter in Xactimate" tab when both are downloaded from the same comparison.
+            const XACT_TEMPLATE = [
+                "#Requires AutoHotkey v2.0",
+                "#SingleInstance Force",
+                "; Xactimate Entry - %%TITLE%%",
+                "; F8 = set-up (point at each spot)   F9 = enter the current room",
+                "; Ctrl+F9 = start from a row number  Esc = stop (only while entering)",
+                "",
+                "CoordMode \"Mouse\", \"Window\"",
+                "CoordMode \"ToolTip\", \"Screen\"",
+                "SetDefaultMouseSpeed 0",
+                "",
+                "SPEED := 1.0          ; make it 1.5 or 2 if Xactimate can't keep up",
+                "SCRIPT_TITLE := \"%%TITLE%%\"",
+                "PROGRESS_KEY := \"%%KEY%%\"   ; each downloaded script keeps its own progress",
+                "INI := A_ScriptDir \"\\XactEntry_settings.ini\"",
+                "LOG := A_ScriptDir \"\\XactEntry_stops.txt\"   ; one line per stop: row, item, reason, window in front",
+                "",
+                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"CreditItem\", \"Exempt\", \"OK\"]",
+                "LABELS := Map(",
+                "    \"Cat\", \"the Cat box\",",
+                "    \"Sel\", \"the Sel box\",",
+                "    \"Act\", \"the Act box\",",
+                "    \"Desc\", \"the Desc box\",",
+                "    \"Calc\", \"the Calc (quantity) box\",",
+                "    \"Price\", \"the price box (Replace Price)\",",
+                "    \"CreditItem\", \"the Credit Item button\",",
+                "    \"Exempt\", \"the Exempt button\",",
+                "    \"OK\", \"the OK button\")",
+                "",
+                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?]",
+                "ROWS := [",
+                "%%ROWS%%",
+                "]",
+                "",
+                "global spots := Map(), xexe := \"\", idx := 1, running := false, stopFlag := false, mainWin := 0",
+                "LoadSettings()",
+                "ShowNext()",
+                "",
+                "F8:: Setup()",
+                "F9:: RunRoom()",
+                "^F9:: PickRow()",
+                "#HotIf running",
+                "Esc:: SetStop()",
+                "#HotIf",
+                "",
+                "; ---------------- set-up ----------------",
+                "Setup() {",
+                "    global spots, xexe",
+                "    MsgBox \"Set-up`n`n1. In Xactimate, click a room and type CLN, then LAB, so the whole Quick Entry panel shows (price box, Credit Item, Exempt).`n2. Click OK on this message.`n3. For each spot named at the bottom of the screen, rest the mouse on it (don't click) and press F8.`n`nPress Esc to cancel. When done, press Cancel in Xactimate's Quick Entry.\", \"Xactimate Entry\"",
+                "    newSpots := Map(), exe := \"\"",
+                "    for name in SPOT_NAMES {",
+                "        Tip(\"Set-up \" A_Index \" of \" SPOT_NAMES.Length \": rest the mouse on \" LABELS[name] \", then press F8\")",
+                "        if !WaitF8() {",
+                "            Tip(\"Set-up cancelled. Nothing was changed.\")",
+                "            return",
+                "        }",
+                "        MouseGetPos &x, &y, &win",
+                "        e := WinGetProcessName(\"ahk_id \" win)",
+                "        if exe = \"\"",
+                "            exe := e",
+                "        else if e != exe {",
+                "            MsgBox \"That spot isn't in Xactimate. Set-up cancelled; nothing was changed.\", \"Xactimate Entry\"",
+                "            ShowNext()",
+                "            return",
+                "        }",
+                "        newSpots[name] := [x, y]",
+                "    }",
+                "    spots := newSpots, xexe := exe",
+                "    for name, p in spots",
+                "        IniWrite p[1] \",\" p[2], INI, \"Spots\", name",
+                "    IniWrite xexe, INI, \"Spots\", \"exe\"",
+                "    MsgBox \"Set-up saved. If you move or resize the Xactimate window, run set-up (F8) again.\", \"Xactimate Entry\"",
+                "    ShowNext()",
+                "}",
+                "",
+                "WaitF8() {",
+                "    KeyWait \"F8\"",
+                "    Loop {",
+                "        if GetKeyState(\"Esc\", \"P\")",
+                "            return false",
+                "        if GetKeyState(\"F8\", \"P\") {",
+                "            KeyWait \"F8\"",
+                "            return true",
+                "        }",
+                "        Sleep 30",
+                "    }",
+                "}",
+                "",
+                "LoadSettings() {",
+                "    global spots, xexe, idx",
+                "    xexe := IniRead(INI, \"Spots\", \"exe\", \"\")",
+                "    for name in SPOT_NAMES {",
+                "        v := IniRead(INI, \"Spots\", name, \"\")",
+                "        if v != \"\" {",
+                "            p := StrSplit(v, \",\")",
+                "            spots[name] := [Integer(p[1]), Integer(p[2])]",
+                "        }",
+                "    }",
+                "    idx := Integer(IniRead(INI, \"Progress\", PROGRESS_KEY, 1))",
+                "    if idx < 1 || idx > ROWS.Length + 1",
+                "        idx := 1",
+                "}",
+                "",
+                "SaveProgress() => IniWrite(idx, INI, \"Progress\", PROGRESS_KEY)",
+                "",
+                "PickRow() {",
+                "    global idx",
+                "    r := InputBox(\"Start from which Excel row number? (\" ROWS[1][1] \" to \" ROWS[ROWS.Length][1] \")\", \"Xactimate Entry\")",
+                "    if r.Result != \"OK\"",
+                "        return",
+                "    for i, row in ROWS",
+                "        if IsInteger(r.Value) && row[1] = Integer(r.Value) {",
+                "            idx := i",
+                "            SaveProgress()",
+                "            ShowNext()",
+                "            return",
+                "        }",
+                "    MsgBox \"Row \" r.Value \" isn't in this script.\", \"Xactimate Entry\"",
+                "}",
+                "",
+                "; ---------------- entering ----------------",
+                "RunRoom() {",
+                "    global idx, running, stopFlag, mainWin",
+                "    if spots.Count < SPOT_NAMES.Length {",
+                "        MsgBox \"Run set-up first (F8).\", \"Xactimate Entry\"",
+                "        return",
+                "    }",
+                "    if idx > ROWS.Length {",
+                "        MsgBox \"All rows in this script are done.\", \"Xactimate Entry\"",
+                "        return",
+                "    }",
+                "    mainWin := WinActive(\"ahk_exe \" xexe)",
+                "    if !mainWin {",
+                "        MsgBox \"Click the room in Xactimate first, then press F9.\", \"Xactimate Entry\"",
+                "        return",
+                "    }",
+                "    room := ROWS[idx][2]",
+                "    running := true, stopFlag := false",
+                "    while idx <= ROWS.Length && ROWS[idx][2] = room {",
+                "        r := ROWS[idx]",
+                "        Tip(\"Entering Excel row \" r[1] \" (\" room \"): \" r[4] \" \" r[5] \"     Esc = stop\")",
+                "        res := EnterRow(r)",
+                "        if res = \"ok\" {",
+                "            idx += 1",
+                "            SaveProgress()",
+                "            continue",
+                "        }",
+                "        running := false",
+                "        LogStop(r, res)",
+                "        SoundBeep 400, 400",
+                "        if res = \"hand\" {",
+                "            idx += 1",
+                "            SaveProgress()",
+                "            MsgBox \"Excel row \" r[1] \" is a remove-and-replace (&) line:`n`n\" r[4] \" \" r[5] \"  qty \" r[8] \"  adjuster price \" r[9] (r[3] ? \"  (Credit)\" : \"\") \"`n`nIt has two price boxes, so enter it by hand. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\"",
+                "            ShowNext()",
+                "            return",
+                "        }",
+                "        if res = \"popup-after-ok\" {",
+                "            idx += 1",
+                "            SaveProgress()",
+                "            MsgBox \"A pop-up opened after OK on Excel row \" r[1] \".`n`nAnswer the pop-up, check that line, then press F9 to carry on.\", \"Xactimate Entry - stopped\"",
+                "        } else {",
+                "            why := res = \"stopped\" ? \"You pressed Esc\" : \"A pop-up opened, or Xactimate wasn't in front,\"",
+                "            MsgBox why \" during Excel row \" r[1] \".`n`nIn Quick Entry press Cancel (if the line is half filled in), then press F9 to redo row \" r[1] \".\", \"Xactimate Entry - stopped\"",
+                "        }",
+                "        ShowNext()",
+                "        return",
+                "    }",
+                "    running := false",
+                "    SoundBeep 1000, 150",
+                "    ShowNext()",
+                "}",
+                "",
+                "EnterRow(r) {",
+                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt]",
+                "    if r[6] = \"&\"",
+                "        return \"hand\"                             ; R&R has two prices; key it by hand",
+                "    try {",
+                "        Fill(\"Cat\", r[4]), W(700)                 ; Cat jumps to Sel on its own",
+                "        if r[4] != \"USR\" {",
+                "            Fill(\"Sel\", r[5]), Key(\"{Tab}\"), W(900)   ; item loads",
+                "        }",
+                "        if r[6] != \"\" {",
+                "            ClickSpot(\"Act\"), W(400)",
+                "            Key(\"{Text}\" r[6]), W(250)",
+                "            Key(\"{Enter}\"), W(500)",
+                "        }",
+                "        if r[7] != \"\"",
+                "            Fill(\"Desc\", r[7]), W(200)",
+                "        Fill(\"Calc\", r[8], true), Key(\"{Tab}\"), W(300)",
+                "        Fill(\"Price\", r[9], true), Key(\"{Tab}\"), W(400)",
+                "        if r[3]",
+                "            ClickSpot(\"CreditItem\"), W(400)",
+                "        if r[10]",
+                "            ClickSpot(\"Exempt\"), W(300)",
+                "        ClickSpot(\"OK\")",
+                "    } catch as e {",
+                "        return e.Message = \"stopped\" ? \"stopped\" : \"popup\"",
+                "    }",
+                "    W(1000)",
+                "    if !WinActive(\"ahk_id \" mainWin)",
+                "        return \"popup-after-ok\"",
+                "    return \"ok\"",
+                "}",
+                "",
+                "Fill(name, text, asKeys := false) {",
+                "    ClickSpot(name), W(150)",
+                "    Key(\"^a\")",
+                "    Key(asKeys ? text : \"{Text}\" text)   ; numbers go as real key presses so \".\" is kept",
+                "}",
+                "",
+                "ClickSpot(name) {",
+                "    Check()",
+                "    p := spots[name]",
+                "    Click p[1], p[2]",
+                "}",
+                "",
+                "Key(k) {",
+                "    Check()",
+                "    Send k",
+                "}",
+                "",
+                "Check() {",
+                "    if stopFlag",
+                "        throw Error(\"stopped\")",
+                "    if !WinActive(\"ahk_id \" mainWin)",
+                "        throw Error(\"popup\")",
+                "}",
+                "",
+                "W(ms) => Sleep(Round(ms * SPEED))",
+                "",
+                "SetStop() {",
+                "    global stopFlag := true",
+                "}",
+                "",
+                "; ---------------- stop log ----------------",
+                "LogStop(r, res) {",
+                "    try {",
+                "        why := \"Pop-up, or Xactimate not in front\"",
+                "        if res = \"hand\"",
+                "            why := \"& line - entered by hand\"",
+                "        else if res = \"popup-after-ok\"",
+                "            why := \"Pop-up after OK\"",
+                "        else if res = \"stopped\"",
+                "            why := \"Esc pressed\"",
+                "        front := \"\"",
+                "        try front := WinGetTitle(\"A\") \" (\" WinGetProcessName(\"A\") \")\"",
+                "        FileAppend FormatTime(, \"yyyy-MM-dd HH:mm:ss\") \"`t\" SCRIPT_TITLE \"`tExcel row \" r[1] \"`t\" r[2] \"`t\" Trim(r[4] \" \" r[5] \" \" r[6]) \"`t\" why \"`tIn front: \" front \"`r`n\", LOG, \"UTF-8\"",
+                "    }",
+                "}",
+                "",
+                "; ---------------- status ----------------",
+                "ShowNext() {",
+                "    if spots.Count < SPOT_NAMES.Length {",
+                "        Tip(\"Xactimate Entry: press F8 to set up first.\")",
+                "        return",
+                "    }",
+                "    if idx > ROWS.Length {",
+                "        Tip(\"Xactimate Entry: all \" ROWS.Length \" rows done. Check the totals in Xactimate.\")",
+                "        return",
+                "    }",
+                "    r := ROWS[idx], n := 0",
+                "    for row in ROWS",
+                "        if row[2] = r[2] && A_Index >= idx",
+                "            n++",
+                "    Tip(\"Next room: \" r[2] \" (\" n \" lines, from Excel row \" r[1] \"). Click the room in Xactimate, then press F9.\")",
+                "}",
+                "",
+                "Tip(t) => ToolTip(t, 10, A_ScreenHeight - 90)"
+            ];
+            const xactScript = (entry, title, key) => {
+                const esc = (s) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').replace(/`/g, '``').replace(/'/g, "`'");
+                const lines = entry.map((r, i) => {
+                    const sel = r.sel || '';
+                    const act = /^BID/i.test(sel) ? '' : (r.act || '');           // bid items have no Act
+                    const exempt = r.cat === 'USR' && r.desc === 'Minor price differences' ? 1 : 0;
+                    const q = Number(r.qty).toFixed(2).replace(/\.?0+$/, '');
+                    const p = Math.abs(Number(r.price)).toFixed(2);                  // typed positive; Credit Item makes it negative
+                    return '    [' + (i + 2) + ", '" + esc(r.room) + "', " + (r.entry === 'Credit' ? 1 : 0) + ", '" + esc(r.cat) + "', '" + esc(sel) + "', '" + esc(act) +
+                        "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ']';
+                });
+                const t = String(title).replace(/["`\r\n]/g, '');
+                return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
+            };
+
+            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -631,17 +920,39 @@
 
             // line items before tax and O&P: the estimate's own summary figure when it prints one, else the lines added up
             const lineTotal = (est) => Math.round((est.summaryLineTotal != null ? est.summaryLineTotal : est.items.reduce((a, i) => a + (i.pre || 0), 0)) * 100) / 100;
+            // the "Enter in Xactimate" rows; the Excel tab and the Xactimate script both use these
+            const entryNow = () => EstCompare.entryRows(rows, older.est.items, newer.est.items, ourRooms.length ? pairs : null, ourRooms);
             const download = () => {
                 const wb = EstCompare.versionWorkbook(window.XLSX, rows, {
                     oldName: older.est.fileName, newName: newer.est.fileName, oldEstimate: older.est.estimate, newEstimate: newer.est.estimate,
                     oldTotal: older.est.readTotal, newTotal: newer.est.readTotal, made: new Date().toLocaleString(),
-                    entry: EstCompare.entryRows(rows, older.est.items, newer.est.items, ourRooms.length ? pairs : null, ourRooms),
+                    entry: entryNow(),
                     ourNames: ourRooms.length > 0,
                     oldLineTotal: lineTotal(older.est), newLineTotal: lineTotal(newer.est),
                     rcvChange: older.est.summaryRcv != null && newer.est.summaryRcv != null ? Math.round((newer.est.summaryRcv - older.est.summaryRcv) * 100) / 100 : null
                 });
                 const base = (newer.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
                 window.XLSX.writeFile(wb, 'Version_Compare_' + base + '.xlsx');
+            };
+            // Xactimate entry script (AutoHotkey), one per comparison: job code and date in the file name, details on line 3
+            const downloadScript = () => {
+                const entry = entryNow();
+                if (!entry.length) return;
+                const job = jobs.find(j => j.id === jobId);
+                const who = (job && job.code) || newer.est.estimate || 'estimate';
+                const now = new Date();
+                const roomCount = new Set(entry.map(r => r.room)).size;
+                const total = entry.reduce((a, r) => a + r.amount, 0);
+                const title = who + ' | ' + older.est.fileName + ' vs ' + newer.est.fileName + ' | ' + entry.length + ' rows, ' + roomCount + ' rooms, total ' + money(total) + ' | made ' + now.toLocaleString();
+                const text = EstCompare.xactScript(entry, title, 'p' + now.getTime().toString(36));
+                const day = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/plain' }));
+                a.download = 'Xact_Entry_' + who.replace(/[^\w.-]+/g, '_') + '_' + day + '.ahk';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
             };
 
             let lastRoom = null;
@@ -727,6 +1038,7 @@
                                 ))}
                                 <span className="grow"></span>
                                 <button className="btn-secondary" onClick={download}>Download Excel</button>
+                                <button className="btn-secondary" onClick={downloadScript}>Download Xactimate script</button>
                             </div>
 
                             {rows.length === 0 && <div className="msg">No differences found between these two estimates.</div>}
