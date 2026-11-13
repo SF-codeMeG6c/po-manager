@@ -112,6 +112,10 @@
         .bgrid label { font-size: 12px; margin-bottom: 2px; }
         .bgrid select, .bgrid input[type=text], .bgrid input[type=date] { padding: 6px 8px; font-size: 13px; }
         @media (max-width: 600px) { .bgrid, .batch-defaults { grid-template-columns: 1fr; } }
+        .hist-list { margin: 8px 0 0 18px; padding: 0; font-size: 13px; }
+        .hist-list li { margin-bottom: 7px; }
+        .hist-when { color: #555; font-variant-numeric: tabular-nums; }
+        .hist-who { color: #777; font-size: 12px; }
         .notes-box { border: 1px solid #ddd; border-radius: 6px; background: #fcfcfc; padding: 16px; margin-bottom: 20px; }
         .note { border-top: 1px solid #eee; padding: 10px 0; font-size: 13px; color: #333; }
         .note:first-child { border-top: none; padding-top: 0; }
@@ -1124,7 +1128,7 @@
         // Step 4b / E1 (Nov 11): Needs coding page (Owner/Admin). Bills saved with no job or PO yet: batch-upload holds and, from
         // email intake, every emailed bill (with the job and PO already filled in when the email or file gave them). Pick or check the
         // job, PO, name, invoice # and amount; Save coding sends it to Production Admin like any other invoice.
-        function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide }) {
+        function NeedsCoding({ allInvoices, jobs, approvers, vendorList, user, profile, onHide, onHistory }) {
             const BLANK = { kind: '', vendorPick: '', vendorOther: '', invoiceNumber: '', amount: '', previousPayment: '', dateReceived: '',
                 invoiceDate: '', dueDate: '', jobId: '', formId: '', approverUid: '', poWanted: '', textHint: '', notDup: false };
             const [codeId, setCodeId] = useState(null);
@@ -1383,6 +1387,7 @@
                                             <td><span className="row-btns">
                                                 {i.file && i.file.url && <a className="btn-link" href={i.file.url} target="_blank" rel="noopener">View</a>}
                                                 <button className="btn-link" onClick={() => codeId === i.id ? closeCode() : openCode(i)} disabled={saving}>{codeId === i.id ? 'Close' : 'Code'}</button>
+                                                {onHistory && <button className="btn-link" onClick={() => onHistory(i)}>History</button>}
                                                 <button className="btn-link" onClick={() => onHide(i)} disabled={saving}>Hide</button>
                                             </span></td>
                                         </tr>
@@ -1469,8 +1474,119 @@
             );
         }
 
+        // Nov 13: History of a bill (every saved step, in date order, in plain words) and its PO with every bill on it.
+        // Owner/Admin and the bill's approver (rule: history read by isAdmin() or the invoice's approver).
+        const toDateAny = (v) => !v ? null : v.toDate ? v.toDate() : v instanceof Date ? v : new Date(v);
+        const whenText = (v) => { const d = toDateAny(v); return d ? `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)} ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : ''; };
+        const HIST_LABELS = { amount: 'amount', po: 'PO', kind: 'kind', previousPayment: 'previous payment', approver: 'approver', vendor: 'supplier / sub',
+            invoiceNumber: 'invoice #', dateReceived: 'date received', file: 'file', vendorName: 'supplier' };
+        const histValue = (k, v) => v === null || v === undefined || v === '' ? 'blank'
+            : k === 'amount' || k === 'previousPayment' ? (typeof v === 'number' ? money(v) : String(v))
+            : k === 'po' ? (v.poNumber || '-') : k === 'approver' ? (v.name || '-') : k === 'file' ? (v.name || '-')
+            : k === 'dateReceived' ? shortDate(v) : k === 'kind' ? (v === 'sub' ? 'Sub invoice' : 'Supplier bill') : String(v);
+        const histText = (h) => {
+            const note = h.note ? ` · "${h.note}"` : '';
+            switch (h.action) {
+                case 'Added':
+                    if (h.emailIntake) return `Came in by email from ${h.from || 'the vendor'}${h.subject ? ` ("${h.subject}")` : ''}${h.originalFileName ? `, file ${h.originalFileName}` : ''}. Saved to Needs coding.`;
+                    if (h.needsCoding) return `Added by batch upload${h.originalFileName ? ` (${h.originalFileName})` : ''} and saved to Needs coding.`;
+                    if (h.batchUpload) return `Added by batch upload${h.originalFileName ? ` (${h.originalFileName})` : ''}. On All invoices, waiting on Production Admin.`;
+                    return 'Added. On All invoices, waiting on Production Admin.';
+                case 'Coded': return `Coded to ${h.jobCode || '-'}, PO ${h.poNumber || '-'}, approver ${h.approver || '-'}. Moved from Needs coding to All invoices, waiting on Production Admin.`;
+                case 'Production Admin': return `Production Admin: ${h.status || '-'}${note}`;
+                case 'Approver': return `Approver: ${h.status || '-'}${note}`;
+                case 'Edited': {
+                    const parts = (h.fields || []).map(k => `${HIST_LABELS[k] || k} ${histValue(k, h.before && h.before[k])} → ${histValue(k, h.after && h.after[k])}`);
+                    const reset = h.resetApprovals ? (h.resetApprovals.pa ? ' Approvals cleared: back to Waiting on Production Admin.' : ' Approver decision cleared: back with the approver.') : '';
+                    return `Edited: ${parts.join('; ') || 'no field list'}.${reset}${h.qbUnchecked ? ' Bookkeeping to check it again.' : ''}`;
+                }
+                case 'Hidden': return `Hidden${h.reason ? ` · "${h.reason}"` : ''}.`;
+                case 'Restored': return `Restored${h.resetApprovals ? ': back to Waiting on Production Admin' : ''}.`;
+                case 'QuickBooks details': return `Bookkeeping checked it${(h.fields || []).length ? ` and corrected ${(h.fields || []).join(', ')}` : ''}.`;
+                case 'Printed for QuickBooks': return 'Printed on the list for QuickBooks.';
+                case 'Downloaded in zip': return 'File downloaded in the zip for QuickBooks.';
+                case 'In QuickBooks': return `Entered in QuickBooks on ${shortDate(h.date)}${h.qbBillNo ? ` (QB # ${h.qbBillNo})` : ''}.`;
+                case 'Undo In QuickBooks': return `In QuickBooks undone${h.reason ? ` · "${h.reason}"` : ''}.`;
+                default: return h.action || 'Change';
+            }
+        };
+        function HistoryBox({ inv, list, isAdmin, onClose }) {
+            const [hist, setHist] = useState(null);
+            const [err, setErr] = useState('');
+            const [po, setPo] = useState(undefined);
+            useEffect(() => {
+                setHist(null); setErr('');
+                return db.collection('apInvoices').doc(inv.id).collection('history').onSnapshot(snap => {
+                    const a = [];
+                    snap.forEach(d => a.push({ id: d.id, ...d.data() }));
+                    a.sort((x, y) => ((toDateAny(x.at) || 0) - (toDateAny(y.at) || 0)));
+                    setHist(a);
+                }, error => { setHist([]); setErr('Could not load the history: ' + error.message); });
+            }, [inv.id]);
+            const formId = inv.po && inv.po.formId;
+            useEffect(() => {
+                setPo(undefined);
+                if (!inv.jobId || !formId) { setPo(null); return; }
+                let live = true;
+                db.collection('jobs').doc(inv.jobId).collection('forms').doc(formId).get()
+                    .then(d => { if (live) setPo(d.exists ? { ...d.data(), amount: amountOf(d.data().contractAmount) } : null); })
+                    .catch(() => { if (live) setPo(null); });
+                return () => { live = false; };
+            }, [inv.id, inv.jobId, formId]);
+            const onPo = formId ? (list || []).filter(i => i.po && i.po.formId === formId)
+                .sort((a, b) => (a.dateReceived || '').localeCompare(b.dateReceived || '')) : [];
+            const passed = onPo.filter(i => i.deleted !== true && isPassed(i)).reduce((t, i) => t + (i.amount || 0), 0);
+            const notYet = onPo.filter(i => i.deleted !== true && !isPassed(i)).reduce((t, i) => t + (i.amount || 0), 0);
+            const st = statusOf(inv);
+            return (
+                <div className="notes-box hist-box">
+                    <div className="section-head" style={{ marginBottom: '6px' }}>
+                        <div className="section-title">History: {inv.invoiceNumber ? `invoice ${inv.invoiceNumber}` : (inv.kind === 'sub' ? 'sub invoice' : 'bill')} from {inv.vendor || (inv.hold && inv.hold.email && inv.hold.email.from) || '-'}</div>
+                        <button className="btn-secondary btn-auto btn-sm" onClick={onClose}>Close</button>
+                    </div>
+                    <div className="review-facts">
+                        {inv.jobCode || 'No job yet'} · {typeof inv.amount === 'number' ? money(inv.amount) : '-'} · PO {inv.po ? inv.po.poNumber : '-'} · Now: <span className={'pill ' + st.key}>{st.text}</span>
+                    </div>
+                    {err && <div className="error">{err}</div>}
+                    {hist === null && !err && <p className="muted">Loading the history...</p>}
+                    {hist && hist.length === 0 && !err && <p className="muted">No steps saved for this bill.</p>}
+                    {hist && hist.length > 0 && (
+                        <ol className="hist-list">
+                            {hist.map(h => (
+                                <li key={h.id}><span className="hist-when">{whenText(h.at)}</span> <span className="hist-who">{h.by ? h.by.name : ''}</span>
+                                    <div>{histText(h)}</div></li>
+                            ))}
+                        </ol>
+                    )}
+                    {formId && (
+                        <div style={{ marginTop: '14px' }}>
+                            <div className="section-title" style={{ marginBottom: '6px' }}>PO {inv.po.poNumber}{po && po.subName ? ` · ${po.subName}` : ''}{po && po.category ? ` · ${po.category}` : ''}</div>
+                            {po === undefined && <p className="muted">Loading the PO...</p>}
+                            {po === null && <p className="muted">The PO couldn't be read (it may be hidden in PO Manager).</p>}
+                            {po && (
+                                <div className="review-facts">
+                                    PO amount {po.amount === null ? '-' : money(po.amount)} · Passed so far {money(passed)}{notYet ? ` · Not yet passed ${money(notYet)}` : ''}
+                                    {po.amount !== null && <span> · Balance {money(po.amount - passed)}</span>}
+                                </div>
+                            )}
+                            <div className="table-wrap"><table>
+                                <thead><tr><th>Received</th><th>Invoice #</th><th className="num">Amount</th><th>Status</th></tr></thead>
+                                <tbody>{onPo.map(i => { const s = statusOf(i); return (
+                                    <tr key={i.id} className={(i.id === inv.id ? 'editing-row ' : '') + (i.deleted === true ? 'hidden-row' : '')}>
+                                        <td>{shortDate(i.dateReceived)}</td><td>{i.invoiceNumber || '-'}</td>
+                                        <td className="num">{typeof i.amount === 'number' ? money(i.amount) : '-'}</td>
+                                        <td><span className={'pill ' + s.key}>{s.text}</span>{i.id === inv.id ? <small>this bill</small> : null}</td>
+                                    </tr>); })}</tbody>
+                            </table></div>
+                            {!isAdmin && <p className="muted" style={{ marginTop: '4px' }}>Only the bills you approve are listed.</p>}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         // Step 3a: Bookkeeping page (Owner/Admin; Bookkeeping has the Admin role)
-        function Bookkeeping({ allInvoices, user, profile }) {
+        function Bookkeeping({ allInvoices, user, profile, onHistory }) {
             const [editId, setEditId] = useState(null);
             const [draft, setDraft] = useState(null);
             const [msg, setMsg] = useState(null);
@@ -1690,6 +1806,7 @@
                             <td><div className="row-btns">
                                 {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
                                 {!editing && <button className="btn-secondary btn-sm" onClick={() => openEdit(i)} disabled={busy}>{qbChecked(i) ? 'Correct' : 'Check'}</button>}
+                                {onHistory && <button className="btn-secondary btn-sm" onClick={() => onHistory(i)}>History</button>}
                                 {!editing && qbChecked(i) && <button className="btn-link" onClick={() => openMark([i.id])} disabled={busy}>In QuickBooks</button>}
                             </div></td>
                         </tr>
@@ -1818,6 +1935,7 @@
             const [showBatch, setShowBatch] = useState(false); // 1d batch upload box (Owner/Admin, no job picked)
             const [view, setView] = useState('invoices');      // 3a: 'invoices' or 'books' (Owner/Admin, no job picked)
             const [notesId, setNotesId] = useState(null);     // the invoice whose notes are open (2c)
+            const [histId, setHistId] = useState(null);       // the invoice whose History is open (Nov 13)
             const [notes, setNotes] = useState(null);         // its notes, oldest first (null = loading)
             const [notesErr, setNotesErr] = useState('');
             const [noteText, setNoteText] = useState('');
@@ -2172,6 +2290,8 @@
             // Notes (2c): Owner, Admin and the invoice's approver post. Own notes can be edited (old text kept); no deletes.
             const notesAll = isAdmin ? (allInvoices || []) : (myInvoices || []);
             const notesInv = notesId ? notesAll.find(i => i.id === notesId) || null : null;
+            const histInv = histId ? notesAll.find(i => i.id === histId) || null : null;
+            const openHistory = (inv) => { setHistId(inv.id); try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { /* older browsers */ } };
             const myRole = profile && typeof profile === 'object' ? profile.role : '';
             const meBy = () => ({ uid: user.uid, name: profile.name || user.email, role: myRole });
             const openNotes = (inv) => {
@@ -2532,6 +2652,7 @@
                                     <td><div className="row-btns">
                                         {i.file && i.file.url && <button className="btn-secondary btn-sm" onClick={() => window.open(i.file.url)}>View</button>}
                                         {i.id !== notesId && <button className="btn-secondary btn-sm" onClick={() => openNotes(i)}>Notes{i.noteCount ? ` (${i.noteCount})` : ''}</button>}
+                                        {i.id !== histId && <button className="btn-secondary btn-sm" onClick={() => openHistory(i)}>History</button>}
                                         {i.deleted !== true && isPassed(i) && !inQb(i) && i.approver && i.approver.uid === user.uid && i.id !== apprId && (
                                             <button className={(i.appr && i.appr.status ? 'btn-secondary' : 'btn-primary btn-auto') + ' btn-sm'} onClick={() => openApprove(i)}>
                                                 {i.appr && i.appr.status ? 'Change' : 'Approve'}</button>)}
@@ -2590,6 +2711,7 @@
             return (
                 <div>
                     {apprDone && <div className="ok" style={{ marginBottom: '14px' }}>{apprDone}</div>}
+                    {histInv && <HistoryBox inv={histInv} list={notesAll} isAdmin={isAdmin} onClose={() => setHistId(null)} />}
                     {notesInv && (
                         <div className="notes-box">
                             <div className="section-head" style={{ marginBottom: '6px' }}>
@@ -2708,8 +2830,8 @@
                             <button className={view === 'books' ? 'on' : ''} onClick={() => setView('books')}>Bookkeeping: For QuickBooks ({(allInvoices || []).filter(i => isReady(i) && !inQb(i)).length})</button>
                         </div>
                     )}
-                    {isAdmin && !job && view === 'books' && <Bookkeeping allInvoices={allInvoices} user={user} profile={profile} />}
-                    {isAdmin && !job && view === 'coding' && <NeedsCoding allInvoices={allInvoices} jobs={jobs} approvers={approvers} vendorList={vendorList} user={user} profile={profile} onHide={hideInvoice} />}
+                    {isAdmin && !job && view === 'books' && <Bookkeeping allInvoices={allInvoices} user={user} profile={profile} onHistory={openHistory} />}
+                    {isAdmin && !job && view === 'coding' && <NeedsCoding allInvoices={allInvoices} jobs={jobs} approvers={approvers} vendorList={vendorList} onHistory={openHistory} user={user} profile={profile} onHide={hideInvoice} />}
 
                     {isAdmin && !job && view === 'invoices' && (
                         <div className="section">
