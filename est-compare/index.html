@@ -54,6 +54,9 @@
         .neg { color: #b3261e; }
         .scroll { overflow-x: auto; }
         .small { font-size: 12px; color: #777; }
+        tr.leftout td { color: #999; }
+        tr.oursonly td { background: #fafafa; color: #555; }
+        td.todo { font-weight: 600; }
     </style>
 </head>
 <body>
@@ -130,10 +133,28 @@
                 const totalRe = new RegExp('^Total: (.+?) (' + NUM + '(?: ' + NUM + ')*)$');
                 let pending = [];
                 let seenItems = false;
-                const close = (room) => { pending.forEach(it => { it.room = room; out.items.push(it); }); pending = []; };
+                // Ours vs insurance (Nov 14): each room's subrooms and all-capital headings (FRONT ELEVATION...), and the Recap by Category page
+                out.roomParts = {};
+                let parts = { subs: [], heads: [] }, head = '', recapOn = false;
+                const HEAD_ROW = /^[A-Z][A-Z &\/,\-]{3,}$/;
+                const RECAP_CAT = new RegExp('^([A-Z][A-Z0-9 &,/:.\\-]*[A-Z]) (' + NUM + ')(?: |$)');
+                const RECAP_SUB = new RegExp('^(?:Non-)?O&P Items Subtotal (' + NUM + ')');
+                const close = (room) => {
+                    const heads = parts.heads.filter(h => pending.some(it => it.head === h));   // only headings with lines under them
+                    if (parts.subs.length || heads.length) out.roomParts[room] = { subs: parts.subs, heads };
+                    parts = { subs: [], heads: [] }; head = '';
+                    pending.forEach(it => { it.room = room; out.items.push(it); }); pending = [];
+                };
                 for (let i = 0; i < rows.length; i++) {
                     const t = rows[i];
                     let m;
+                    if (/^Recap by Category/.test(t)) { recapOn = true; out.recap = out.recap || { cats: {}, subtotal: 0 }; continue; }
+                    if (recapOn) {
+                        if (/^Total /.test(t)) recapOn = false;
+                        else if ((m = t.match(RECAP_SUB))) out.recap.subtotal = r2(out.recap.subtotal + num(m[1]));
+                        else if ((m = t.match(RECAP_CAT))) out.recap.cats[m[1]] = r2((out.recap.cats[m[1]] || 0) + num(m[2]));
+                        continue;
+                    }
                     if ((m = t.match(/Estimate: (\S+)/)) && !out.estimate) out.estimate = m[1];
                     if ((m = t.match(/Price List: (\S+)/)) && !out.priceList) out.priceList = m[1];
                     if ((m = t.match(new RegExp('^Line Item Totals: .*? (' + NUM + '(?: ' + NUM + ')*)$')))) {
@@ -151,6 +172,8 @@
                         continue;
                     }
                     if ((m = t.match(totalRe))) { if (pending.length) close(coded ? m[1] : m[1] + ' (general)'); continue; }
+                    if ((m = t.match(/Subroom: (.+?) Height:/))) { if (!parts.subs.includes(m[1])) parts.subs.push(m[1]); continue; }
+                    if (HEAD_ROW.test(t) && !FURNITURE.test(t)) { head = t; if (!parts.heads.includes(t)) parts.heads.push(t); continue; }
                     if (!(m = t.match(headRe))) continue;
                     // rows that belong to this item: up to the next item or totals row
                     const block = [];
@@ -222,6 +245,7 @@
                     }
                     it.pre = Math.round(((it.total || 0) - (it.tax || 0) - (it.op || 0)) * 100) / 100;
                     seenItems = true;
+                    it.head = head;
                     pending.push(it);
                 }
                 close('(no room)');
@@ -365,6 +389,122 @@
                     if (score > bestScore) { bestScore = score; best = o; }
                 });
                 return bestScore >= 0.5 ? best : '';
+            };
+
+            // ---- Ours vs insurance, step 1 (Nov 14): room changes and trade recap ----
+            // Here we change OUR estimate to the adjuster's room names and order (the opposite of version vs version).
+            // A pairing is: their room -> { room: our room, kind: '' whole room | 's' subroom | 'h' heading, part: the subroom or heading } or null (we don't have it).
+            const TRADE_MIN = 200;
+            const roomScore = (x, y) => {
+                const weight = (w) => WHERE_WORDS.includes(w) ? 0.5 : 1;
+                const sum = (words) => words.reduce((t, w) => t + weight(w), 0);
+                const a = roomWords(x.replace(/\(\d+\)/g, ' ')), b = roomWords(y.replace(/\(\d+\)/g, ' '));
+                if (!a.length || !b.length) return 0;
+                return (sum(a.filter(w => b.some(v => sameWord(w, v)))) + sum(b.filter(w => a.some(v => sameWord(w, v))))) / (sum(a) + sum(b));
+            };
+            // ourRooms: [{ name, subs, heads }]. prevRoom: our room the adjuster's previous room went to (breaks ties between same-named closets).
+            const suggestOurs = (adjRoom, ourRooms, prevRoom) => {
+                let best = null, bestScore = 0;
+                const tryIt = (cand, score) => {
+                    const tie = Math.abs(score - bestScore) < 1e-9;
+                    if ((!tie && score > bestScore) || (tie && best && best.part && cand.part && cand.room === prevRoom && best.room !== prevRoom)) { best = cand; bestScore = score; }
+                };
+                ourRooms.forEach(o => {
+                    tryIt({ room: o.name, kind: '', part: '' }, roomScore(adjRoom, o.name));
+                    (o.subs || []).forEach(s => tryIt({ room: o.name, kind: 's', part: s }, Math.max(roomScore(adjRoom, s), roomScore(adjRoom, o.name + ' ' + s))));
+                    (o.heads || []).forEach(h => tryIt({ room: o.name, kind: 'h', part: h }, Math.max(roomScore(adjRoom, h), roomScore(adjRoom, o.name + ' ' + h))));
+                });
+                return bestScore >= 0.5 ? best : null;
+            };
+            // The list of changes to make in our estimate, in the adjuster's room order, then the rooms only we have.
+            const roomChanges = (insRooms, ourNames, pairs) => {
+                const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+                const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
+                const area = (adj) => / \(general\)$/.test(adj);   // their lines at an area level (Main Level), not in a room
+                // when several of their rooms take the whole of one of ours, one keeps our room (same name, else the first); the others are split out
+                const keeper = {};
+                insRooms.forEach(adj => {
+                    const p = P(adj);
+                    if (!p || p.part || area(adj)) return;
+                    if (keeper[p.room] === undefined || (norm(adj) === norm(p.room) && norm(keeper[p.room]) !== norm(p.room))) keeper[p.room] = adj;
+                });
+                // fewest moves: the longest run of our rooms already in their order stays put
+                const seq = insRooms.filter(adj => { const p = P(adj); return p && !p.part && keeper[p.room] === adj; }).map(adj => ({ adj, at: ourNames.indexOf(P(adj).room) }));
+                const len = seq.map(() => 1), before = seq.map(() => -1);
+                seq.forEach((s, i) => { for (let j = 0; j < i; j++) if (seq[j].at < s.at && len[j] + 1 > len[i]) { len[i] = len[j] + 1; before[i] = j; } });
+                const stay = new Set();
+                let end = len.indexOf(Math.max.apply(null, len.concat([0])));
+                while (end >= 0) { stay.add(seq[end].adj); end = before[end]; }
+                const out = [];
+                let last = '';
+                insRooms.forEach((adj, i) => {
+                    const p = P(adj);
+                    const where = last ? 'after "' + last + '"' : 'at the top';
+                    if (area(adj)) {
+                        const lvl = adj.replace(/ \(general\)$/, '');
+                        out.push({ no: i + 1, adj, ours: p ? p.room : '', part: p ? p.part : '', kind: p ? p.kind : '', rename: false, move: false, type: 'AREA',
+                            text: 'Their lines at the "' + lvl + '" level, not in a room. ' + (p ? 'Ours like these are in "' + p.room + '"' + (p.part ? ' (' + p.part + ')' : '') + '. Move the matching lines to the "' + lvl + '" level, or leave them.' : 'No room to change.') });
+                        return;
+                    }
+                    const row = { no: i + 1, adj, ours: p ? p.room : '', part: p ? p.part : '', kind: p ? p.kind : '', rename: false, move: false };
+                    if (!p) { row.type = 'ADD'; row.text = 'Theirs only. Add a room "' + adj + '" ' + where + ' only if we have lines for it.'; }
+                    else if (p.part) {
+                        row.type = 'SPLIT';
+                        row.text = (p.kind === 's' ? 'Split the "' + p.part + '" subroom out of "' + p.room + '"' : 'Move the "' + p.part + '" lines out of "' + p.room + '"') + ' into a new room "' + adj + '", ' + where + '.';
+                    }
+                    else if (keeper[p.room] !== adj) { row.type = 'SPLIT'; row.text = 'Split "' + p.room + '": make a new room "' + adj + '" ' + where + ' and move its lines there.'; }
+                    else {
+                        row.type = 'KEEP';
+                        row.rename = norm(adj) !== norm(p.room);
+                        row.move = !stay.has(adj);
+                        const bits = [];
+                        if (row.rename) bits.push('Rename to "' + adj + '"');
+                        if (row.move) bits.push('Move it ' + (last ? where : 'to the top'));
+                        row.text = bits.length ? bits.join('. ') + '.' : 'No change.';
+                    }
+                    out.push(row);
+                    last = adj;
+                });
+                ourNames.forEach(name => {
+                    if (keeper[name] !== undefined) return;
+                    const split = insRooms.some(adj => { const p = P(adj); return p && p.room === name && !area(adj); });
+                    out.push({ no: null, adj: '', ours: name, part: '', kind: '', rename: false, move: false, type: 'OURS',
+                        text: split ? 'What is left after the split stays as "' + name + '" (ours only), after their last room.' : 'Ours only. Keep it, after their last room.' });
+                });
+                return out;
+            };
+            // Trade by trade from each estimate's Recap by Category (before tax and O&P). Trades within TRADE_MIN of each other are left out.
+            const tradeRecap = (ours, ins) => {
+                const a = (ours.recap || {}).cats || {}, b = (ins.recap || {}).cats || {};
+                const names = Object.keys(a).concat(Object.keys(b).filter(k => !(k in a))).sort();
+                const rows = names.map(t => { const o = a[t] || 0, n = b[t] || 0, d = r2(o - n); return { trade: t, ours: o, ins: n, diff: d, left: Math.abs(d) <= TRADE_MIN }; });
+                const check = (est) => {
+                    const rc = est.recap;
+                    if (!rc || !Object.keys(rc.cats).length) return { found: false };
+                    const sum = r2(Object.keys(rc.cats).reduce((t, k) => t + rc.cats[k], 0));
+                    return { found: true, sum, subtotal: rc.subtotal, ok: Math.abs(sum - rc.subtotal) < 0.05 };
+                };
+                return { rows, ours: check(ours), ins: check(ins), limit: TRADE_MIN };
+            };
+            const oursWorkbook = (XLSX, changes, recap, meta) => {
+                const wb = XLSX.utils.book_new();
+                const a1 = [['Room changes to make in our estimate, in the adjuster’s room order'], ['Ours', meta.ourName, meta.ourEstimate], ['Insurance', meta.insName, meta.insEstimate], ['Made ' + meta.made], [],
+                    ['Their #', 'Their room', 'Our room now', 'Part of our room', 'Change in our estimate']];
+                changes.forEach(c => a1.push([c.no, c.adj, c.ours, c.part, c.text]));
+                const ws1 = XLSX.utils.aoa_to_sheet(a1);
+                ws1['!cols'] = [8, 30, 36, 28, 90].map(w => ({ wch: w }));
+                XLSX.utils.book_append_sheet(wb, ws1, 'Room changes');
+                const a2 = [['Trade', 'Ours', 'Insurance', 'Difference', 'Note']];
+                recap.rows.forEach((r, i) => a2.push([r.trade, r.ours, r.ins, { t: 'n', v: r.diff, f: 'B' + (i + 2) + '-C' + (i + 2) }, r.left ? 'Left out ($' + recap.limit + ' rule)' : '']));
+                const last = recap.rows.length + 1;
+                if (recap.rows.length) a2.push([], ['Total', { t: 'n', v: r2(recap.rows.reduce((t, r) => t + r.ours, 0)), f: 'SUM(B2:B' + last + ')' },
+                    { t: 'n', v: r2(recap.rows.reduce((t, r) => t + r.ins, 0)), f: 'SUM(C2:C' + last + ')' }, { t: 'n', v: r2(recap.rows.reduce((t, r) => t + r.diff, 0)), f: 'SUM(D2:D' + last + ')' }]);
+                a2.push([], ['From each estimate’s Recap by Category, before tax and O&P.']);
+                const ws2 = XLSX.utils.aoa_to_sheet(a2);
+                ws2['!cols'] = [40, 14, 14, 14, 24].map(w => ({ wch: w }));
+                Object.keys(ws2).forEach(k => { if (k[0] !== '!' && 'BCD'.includes(k.replace(/\d+/g, '')) && ws2[k].t === 'n') ws2[k].z = '#,##0.00'; });
+                XLSX.utils.book_append_sheet(wb, ws2, 'Trade recap');
+                return wb;
             };
 
             // Excel report for a version comparison. XLSX = the SheetJS library.
@@ -761,7 +901,7 @@
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript };
+            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1105,11 +1245,252 @@
             );
         }
 
+        // Ours vs insurance, step 1 (Nov 14): room changes and trade recap. The line comparison is the next step.
+        // We change our estimate to the adjuster's room names and order, so each of their rooms is paired to one of ours (or a part of one).
+        // Saved per job with the Save button in estCompare/{jobId}_ours (its own record; the version vs version pairings in estCompare/{jobId} are not touched).
+        const PART_SEP = '\u0001';
+        const partValue = (p) => p && p.room ? [p.room, p.kind || '', p.part || ''].join(PART_SEP) : '';
+        const partFromValue = (v) => { if (!v) return null; const a = v.split(PART_SEP); return { room: a[0], kind: a[1] || '', part: a[2] || '' }; };
+
+        function OursVsInsurance({ profile }) {
+            const [ours, setOurs] = useState({ est: null, error: '', busy: false });
+            const [ins, setIns] = useState({ est: null, error: '', busy: false });
+            const [pairs, setPairs] = useState({});         // their room -> partValue ('' = we don't have it)
+            const [jobs, setJobs] = useState([]);
+            const [jobId, setJobId] = useState('');
+            const [saved, setSaved] = useState(null);       // null = no job or loading, false = nothing saved yet
+            const [newRooms, setNewRooms] = useState([]);   // their rooms with no saved pairing (the tool's guess is shown)
+            const [loadMsg, setLoadMsg] = useState('');
+            const [saveMsg, setSaveMsg] = useState('');
+            const [saving, setSaving] = useState(false);
+
+            useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
+                const list = [];
+                snapshot.forEach(doc => { const d = doc.data(); if (d.archived !== true) list.push({ id: doc.id, ...d }); });
+                list.sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+                setJobs(list);
+            }, e => setLoadMsg('Error loading jobs: ' + e.message)), []);
+
+            useEffect(() => {
+                setSaved(null);
+                setSaveMsg('');
+                setLoadMsg('');
+                if (!jobId) return;
+                let live = true;
+                db.collection('estCompare').doc(jobId + '_ours').get()
+                    .then(snap => { if (live) setSaved(snap.exists ? snap.data() : false); })
+                    .catch(e => { if (live) { setSaved(false); setLoadMsg('Could not load saved room pairings: ' + e.message); } });
+                return () => { live = false; };
+            }, [jobId]);
+
+            const pick = (set) => async (file) => {
+                set({ est: null, error: '', busy: true });
+                try {
+                    const est = await readEstimateFile(file);
+                    if (!est.items.length) set({ est: null, error: 'No Xactimate line items were found in this PDF.', busy: false });
+                    else set({ est, error: '', busy: false });
+                } catch (e) {
+                    set({ est: null, error: 'Could not read this PDF: ' + e.message, busy: false });
+                }
+            };
+
+            const ourRooms = useMemo(() => ours.est ? ours.est.roomCheck.map(c => {
+                const p = ours.est.roomParts[c.room] || {};
+                return { name: c.room, total: c.read, subs: p.subs || [], heads: p.heads || [] };
+            }) : [], [ours.est]);
+            const insRooms = useMemo(() => ins.est ? ins.est.roomCheck.map(c => ({ name: c.room, total: c.read })) : [], [ins.est]);
+            const ready = ourRooms.length > 0 && insRooms.length > 0;
+
+            // start each of their rooms on its saved pairing (if that room or part is still in our estimate), else the tool's best guess
+            useEffect(() => {
+                const p = {}, fresh = [];
+                const savedMap = {};
+                ((saved && saved.pairs) || []).forEach(x => { savedMap[x.adj] = x; });
+                let prev = '';
+                if (ready) insRooms.forEach(r => {
+                    const s = savedMap[r.name];
+                    const o = s && s.ours ? ourRooms.find(x => x.name === s.ours) : null;
+                    const good = s && (!s.ours || (o && (!s.part || (s.kind === 's' ? o.subs : o.heads).includes(s.part))));
+                    const g = good ? (s.ours ? { room: s.ours, kind: s.kind || '', part: s.part || '' } : null) : EstCompare.suggestOurs(r.name, ourRooms, prev);
+                    if (!good) fresh.push(r.name);
+                    p[r.name] = partValue(g);
+                    if (g) prev = g.room;
+                });
+                setPairs(p);
+                setNewRooms(fresh);
+            }, [ourRooms, insRooms, saved]);
+
+            const changes = useMemo(() => {
+                if (!ready) return [];
+                const m = {};
+                insRooms.forEach(r => { m[r.name] = partFromValue(pairs[r.name]); });
+                return EstCompare.roomChanges(insRooms.map(r => r.name), ourRooms.map(r => r.name), m);
+            }, [pairs, ourRooms, insRooms]);
+            const recap = useMemo(() => ready ? EstCompare.tradeRecap(ours.est, ins.est) : null, [ours.est, ins.est]);
+            const count = (test) => changes.filter(test).length;
+
+            const savePairs = async () => {
+                setSaving(true);
+                setSaveMsg('');
+                try {
+                    const ref = db.collection('estCompare').doc(jobId + '_ours');
+                    const job = jobs.find(j => j.id === jobId) || {};
+                    const now = firebase.firestore.FieldValue.serverTimestamp();
+                    const data = {
+                        kind: 'oursVsInsurance', jobId, jobCode: job.code || '',
+                        ourFile: ours.est.fileName, ourTotal: ours.est.readTotal, ourRooms: ourRooms.map(r => ({ name: r.name, subs: r.subs, heads: r.heads })),
+                        insFile: ins.est.fileName, insTotal: ins.est.readTotal, insRooms: insRooms.map(r => r.name),
+                        pairs: insRooms.map(r => { const p = partFromValue(pairs[r.name]); return { adj: r.name, ours: p ? p.room : '', kind: p ? p.kind : '', part: p ? p.part : '' }; }),
+                        savedBy: { uid: profile.uid, name: profile.name || profile.email || '' },
+                        savedAt: now
+                    };
+                    const batch = db.batch();
+                    if (saved) batch.set(ref.collection('versions').doc(), { ...saved, copiedAt: now });
+                    batch.set(ref, data);
+                    await batch.commit();
+                    setSaved({ ...data, savedAt: firebase.firestore.Timestamp.now() });
+                    setSaveMsg('Saved.');
+                } catch (e) {
+                    setSaveMsg('Could not save: ' + e.message);
+                }
+                setSaving(false);
+            };
+            const savedWhen = saved && saved.savedAt && saved.savedAt.toDate ? saved.savedAt.toDate().toLocaleString() : '';
+
+            const download = () => {
+                const wb = EstCompare.oursWorkbook(window.XLSX, changes, recap, {
+                    ourName: ours.est.fileName, ourEstimate: ours.est.estimate, insName: ins.est.fileName, insEstimate: ins.est.estimate, made: new Date().toLocaleString()
+                });
+                const job = jobs.find(j => j.id === jobId);
+                const base = ((job && job.code) || ours.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
+                window.XLSX.writeFile(wb, 'Ours_vs_Insurance_' + base + '.xlsx');
+            };
+
+            const warnings = [];
+            if (ready) {
+                if (ours.est.readTotal === ins.est.readTotal && ours.est.items.length === ins.est.items.length) warnings.push('Both files have the same line count and total. Check that one is ours and one is the insurance estimate.');
+                if (ours.est.format !== 'coded') warnings.push('Our estimate PDF does not print the CAT and SEL columns. Print ours with the codes showing; the line comparison (next step) will need them.');
+            }
+            const recapLine = (who, c) => !c.found ? <div className="read bad">{who}: no Recap by Category page was found in this PDF. Print the estimate with its recap pages.</div>
+                : <div className={'read ' + (c.ok ? 'ok' : 'bad')}>{who}: the trades add up to {money(c.sum)}{c.ok ? ' — matches the printed subtotal' : ' but the recap prints ' + money(c.subtotal) + '. Check this recap before trusting the table.'}</div>;
+
+            return (
+                <div>
+                    <div className="section">
+                        <div className="section-title">Ours vs insurance — step 1: room changes and trade recap</div>
+                        <div style={{ marginBottom: '16px' }}>
+                            <label>Job (optional — pick one to use and save its room pairings)</label>
+                            <select value={jobId} onChange={e => setJobId(e.target.value)}>
+                                <option value="">-- No job --</option>
+                                {jobs.map(j => <option key={j.id} value={j.id}>{j.code} - {j.address}</option>)}
+                            </select>
+                            {jobId && saved === null && <div className="muted">Loading…</div>}
+                            {loadMsg && <div className="read bad">{loadMsg}</div>}
+                            {jobId && saved === false && !loadMsg && <div className="muted">No Ours vs insurance room pairings saved for this job yet.</div>}
+                            {jobId && saved && (
+                                <div className="read ok">
+                                    Saved for this job: {(saved.pairs || []).length} room pairings ({saved.ourFile || 'our estimate'} and {saved.insFile || 'insurance estimate'})
+                                    {(saved.savedBy || savedWhen) && <span> — saved{saved.savedBy && saved.savedBy.name ? ' by ' + saved.savedBy.name : ''}{savedWhen ? ' ' + savedWhen : ''}</span>}.
+                                    {' '}Upload both estimates and the saved pairings are filled in.
+                                </div>
+                            )}
+                        </div>
+                        <div className="files">
+                            <EstimateFile label="Our estimate (PDF)" {...ours} onPick={pick(setOurs)} />
+                            <EstimateFile label="Insurance estimate (PDF)" {...ins} onPick={pick(setIns)} />
+                        </div>
+                        {warnings.map((w, i) => <div key={i} className="read bad" style={{ marginBottom: '10px' }}>{w}</div>)}
+                        <div className="muted">The PDFs are read in this browser and never uploaded. Only the room names and pairings are saved, when you click Save.</div>
+                    </div>
+
+                    {ready && (
+                        <div>
+                            <div className="section">
+                                <div className="section-title">Room changes to make in our estimate</div>
+                                <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>
+                                    In the adjuster's room order. For each of their rooms, pick the room of ours (or the part of it) that covers the same space. Several of theirs can use the same one of ours.
+                                </div>
+                                <div className="scroll">
+                                    <table>
+                                        <thead><tr><th className="n">#</th><th>Their room</th><th className="n">Their total</th><th>Our room now</th><th className="n">Our total</th><th>Change in our estimate</th></tr></thead>
+                                        <tbody>
+                                            {changes.map((c, i) => {
+                                                if (c.type === 'OURS') {
+                                                    const o = ourRooms.find(r => r.name === c.ours);
+                                                    return <tr key={'o' + i} className="oursonly"><td></td><td>(none)</td><td></td><td>{c.ours}</td><td className="n">{o ? money(o.total) : ''}</td><td>{c.text}</td></tr>;
+                                                }
+                                                const t = insRooms[c.no - 1];
+                                                const o = c.ours && !c.part ? ourRooms.find(r => r.name === c.ours) : null;
+                                                return (
+                                                    <tr key={c.adj}>
+                                                        <td className="n">{c.no}</td>
+                                                        <td>{c.adj}{saved && newRooms.includes(c.adj) && <span className="small" style={{ color: '#b3261e', fontWeight: 600 }}> new</span>}</td>
+                                                        <td className="n">{money(t.total)}</td>
+                                                        <td>
+                                                            <select value={pairs[c.adj] || ''} onChange={e => { const v = e.target.value; setSaveMsg(''); setPairs(p => ({ ...p, [c.adj]: v })); }}>
+                                                                <option value="">(we don't have this room)</option>
+                                                                {ourRooms.map(r => (
+                                                                    <React.Fragment key={r.name}>
+                                                                        <option value={partValue({ room: r.name })}>{r.name}</option>
+                                                                        {r.subs.map(x => <option key={'s' + x} value={partValue({ room: r.name, kind: 's', part: x })}>{'   ' + r.name + ' › ' + x + ' (subroom)'}</option>)}
+                                                                        {r.heads.map(x => <option key={'h' + x} value={partValue({ room: r.name, kind: 'h', part: x })}>{'   ' + r.name + ' › ' + x + ' lines'}</option>)}
+                                                                    </React.Fragment>
+                                                                ))}
+                                                            </select>
+                                                        </td>
+                                                        <td className="n">{o ? money(o.total) : ''}</td>
+                                                        <td className={c.text === 'No change.' ? '' : 'todo'}>{c.text}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div className="muted">
+                                    {count(c => c.rename)} to rename, {count(c => c.move)} to move, {count(c => c.type === 'SPLIT')} to split out, {count(c => c.type === 'ADD')} theirs only, {count(c => c.type === 'OURS')} ours only.
+                                    {' '}{saved ? 'Saved pairings are filled in. Rooms marked "new" have the tool\'s best guess; check those.' : 'The tool\'s best guess is filled in; fix any that are wrong.'}
+                                    {' '}Room totals include tax and O&P. The PDF does not say which lines belong to a subroom, so splits are done by hand in Xactimate.
+                                </div>
+                                <div className="bar">
+                                    <button className="btn-primary" disabled={!jobId || saved === null || saving} onClick={savePairs}>{saving ? 'Saving…' : 'Save room pairings'}</button>
+                                    <button className="btn-secondary" onClick={download}>Download Excel</button>
+                                    {!jobId && <span className="small">Pick a job above to save these.</span>}
+                                    {saveMsg && <span className="small" style={{ color: saveMsg === 'Saved.' ? '#1b6e2b' : '#b3261e', fontWeight: 600 }}>{saveMsg}</span>}
+                                </div>
+                            </div>
+
+                            <div className="section">
+                                <div className="section-title">Trade recap</div>
+                                {recapLine('Ours', recap.ours)}
+                                {recapLine('Insurance', recap.ins)}
+                                {recap.rows.length > 0 && (
+                                    <table className="sumtable" style={{ maxWidth: '760px', marginTop: '12px' }}>
+                                        <thead><tr><th>Trade</th><th className="n">Ours</th><th className="n">Insurance</th><th className="n">Difference</th><th></th></tr></thead>
+                                        <tbody>
+                                            {recap.rows.map(r => (
+                                                <tr key={r.trade} className={r.left ? 'leftout' : ''}>
+                                                    <td>{r.trade}</td><td className="n">{money(r.ours)}</td><td className="n">{money(r.ins)}</td>
+                                                    <td className={'n' + (r.diff < 0 && !r.left ? ' neg' : '')}>{money(r.diff)}</td><td>{r.left ? 'Left out ($' + recap.limit + ' rule)' : ''}</td>
+                                                </tr>
+                                            ))}
+                                            <tr className="sum"><td>Total</td><td className="n">{money(recap.rows.reduce((a, r) => a + r.ours, 0))}</td><td className="n">{money(recap.rows.reduce((a, r) => a + r.ins, 0))}</td>
+                                                <td className="n">{money(recap.rows.reduce((a, r) => a + r.diff, 0))}</td><td></td></tr>
+                                        </tbody>
+                                    </table>
+                                )}
+                                <div className="muted">From each estimate's Recap by Category, before tax and O&P. Trades within ${recap.limit} of each other will be left out of the line comparison.</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         function App() {
             const [user, setUser] = useState(undefined); // undefined = still checking
             const [profile, setProfile] = useState(null); // null = loading, false = no access
             const [authError, setAuthError] = useState('');
-            const [mode, setMode] = useState(null); // null = pick, 'versions'
+            const [mode, setMode] = useState(null); // null = pick, 'versions', 'ours'
 
             // Sign-in and role check (this page never creates user records)
             useEffect(() => {
@@ -1159,16 +1540,22 @@
                     <VersionCompare profile={profile} />
                 </div>
             );
+            if (mode === 'ours') return (
+                <div>
+                    <button className="back" onClick={() => setMode(null)}>← Comparison types</button>
+                    <OursVsInsurance profile={profile} />
+                </div>
+            );
             return (
                 <div className="choices">
                     <button className="choice" onClick={() => setMode('versions')}>
                         <b>Insurance version vs version</b>
                         <span>See what the adjuster changed between two versions of their estimate, room by room, with the line numbers from both.</span>
                     </button>
-                    <div className="choice soon" aria-disabled="true">
+                    <button className="choice" onClick={() => setMode('ours')}>
                         <b>Ours vs insurance</b>
-                        <span>Compare our estimate to the insurance estimate and list what to enter in the differences estimate. Coming next.</span>
-                    </div>
+                        <span>Step 1: see which of our rooms to rename, move or split to match the adjuster's rooms, and compare the two estimates trade by trade. The line comparison comes next.</span>
+                    </button>
                 </div>
             );
         }
