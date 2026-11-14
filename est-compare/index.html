@@ -57,6 +57,8 @@
         tr.leftout td { color: #999; }
         tr.oursonly td { background: #fafafa; color: #555; }
         td.todo { font-weight: 600; }
+        tr.LOURS td.kind, tr.LDIFF td.kind { font-weight: 600; }
+        tr.LTHEIRS td { color: #777; }
     </style>
 </head>
 <body>
@@ -486,6 +488,121 @@
                 };
                 return { rows, ours: check(ours), ins: check(ins), limit: TRADE_MIN };
             };
+            // ---- Ours vs insurance, step 2 (Nov 14): line comparison through the room pairing ----
+            // Rules (Spencer): lines in common are hidden (qty, unit price and line $ within 10%); ours only = our line goes in; differs = our line, then theirs as a credit
+            // (R&R credited as replace only); theirs only = no credit, listed for information; trades within TRADE_MIN on the recap are left out.
+            // The insurance PDF usually prints no CAT / SEL, so lines are matched on description + unit, and their codes are guessed from our lines with the same description.
+            const DIFF_PCT = 0.10;
+            const ACT_OF = { replace: '+', rr: '&', remove: '-', reset: 'R', material: 'M', install: 'I' };
+            const lineKey = (it) => {
+                let d = cleanDesc(it.desc).replace(/\*+$/, '').trim(), action = 'replace', m;
+                if ((m = d.match(/^R&R (.+)$/))) { action = 'rr'; d = m[1]; }
+                else if ((m = d.match(/^Remove (.+)$/))) { action = 'remove'; d = m[1]; }
+                else if ((m = d.match(/^Detach & Reset (.+)$/i))) { action = 'reset'; d = m[1]; }
+                else if ((m = d.match(/^Material Only (.+)$/))) { action = 'material'; d = m[1]; }
+                else if ((m = d.match(/^Install (.+)$/))) { action = 'install'; d = m[1]; }
+                else if ((m = d.match(/^(.+?) - Detach & reset$/i))) { action = 'reset'; d = m[1]; }
+                return { base: d.toLowerCase().replace(/\s+/g, ' ') + '|' + it.unit, action };
+            };
+            // our CAT code -> trade name on the Recap by Category, found by matching each code's dollars to a recap amount
+            const catTrades = (est) => {
+                const sums = {}, map = {};
+                est.items.forEach(i => { if (i.cat) sums[i.cat] = (sums[i.cat] || 0) + (i.pre || 0); });
+                const cats = (est.recap || {}).cats || {};
+                Object.keys(sums).forEach(c => {
+                    const hits = Object.keys(cats).filter(n => Math.abs(cats[n] - sums[c]) < 0.5);
+                    if (hits.length === 1) map[c] = hits[0];
+                });
+                return map;
+            };
+            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap) => {
+                const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
+                const area = (adj) => / \(general\)$/.test(adj);
+                const left = {};
+                recap.rows.forEach(r => { if (r.left) left[r.trade] = true; });
+                const ourTrade = catTrades(ours), insTrade = catTrades(ins);
+                const codeOf = {};   // description + unit -> our code
+                ours.items.forEach(it => { const k = lineKey(it).base; if (it.cat && !codeOf[k]) codeOf[k] = { cat: it.cat, sel: it.sel }; });
+                const live = (it) => !it.status && it.qty > 0;
+                const leftOurs = ours.items.filter(it => live(it) && left[ourTrade[it.cat]]);
+                const tradeOfIns = (it) => it.cat ? insTrade[it.cat] : (codeOf[lineKey(it).base] ? ourTrade[codeOf[lineKey(it).base].cat] : undefined);
+                const leftIns = ins.items.filter(it => live(it) && left[tradeOfIns(it)]);
+                const O = (room) => ours.items.filter(it => it.room === room && live(it) && !left[ourTrade[it.cat]]);
+                const T = (room) => ins.items.filter(it => it.room === room && live(it) && !left[tradeOfIns(it)]);
+                // groups: our room (or the lines under one of its headings) against the adjuster room(s) paired to it
+                const claim = {};
+                insRooms.forEach(adj => { const p = P(adj); if (p && p.kind === 'h') (claim[p.room] = claim[p.room] || {})[p.part] = true; });
+                const rest = (room) => O(room).filter(it => !(claim[room] || {})[it.head]);
+                const groups = [], byRoom = {};
+                insRooms.forEach((adj, i) => {
+                    const p = P(adj);
+                    if (!p) groups.push({ name: adj, at: i, ours: [], theirs: T(adj) });
+                    else if (p.kind === 'h') groups.push({ name: adj, at: i, ours: O(p.room).filter(it => it.head === p.part), theirs: T(adj) });
+                    else {
+                        let g = byRoom[p.room];
+                        if (!g) { g = byRoom[p.room] = { name: p.room, at: i, ours: rest(p.room), theirs: [], whole: false }; groups.push(g); }
+                        g.theirs = g.theirs.concat(T(adj));
+                        if (!p.part && !area(adj) && !g.whole) { g.name = adj; g.at = i; g.whole = true; }
+                    }
+                });
+                ourNames.forEach((name, k) => { if (!byRoom[name]) { const o = rest(name); if (o.length) groups.push({ name, at: 1e6 + k, ours: o, theirs: [] }); } });
+                groups.sort((a, b) => a.at - b.at);
+                const rows = [];
+                let common = 0, theirsOnly = 0;
+                const sumQ = (l) => l.reduce((t, x) => t + x.qty, 0), sumP = (l) => l.reduce((t, x) => t + (x.pre || 0), 0);
+                const over = (a, b) => Math.abs(a - b) > DIFF_PCT * Math.abs(b) + 0.005;
+                const f2 = (n) => n.toFixed(2);
+                groups.forEach(g => {
+                    const slots = {}, order = [];
+                    const put = (it, side) => {
+                        const k = lineKey(it);
+                        (k.action === 'rr' ? ['replace', 'remove'] : [k.action]).forEach((slot, n) => {
+                            const key = k.base + '|' + slot;
+                            if (!slots[key]) { slots[key] = { o: [], t: [], o2: [], t2: [] }; order.push(key); }
+                            slots[key][side + (n ? '2' : '')].push({ it, action: k.action, base: k.base });
+                        });
+                    };
+                    g.ours.forEach(it => put(it, 'o'));
+                    g.theirs.forEach(it => put(it, 't'));
+                    const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
+                        price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no });
+                    const theirs = (x, kind, what, sort, ourPrice) => {
+                        const code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : codeOf[x.base];
+                        const rr = x.action === 'rr' && kind === 'DIFF';
+                        const price = rr && ourPrice ? ourPrice : x.it.price;
+                        rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : ACT_OF[x.action],
+                            desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
+                            amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
+                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + (kind !== 'DIFF' || x.it.cat ? '' : (code ? '. Code guessed from our line' : '. Code not found; look it up')), note: x.it.note || '', sort });
+                    };
+                    order.forEach(key => {
+                        const s = slots[key];
+                        if (s.o.length && s.t.length) {
+                            const same = s.o.concat(s.t).every(x => x.action === s.o[0].action);
+                            const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t.map(x => x.it)), po = sumP(s.o.map(x => x.it)), pt = sumP(s.t.map(x => x.it));
+                            const bits = [];
+                            if (over(qo, qt)) bits.push('Qty ' + f2(qo) + ' ours, ' + f2(qt) + ' theirs');
+                            if (same && qo && qt && over(po / qo, pt / qt)) bits.push('Unit price ' + f2(po / qo) + ' ours, ' + f2(pt / qt) + ' theirs');
+                            if (same && !bits.length && over(po, pt)) bits.push('Line $ ' + f2(po) + ' ours, ' + f2(pt) + ' theirs');
+                            if (!bits.length) { common += po - pt; return; }
+                            const what = bits.join('; ');
+                            const ourPrice = s.o[0].it.cat ? (s.o[0].action === 'rr' ? s.o[0].it.replace : s.o[0].it.price) : 0;
+                            s.o.forEach(x => add(x, 'DIFF', what));
+                            s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice));
+                        } else if (s.o.length && s.t2.length) {
+                            // our separate Remove line against the remove half of their R&R line: no credit
+                            const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t2.map(x => x.it));
+                            if (over(qo, qt)) s.o.forEach(x => add(x, 'DIFF', 'Qty ' + f2(qo) + ' ours, ' + f2(qt) + ' theirs (their remove is inside their R&R line, no credit)'));
+                        } else if (s.o.length) s.o.forEach(x => add(x, 'OURS', 'Not in their estimate'));
+                        else if (s.t.length && !s.o2.length) s.t.forEach(x => { theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
+                    });
+                });
+                const order = {};
+                groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
+                rows.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
+                const oursTotal = r2(sumP(ours.items)), insTotal = r2(sumP(ins.items));
+                return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly) };
+            };
             const oursWorkbook = (XLSX, changes, recap, meta) => {
                 const wb = XLSX.utils.book_new();
                 const a1 = [['Room changes to make in our estimate, in the adjuster’s room order'], ['Ours', meta.ourName, meta.ourEstimate], ['Insurance', meta.insName, meta.insEstimate], ['Made ' + meta.made], [],
@@ -504,6 +621,35 @@
                 ws2['!cols'] = [40, 14, 14, 14, 24].map(w => ({ wch: w }));
                 Object.keys(ws2).forEach(k => { if (k[0] !== '!' && 'BCD'.includes(k.replace(/\d+/g, '')) && ws2[k].t === 'n') ws2[k].z = '#,##0.00'; });
                 XLSX.utils.book_append_sheet(wb, ws2, 'Trade recap');
+                if (meta.lines) {
+                    const L = meta.lines, e = L.rows.filter(r => r.entry !== 'Info'), info = L.rows.filter(r => r.entry === 'Info');
+                    const head = ['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Unit price', 'Amount', 'Our line #', 'Their line #', 'Their room', 'Note'];
+                    const body = (list) => list.map(r => [r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.ourNo, r.insNo, r.insRoom, r.what]);
+                    const a3 = [head].concat(body(e)), end = e.length + 1, t = end + 2;
+                    const total = r2(e.reduce((x, r) => x + r.amount, 0)), gap = r2(L.oursTotal - L.insTotal);
+                    const line = (label, cell) => { const row = new Array(14).fill(null); row[5] = label; row[9] = cell; return row; };
+                    a3.push([]);
+                    a3.push(line('Total of the rows above', { t: 'n', v: total, f: 'SUM(J2:J' + end + ')' }));
+                    a3.push(line('Our estimate, line items before tax and O&P', L.oursTotal));
+                    a3.push(line('Insurance estimate, line items before tax and O&P', L.insTotal));
+                    a3.push(line('Difference between the two estimates', { t: 'n', v: gap, f: 'J' + (t + 1) + '-J' + (t + 2) }));
+                    a3.push(line('Not in the rows: trades left out ($' + recap.limit + ' rule)', L.leftOut));
+                    a3.push(line('Not in the rows: lines in common (differences of 10% or less)', L.common));
+                    a3.push(line('Not in the rows: theirs only, no credit', -L.theirsOnly));
+                    a3.push(line('Not in the rows: everything else (replace-only credits, lines you unticked)', { t: 'n', v: r2(gap - total - L.leftOut - L.common + L.theirsOnly), f: 'J' + (t + 3) + '-J' + t + '-J' + (t + 4) + '-J' + (t + 5) + '-J' + (t + 6) }));
+                    a3.push(line('Amounts are before tax and O&P. Credits are negative.', null));
+                    const fmt = (ws) => Object.keys(ws).forEach(k => { if (k[0] !== '!' && 'GIJ'.includes(k.replace(/\d+/g, '')) && ws[k].t === 'n') ws[k].z = '#,##0.00'; });
+                    const widths = [24, 8, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 22, 60].map(w => ({ wch: w }));
+                    const ws3 = XLSX.utils.aoa_to_sheet(a3);
+                    ws3['!cols'] = widths;
+                    if (e.length) ws3['!autofilter'] = { ref: 'A1:N' + end };
+                    fmt(ws3);
+                    XLSX.utils.book_append_sheet(wb, ws3, 'Differences');
+                    const ws4 = XLSX.utils.aoa_to_sheet([head].concat(body(info)));
+                    ws4['!cols'] = widths;
+                    fmt(ws4);
+                    XLSX.utils.book_append_sheet(wb, ws4, 'Theirs only (info)');
+                }
                 return wb;
             };
 
@@ -901,11 +1047,12 @@
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook };
+            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook, lineCompare };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const qty = (n) => n == null ? '' : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const LINE_KIND = { OURS: 'Ours only', DIFF: 'Differs', THEIRS: 'Theirs only (info)' };
         const KIND_LABEL = { ADDED: 'Added', REMOVED: 'Removed', CHANGED: 'Changed', PRICE: 'Unit price only' };
 
         // Open a PDF file and read it into line items. Nothing is uploaded; the file is read in this browser.
@@ -1263,6 +1410,10 @@
             const [loadMsg, setLoadMsg] = useState('');
             const [saveMsg, setSaveMsg] = useState('');
             const [saving, setSaving] = useState(false);
+            // Step 2 (Nov 14): line comparison. lines = result of the last Compare lines click (cleared when a file or a pairing changes); off = rows unticked.
+            const [lines, setLines] = useState(null);
+            const [off, setOff] = useState({});
+            const [showKind, setShowKind] = useState({ OURS: true, DIFF: true, THEIRS: false });
 
             useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
                 const list = [];
@@ -1319,6 +1470,17 @@
                 setPairs(p);
                 setNewRooms(fresh);
             }, [ourRooms, insRooms, saved]);
+            useEffect(() => { setLines(null); setOff({}); }, [pairs]);
+            const compareLines = () => {
+                const m = {};
+                insRooms.forEach(r => { m[r.name] = partFromValue(pairs[r.name]); });
+                setOff({});
+                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap));
+            };
+            const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
+            const kindCount = (k) => lines ? lines.rows.filter(r => r.kind === k).length : 0;
+            const shownLines = lines ? lines.rows.filter(r => showKind[r.kind]) : [];
+            const entryTotal = kept.filter(r => r.entry !== 'Info').reduce((a, r) => a + r.amount, 0);
 
             const changes = useMemo(() => {
                 if (!ready) return [];
@@ -1359,7 +1521,8 @@
 
             const download = () => {
                 const wb = EstCompare.oursWorkbook(window.XLSX, changes, recap, {
-                    ourName: ours.est.fileName, ourEstimate: ours.est.estimate, insName: ins.est.fileName, insEstimate: ins.est.estimate, made: new Date().toLocaleString()
+                    ourName: ours.est.fileName, ourEstimate: ours.est.estimate, insName: ins.est.fileName, insEstimate: ins.est.estimate, made: new Date().toLocaleString(),
+                    lines: lines ? { ...lines, rows: kept } : null
                 });
                 const job = jobs.find(j => j.id === jobId);
                 const base = ((job && job.code) || ours.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
@@ -1377,7 +1540,7 @@
             return (
                 <div>
                     <div className="section">
-                        <div className="section-title">Ours vs insurance — step 1: room changes and trade recap</div>
+                        <div className="section-title">Ours vs insurance — room changes, trade recap and line differences</div>
                         <div style={{ marginBottom: '16px' }}>
                             <label>Job (optional — pick one to use and save its room pairings)</label>
                             <select value={jobId} onChange={e => setJobId(e.target.value)}>
@@ -1478,7 +1641,64 @@
                                         </tbody>
                                     </table>
                                 )}
-                                <div className="muted">From each estimate's Recap by Category, before tax and O&P. Trades within ${recap.limit} of each other will be left out of the line comparison.</div>
+                                <div className="muted">From each estimate's Recap by Category, before tax and O&P. Trades within ${recap.limit} of each other are left out of the line comparison.</div>
+                            </div>
+
+                            <div className="section">
+                                <div className="section-title">Line differences</div>
+                                <div className="bar" style={{ marginTop: 0 }}>
+                                    <button className="btn-primary" onClick={compareLines}>Compare lines</button>
+                                    {lines && ['OURS', 'DIFF', 'THEIRS'].map(k => (
+                                        <label key={k}><input type="checkbox" checked={showKind[k]} onChange={e => setShowKind(s => ({ ...s, [k]: e.target.checked }))} /> {LINE_KIND[k]} ({kindCount(k)})</label>
+                                    ))}
+                                    <span className="grow"></span>
+                                    {lines && <button className="btn-secondary" onClick={download}>Download Excel</button>}
+                                </div>
+                                {!lines && <div className="muted">Uses the room pairings above. Lines in common (within 10%) are hidden. Changing a pairing clears the results.</div>}
+                                {lines && (
+                                    <div>
+                                        <table className="sumtable" style={{ maxWidth: '760px', marginBottom: '14px' }}>
+                                            <tbody>
+                                                <tr><td>Rows to enter (ticked adds and credits)</td><td className="n">{money(entryTotal)}</td></tr>
+                                                <tr><td>Our estimate less the insurance estimate, line items</td><td className="n">{money(lines.oursTotal - lines.insTotal)}</td></tr>
+                                                <tr><td>Not in the rows: trades left out (${recap.limit} rule)</td><td className="n">{money(lines.leftOut)}</td></tr>
+                                                <tr><td>Not in the rows: lines in common (10% or less apart)</td><td className="n">{money(lines.common)}</td></tr>
+                                                <tr><td>Not in the rows: theirs only, no credit</td><td className="n">{money(-lines.theirsOnly)}</td></tr>
+                                                <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.leftOut - lines.common + lines.theirsOnly)}</td></tr>
+                                            </tbody>
+                                        </table>
+                                        {shownLines.length === 0 && <div className="msg">Nothing to show. Tick a type above.</div>}
+                                        {shownLines.length > 0 && (
+                                            <div className="scroll">
+                                                <table>
+                                                    <thead><tr><th></th><th>Entry</th><th>Code</th><th>Description</th><th className="n">Qty</th><th className="n">Unit price</th><th className="n">Amount</th><th className="n">Ours #</th><th className="n">Theirs #</th><th>Why</th></tr></thead>
+                                                    <tbody>
+                                                        {shownLines.map((r, i) => {
+                                                            const first = i === 0 || shownLines[i - 1].room !== r.room;
+                                                            const id = r.id + r.room;
+                                                            const roomSum = first ? kept.filter(x => x.room === r.room && x.entry !== 'Info').reduce((a, x) => a + x.amount, 0) : 0;
+                                                            return (
+                                                                <React.Fragment key={id + i}>
+                                                                    {first && <tr className="room"><td colSpan={6}>{r.room}</td><td className={'n' + (roomSum < 0 ? ' neg' : '')}>{money(roomSum)}</td><td colSpan={3}></td></tr>}
+                                                                    <tr className={(off[id] ? 'leftout ' : '') + 'L' + r.kind}>
+                                                                        <td><input type="checkbox" checked={!off[id]} onChange={e => { const on = e.target.checked; setOff(o => ({ ...o, [id]: !on })); }} /></td>
+                                                                        <td className="kind">{r.entry === 'Info' ? 'Theirs only' : r.entry}</td>
+                                                                        <td style={{ whiteSpace: 'nowrap' }}>{r.cat} {r.sel} {r.act}</td>
+                                                                        <td>{r.desc}{r.note && <div className="small">{r.note}</div>}</td>
+                                                                        <td className="n">{qty(r.qty)} {r.unit}</td><td className="n">{qty(r.price)}</td>
+                                                                        <td className={'n' + (r.amount < 0 ? ' neg' : '')}>{money(r.amount)}</td>
+                                                                        <td className="n">{r.ourNo}</td><td className="n">{r.insNo}</td><td>{r.what}</td>
+                                                                    </tr>
+                                                                </React.Fragment>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        )}
+                                        <div className="muted">Dollars are before tax and O&P. Untick a line to leave it out of the Excel. "Theirs only" lines are for information and are never credited.</div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
@@ -1554,7 +1774,7 @@
                     </button>
                     <button className="choice" onClick={() => setMode('ours')}>
                         <b>Ours vs insurance</b>
-                        <span>Step 1: see which of our rooms to rename, move or split to match the adjuster's rooms, and compare the two estimates trade by trade. The line comparison comes next.</span>
+                        <span>See which of our rooms to rename, move or split to match the adjuster's rooms, compare the two estimates trade by trade, then list the line differences to enter.</span>
                     </button>
                 </div>
             );
