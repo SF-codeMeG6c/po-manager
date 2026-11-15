@@ -586,6 +586,16 @@
                             if (same && !bits.length && over(po, pt)) bits.push('Line $ ' + f2(po) + ' ours, ' + f2(pt) + ' theirs');
                             if (!bits.length) { common += po - pt; return; }
                             const what = bits.join('; ');
+                            // Nov 14 (Spencer): same item, qty and/or $ differ -> ONE net line on our code: qty = ours - theirs at (our $ - their $) / qty;
+                            // price only -> our full qty at the per-unit difference. Note "Ours ... - Ins ...". Mixed actions or qty and $ going opposite ways: our line + their credit, as before.
+                            const dq = r2(qo - qt), dd = r2(po - pt), qtyDiff = over(qo, qt);
+                            if (same && qo && qt && dd && (!qtyDiff || dq * dd > 0)) {
+                                const x = s.o[0].it, q = qtyDiff ? Math.abs(dq) : qo, pr = r2(Math.abs(dd) / q), cr = dd < 0;
+                                const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt);
+                                rows.push({ id: 'n' + x.no, room: g.name, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: q, unit: u,
+                                    price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt, note: x.note || '', xnote: nt, sort: x.no });
+                                return;
+                            }
                             const ourPrice = s.o[0].it.cat ? (s.o[0].action === 'rr' ? s.o[0].it.replace : s.o[0].it.price) : 0;
                             s.o.forEach(x => add(x, 'DIFF', what));
                             s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice));
