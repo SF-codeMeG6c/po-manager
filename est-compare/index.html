@@ -766,7 +766,7 @@
                 "INI := A_ScriptDir \"\\XactEntry_settings.ini\"",
                 "STOP_LOG := A_ScriptDir \"\\XactEntry_stops.txt\"   ; one line per stop: row, item, reason, window in front",
                 "",
-                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"CreditItem\", \"Exempt\", \"OK\"]",
+                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"CreditItem\", \"Exempt\", \"OK\", \"Attach\", \"NotesClose\"]",
                 "LABELS := Map(",
                 "    \"Cat\", \"the Cat box\",",
                 "    \"Sel\", \"the Sel box\",",
@@ -776,9 +776,11 @@
                 "    \"Price\", \"the price box (Replace Price)\",",
                 "    \"CreditItem\", \"the Credit Item button\",",
                 "    \"Exempt\", \"the Exempt button\",",
-                "    \"OK\", \"the OK button\")",
+                "    \"OK\", \"the OK button\",",
+                "    \"Attach\", \"the Attachments button (top of Quick Entry)\",",
+                "    \"NotesClose\", \"the Close button in the Notes window (click Attachments first to open it)\")",
                 "",
-                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?]",
+                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note]",
                 "ROWS := [",
                 "%%ROWS%%",
                 "]",
@@ -812,7 +814,7 @@
                 "    global setupStep, newSpots, newExe",
                 "    if running",
                 "        return",
-                "    MsgBox \"Set-up`n`n1. In Xactimate, click a room and type CLN, then LAB, so the whole Quick Entry panel shows (price box, Credit Item, Exempt).`n2. Click OK on this message.`n3. For each spot named at the bottom of the screen, rest the mouse on it (don't click) and press F8.`n`nPress Esc to cancel. When done, press Cancel in Xactimate's Quick Entry.\", \"Xactimate Entry\", MSG_TOP",
+                "    MsgBox \"Set-up`n`n1. In Xactimate, click a room and type CLN, then LAB, so the whole Quick Entry panel shows (price box, Credit Item, Exempt).`n2. Click OK on this message.`n3. For each spot named at the bottom of the screen, rest the mouse on it (don't click) and press F8.`n`nFor the last spot, click Attachments to open the Notes window, then rest the mouse on its Close button.`n`nPress Esc to cancel. When done, close the Notes window and press Cancel in Xactimate's Quick Entry.\", \"Xactimate Entry\", MSG_TOP",
                 "    newSpots := Map(), newExe := \"\", setupStep := 1",
                 "    SetupTip()",
                 "}",
@@ -846,7 +848,7 @@
                 "    for name, p in spots",
                 "        IniWrite p[1] \",\" p[2], INI, \"Spots\", name",
                 "    IniWrite xexe, INI, \"Spots\", \"exe\"",
-                "    MsgBox \"Set-up saved. If you move or resize the Xactimate window, run set-up (F8) again.\", \"Xactimate Entry\", MSG_TOP",
+                "    MsgBox \"Set-up saved. Close the Notes window and press Cancel in Quick Entry.`n`nIf you move or resize the Xactimate window, run set-up (F8) again.\", \"Xactimate Entry\", MSG_TOP",
                 "    ShowNext()",
                 "}",
                 "",
@@ -916,10 +918,10 @@
                 "        running := false",
                 "        LogStop(r, res)",
                 "        SoundBeep 400, 400",
-                "        if res = \"hand\" {",
+                "        if res = \"hand\" || res = \"nocode\" {",
                 "            idx += 1",
                 "            SaveProgress()",
-                "            MsgBox \"Excel row \" r[1] \" is a remove-and-replace (&) line:`n`n\" r[4] \" \" r[5] \"  qty \" r[8] \"  adjuster price \" r[9] (r[3] ? \"  (Credit)\" : \"\") \"`n`nIt has two price boxes, so enter it by hand. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
+                "            MsgBox \"Excel row \" r[1] (res = \"nocode\" ? \" has no CAT code (look it up):`n`n\" : \" is a remove-and-replace (&) line:`n`n\") r[4] \" \" r[5] \"  qty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") (res = \"nocode\" ? \"`n`nEnter it by hand.\" : \"`n`nIt has two price boxes, so enter it by hand.\") \" Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
                 "            ShowNext()",
                 "            return",
                 "        }",
@@ -940,9 +942,11 @@
                 "}",
                 "",
                 "EnterRow(r) {",
-                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt]",
+                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note]",
                 "    if r[6] = \"&\"",
                 "        return \"hand\"                             ; R&R has two prices; key it by hand",
+                "    if r[4] = \"\"",
+                "        return \"nocode\"                           ; no CAT code found; key it by hand",
                 "    try {",
                 "        Fill(\"Cat\", r[4]), W(700)                 ; Cat jumps to Sel on its own",
                 "        if r[4] != \"USR\" {",
@@ -961,6 +965,8 @@
                 "            ClickSpot(\"CreditItem\"), W(400)",
                 "        if r[10]",
                 "            ClickSpot(\"Exempt\"), W(300)",
+                "        if r[11] != \"\"",
+                "            AddNote(r[11])",
                 "        ClickSpot(\"OK\")",
                 "    } catch as e {",
                 "        return e.Message = \"stopped\" ? \"stopped\" : \"popup\"",
@@ -969,6 +975,23 @@
                 "    if !WinActive(\"ahk_id \" mainWin)",
                 "        return \"popup-after-ok\"",
                 "    return \"ok\"",
+                "}",
+                "",
+                "; Attachments opens the Notes window; the cursor starts in the lower box; Close saves the note to this line",
+                "AddNote(text) {",
+                "    ClickSpot(\"Attach\")",
+                "    if !WinWaitActive(\"Notes ahk_exe \" xexe, , 5 * SPEED)",
+                "        throw Error(\"popup\")",
+                "    W(500)",
+                "    if stopFlag",
+                "        throw Error(\"stopped\")",
+                "    Send \"{Text}\" text",
+                "    W(300)",
+                "    p := spots[\"NotesClose\"]               ; spot is inside the Notes window",
+                "    Click p[1], p[2]",
+                "    if !WinWaitActive(\"ahk_id \" mainWin, , 5 * SPEED)",
+                "        throw Error(\"popup\")",
+                "    W(400)",
                 "}",
                 "",
                 "Fill(name, text, asKeys := false) {",
@@ -1013,6 +1036,8 @@
                 "        why := \"Pop-up, or Xactimate not in front\"",
                 "        if res = \"hand\"",
                 "            why := \"& line - entered by hand\"",
+                "        else if res = \"nocode\"",
+                "            why := \"No CAT code - entered by hand\"",
                 "        else if res = \"popup-after-ok\"",
                 "            why := \"Pop-up after OK\"",
                 "        else if res = \"stopped\"",
@@ -1051,7 +1076,7 @@
                     const q = Number(r.qty).toFixed(2).replace(/\.?0+$/, '');
                     const p = Math.abs(Number(r.price)).toFixed(2);                  // typed positive; Credit Item makes it negative
                     return '    [' + (i + 2) + ", '" + esc(r.room) + "', " + (r.entry === 'Credit' ? 1 : 0) + ", '" + esc(r.cat) + "', '" + esc(sel) + "', '" + esc(act) +
-                        "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ']';
+                        "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ", '" + esc(r.xnote || '') + "']";
                 });
                 const t = String(title).replace(/["`\r\n]/g, '');
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
@@ -1538,6 +1563,26 @@
                 const base = ((job && job.code) || ours.est.estimate || 'estimate').replace(/[^\w.-]+/g, '_');
                 window.XLSX.writeFile(wb, 'Ours_vs_Insurance_' + base + '.xlsx');
             };
+            // Xactimate script for the Differences rows (Nov 14): same rows and row numbers as the Excel Differences tab; notes typed through Attachments
+            const downloadScript = () => {
+                const entry = kept.filter(r => r.entry !== 'Info');
+                if (!entry.length) return;
+                const job = jobs.find(j => j.id === jobId);
+                const who = (job && job.code) || ours.est.estimate || 'estimate';
+                const now = new Date();
+                const roomCount = new Set(entry.map(r => r.room)).size;
+                const total = entry.reduce((a, r) => a + r.amount, 0);
+                const title = who + ' | Differences: ' + ours.est.fileName + ' vs ' + ins.est.fileName + ' | ' + entry.length + ' rows, ' + roomCount + ' rooms, total ' + money(total) + ' | made ' + now.toLocaleString();
+                const text = EstCompare.xactScript(entry, title, 'p' + now.getTime().toString(36));
+                const day = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/plain' }));
+                a.download = 'Xact_Differences_' + who.replace(/[^\w.-]+/g, '_') + '_' + day + '.ahk';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            };
 
             const warnings = [];
             if (ready) {
@@ -1663,6 +1708,7 @@
                                     ))}
                                     <span className="grow"></span>
                                     {lines && <button className="btn-secondary" onClick={download}>Download Excel</button>}
+                                    {lines && <button className="btn-secondary" onClick={downloadScript}>Download Xactimate script</button>}
                                 </div>
                                 {!lines && <div className="muted">Uses the room pairings above. Lines in common (within 10%) are hidden. Changing a pairing clears the results.</div>}
                                 {lines && (
