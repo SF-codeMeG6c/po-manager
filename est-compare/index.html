@@ -515,12 +515,30 @@
                 });
                 return map;
             };
-            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap) => {
+            // CAT/SEL code library (Nov 15): est-compare/codes.json, built from Spencer's Xactimate category export. Key = description + unit, as lineKey makes it.
+            const libKey = (desc, unit) => desc.trim().toLowerCase().replace(/\s+/g, ' ') + '|' + unit;
+            const makeLib = (json) => {
+                const map = {};
+                (json.items || []).forEach(([cat, sel, desc, unit]) => {
+                    const k = libKey(desc, unit), list = map[k] || (map[k] = []);
+                    if (!list.some(c => c.cat === cat && c.sel === sel)) list.push({ cat, sel });
+                });
+                return { map, count: (json.items || []).length, made: json.made || '' };
+            };
+            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib) => {
                 const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
                 const area = (adj) => / \(general\)$/.test(adj);
                 const left = {};
                 recap.rows.forEach(r => { if (r.left) left[r.trade] = true; });
                 const ourTrade = catTrades(ours), insTrade = catTrades(ins);
+                // their line with no printed code: library match on the full description, then on the description without R&R / Remove etc.
+                const libFind = (it) => {
+                    if (!lib) return null;
+                    const whole = lib.map[libKey(cleanDesc(it.desc).replace(/\*+$/, ''), it.unit)];
+                    // a whole-description match on a "... - Detach & reset" line is its own D&R item (e.g. CAB CTSSRS), keyed with act +
+                    if (whole) return lineKey(it).action === 'reset' ? whole.map(c => ({ ...c, act: '+' })) : whole;
+                    return lib.map[lineKey(it).base] || null;
+                };
                 const codeOf = {};   // description + unit -> our code
                 ours.items.forEach(it => { const k = lineKey(it).base; if (it.cat && !codeOf[k]) codeOf[k] = { cat: it.cat, sel: it.sel }; });
                 const live = (it) => !it.status && it.qty > 0;
@@ -567,13 +585,16 @@
                     const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
                         price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no });
                     const theirs = (x, kind, what, sort, ourPrice) => {
-                        const code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : codeOf[x.base];
+                        const found = x.it.cat || codeOf[x.base] ? null : libFind(x.it);
+                        const code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : (codeOf[x.base] || (found && found.length === 1 ? found[0] : null));
+                        const from = x.it.cat ? '' : codeOf[x.base] ? '. Code guessed from our line' : code ? '. Code from library'
+                            : found ? '. Code choices: ' + found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') + (found.length > 6 ? ' …' : '') : '. Code not found; look it up';
                         const rr = x.action === 'rr' && kind === 'DIFF';
                         const price = rr && ourPrice ? ourPrice : x.it.price;
-                        rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : ACT_OF[x.action],
+                        rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : (code && code.act) || ACT_OF[x.action],
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
-                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + (kind !== 'DIFF' || x.it.cat ? '' : (code ? '. Code guessed from our line' : '. Code not found; look it up')), note: x.it.note || '', sort });
+                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort });
                     };
                     order.forEach(key => {
                         const s = slots[key];
@@ -1082,7 +1103,7 @@
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook, lineCompare };
+            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook, lineCompare, makeLib };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1447,6 +1468,13 @@
             const [saving, setSaving] = useState(false);
             // Step 2 (Nov 14): line comparison. lines = result of the last Compare lines click (cleared when a file or a pairing changes); off = rows unticked.
             const [lines, setLines] = useState(null);
+            const [lib, setLib] = useState(null);           // code library: null = loading, false = not found
+            useEffect(() => {
+                fetch('/est-compare/codes.json', { cache: 'no-cache' })
+                    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+                    .then(j => setLib(EstCompare.makeLib(j)))
+                    .catch(() => setLib(false));
+            }, []);
             const [off, setOff] = useState({});
             const [showKind, setShowKind] = useState({ OURS: true, DIFF: true, THEIRS: false });
 
@@ -1510,7 +1538,7 @@
                 const m = {};
                 insRooms.forEach(r => { m[r.name] = partFromValue(pairs[r.name]); });
                 setOff({});
-                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap));
+                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap, lib || null));
             };
             const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
             const kindCount = (k) => lines ? lines.rows.filter(r => r.kind === k).length : 0;
@@ -1710,6 +1738,7 @@
                                     {lines && <button className="btn-secondary" onClick={download}>Download Excel</button>}
                                     {lines && <button className="btn-secondary" onClick={downloadScript}>Download Xactimate script</button>}
                                 </div>
+                                <div className="muted" style={{ marginBottom: '6px' }}>{lib === null ? 'Loading the code library…' : lib ? 'Code library: ' + lib.count.toLocaleString() + ' codes' + (lib.made ? ' (made ' + lib.made + ')' : '') + '. Used for their lines with no code.' : 'Code library not found (est-compare/codes.json). Their lines with no code are guessed from our lines only.'}</div>
                                 {!lines && <div className="muted">Uses the room pairings above. Lines in common (within 10%) are hidden. Changing a pairing clears the results.</div>}
                                 {lines && (
                                     <div>
