@@ -765,7 +765,10 @@
             const handleUpdateForm = async (formId, fields) => {
                 if (!currentJobId) return;
                 try {
-                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({ ...fields, dateUpdated: new Date() });
+                    // A status change also saves who made it and when (Nov 16: Job Cost shows who revised the current PO)
+                    const now = new Date();
+                    const who = 'status' in fields ? { statusBy: { uid: user.uid, name: (profile && profile.name) || user.email }, statusAt: now } : {};
+                    await db.collection('jobs').doc(currentJobId).collection('forms').doc(formId).update({ ...fields, ...who, dateUpdated: now });
                 } catch (error) {
                     setMessage('Error updating form: ' + error.message);
                 }
