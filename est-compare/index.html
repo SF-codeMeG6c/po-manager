@@ -59,6 +59,7 @@
         td.todo { font-weight: 600; }
         tr.LOURS td.kind, tr.LDIFF td.kind { font-weight: 600; }
         tr.LTHEIRS td { color: #777; }
+        tr.check td { font-weight: 700; }
     </style>
 </head>
 <body>
@@ -517,13 +518,46 @@
             };
             // CAT/SEL code library (Nov 15): est-compare/codes.json, built from Spencer's Xactimate category export. Key = description + unit, as lineKey makes it.
             const libKey = (desc, unit) => desc.trim().toLowerCase().replace(/\s+/g, ' ') + '|' + unit;
+            // Nov 16: word matching for their lines with no code. {V} in a library description = any surface (walls, ceiling...)
+            const STOP_W = new Set(['the', 'a', 'an', 'of', 'and', 'or', 'to', 'per', 'with', 'w', 'in', 'on', 'for', 'r']);
+            const SURF_W = new Set(['wall', 'walls', 'ceiling', 'ceilings', 'part', 'surface', 'area', 'floor', 'floors']);
+            const wordsOf = (t) => (String(t).toLowerCase().match(/[a-z0-9/"']+/g) || []).filter(w => !STOP_W.has(w));
+            const WORD_MIN = 0.6, WORD_TIE = 0.05;
+            // best library codes by shared words (same unit). Returns the tied top codes, or null.
+            const wordTop = (lib, desc, unit) => {
+                const all = wordsOf(desc);
+                if (!lib || !lib.byUnit || !all.length) return null;
+                const aw = new Set(all), as = new Set(all.filter(w => !SURF_W.has(w)));
+                const scored = (lib.byUnit[unit] || []).map(c => {
+                    const a = c.v ? as : aw;
+                    let n = 0;
+                    a.forEach(w => { if (c.w.has(w)) n++; });
+                    return { cat: c.cat, sel: c.sel, s: a.size + c.w.size ? 2 * n / (a.size + c.w.size) : 0 };
+                }).sort((x, y) => y.s - x.s);
+                if (!scored.length || scored[0].s < WORD_MIN) return null;
+                return scored.filter(c => c.s >= scored[0].s - WORD_TIE);
+            };
+            // several codes: keep the category used most in this room, then in the job; one code left = that code, else category only
+            const pickCode = (list, pref) => {
+                const cats = [...new Set(list.map(c => c.cat))];
+                let cat = cats.length === 1 ? cats[0] : null;
+                if (!cat) {
+                    const sc = cats.map(c => ({ c, n: pref(c) })).sort((x, y) => y.n - x.n);
+                    if (sc[0].n > 0 && sc[0].n > sc[1].n) cat = sc[0].c;
+                }
+                if (!cat) return null;
+                const mine = list.filter(c => c.cat === cat);
+                return mine.length === 1 ? { ...mine[0], one: true } : { cat, sel: '', one: false, choices: mine.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') };
+            };
             const makeLib = (json) => {
-                const map = {};
+                const map = {}, byUnit = {};
                 (json.items || []).forEach(([cat, sel, desc, unit]) => {
                     const k = libKey(desc, unit), list = map[k] || (map[k] = []);
                     if (!list.some(c => c.cat === cat && c.sel === sel)) list.push({ cat, sel });
+                    const u = byUnit[unit] || (byUnit[unit] = []);
+                    if (!u.some(c => c.cat === cat && c.sel === sel)) u.push({ cat, sel, v: /\{v\}/i.test(desc), w: new Set(wordsOf(desc.replace(/\{v\}/ig, ' '))) });
                 });
-                return { map, count: (json.items || []).length, made: json.made || '' };
+                return { map, byUnit, count: (json.items || []).length, made: json.made || '' };
             };
             const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib) => {
                 const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
@@ -542,6 +576,8 @@
                 const codeOf = {};   // description + unit -> our code
                 ours.items.forEach(it => { const k = lineKey(it).base; if (it.cat && !codeOf[k]) codeOf[k] = { cat: it.cat, sel: it.sel }; });
                 const live = (it) => !it.status && it.qty > 0;
+                const jobCats = {};
+                ours.items.concat(ins.items).forEach(it => { if (it.cat) jobCats[it.cat] = (jobCats[it.cat] || 0) + 1; });
                 const leftOurs = ours.items.filter(it => live(it) && left[ourTrade[it.cat]]);
                 const tradeOfIns = (it) => it.cat ? insTrade[it.cat] : (codeOf[lineKey(it).base] ? ourTrade[codeOf[lineKey(it).base].cat] : undefined);
                 const leftIns = ins.items.filter(it => live(it) && left[tradeOfIns(it)]);
@@ -582,20 +618,33 @@
                     };
                     g.ours.forEach(it => put(it, 'o'));
                     g.theirs.forEach(it => put(it, 't'));
+                    const roomCats = {};
+                    g.ours.concat(g.theirs).forEach(it => { const c = it.cat || (codeOf[lineKey(it).base] || {}).cat; if (c) roomCats[c] = (roomCats[c] || 0) + 1; });
+                    const pref = (c) => (roomCats[c] || 0) * 1000 + (jobCats[c] || 0);
                     const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
                         price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no });
                     const theirs = (x, kind, what, sort, ourPrice) => {
                         const found = x.it.cat || codeOf[x.base] ? null : libFind(x.it);
-                        const code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : (codeOf[x.base] || (found && found.length === 1 ? found[0] : null));
-                        const from = x.it.cat ? '' : codeOf[x.base] ? '. Code guessed from our line' : code ? '. Code from library'
+                        let code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : (codeOf[x.base] || (found && found.length === 1 ? found[0] : null));
+                        let from = x.it.cat ? '' : codeOf[x.base] ? '. Code guessed from our line' : code ? '. Code from library'
                             : found ? '. Code choices: ' + found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') + (found.length > 6 ? ' …' : '') : '. Code not found; look it up';
+                        // Nov 16: no code yet -> pick among library choices by the room/job's categories, else match words. Full guesses get a CHECK CODE note.
+                        let check = false, catOnly = null;
+                        if (!code && lib) {
+                            const p = found && found.length > 1 ? pickCode(found, pref) : null;
+                            const top = !found ? wordTop(lib, cleanDesc(x.it.desc).replace(/\*+$/, ''), x.it.unit) : null;
+                            const w = top ? pickCode(top, pref) : null;
+                            const g2 = p || w;
+                            if (g2 && g2.one) { code = g2; check = true; from = '. CHECK CODE: ' + (p ? 'picked ' + g2.cat + ' ' + g2.sel + ' (category used in this room/job)' : 'guessed from words'); }
+                            else if (g2) { code = { cat: g2.cat, sel: '' }; catOnly = g2.choices; from = '. Category guessed (' + g2.cat + '); pick the SEL. Choices: ' + g2.choices; }
+                        }
                         const rr = x.action === 'rr' && kind === 'DIFF';
                         const price = rr && ourPrice ? ourPrice : x.it.price;
                         rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : (code && code.act) || ACT_OF[x.action],
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
-                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
-                            choices: !code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : '' });
+                            what: (check ? 'CHECK CODE. ' : '') + what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
+                            choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check, xnote: check ? 'CHECK CODE' : '' });
                     };
                     order.forEach(key => {
                         const s = slots[key];
@@ -947,7 +996,7 @@
                 "            idx += 1",
                 "            SaveProgress()",
                 "            if res = \"nocode\"",
-                "                MsgBox \"Excel row \" r[1] \" has no CAT code:`n`n\" r[12] \"`nqty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[13] != \"\" ? \"`nCode choices: \" r[13] : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") \"`n`nThe description was typed in the Search box and Search pressed. Pick the item, enter the qty and price\" (r[3] ? \", click Credit Item\" : \"\") \", click OK. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
+                "                MsgBox \"Excel row \" r[1] (r[4] = \"\" ? \" has no CAT code:`n`n\" : \" has no SEL code (Cat \" r[4] \" typed):`n`n\") r[12] \"`nqty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[13] != \"\" ? \"`nCode choices: \" r[13] : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") \"`n`nThe description was typed in the Search box and Search pressed. Pick the item, enter the qty and price\" (r[3] ? \", click Credit Item\" : \"\") \", click OK. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
                 "            else",
                 "                MsgBox \"Excel row \" r[1] \" is a remove-and-replace (&) line:`n`n\" r[4] \" \" r[5] \"  qty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") \"`n`nIt has two price boxes, so enter it by hand. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
                 "            ShowNext()",
@@ -971,9 +1020,11 @@
                 "",
                 "EnterRow(r) {",
                 "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note, search text, code choices]",
-                                "    if r[4] = \"\" {                                 ; no CAT code: type the description in the Search box, press Search, stop for hand entry",
+                                "    if r[4] = \"\" || (r[4] != \"USR\" && r[5] = \"\") {   ; no code (or Cat only): type Cat if known, search the description, stop for hand entry",
                 "        if r[12] != \"\" {",
                 "            try {",
+                "                if r[4] != \"\"",
+                "                    Fill(\"Cat\", r[4]), W(700)",
                 "                Fill(\"Search\", r[12]), W(200)",
                 "                Key(\"{Enter}\"), W(300)",
                 "            }",
@@ -1112,7 +1163,7 @@
                     const p = Math.abs(Number(r.price)).toFixed(2);                  // typed positive; Credit Item makes it negative
                     return '    [' + (i + 2) + ", '" + esc(r.room) + "', " + (r.entry === 'Credit' ? 1 : 0) + ", '" + esc(r.cat) + "', '" + esc(sel) + "', '" + esc(act) +
                         "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ", '" + esc(r.xnote || '') +
-                        "', '" + esc(r.cat ? '' : r.desc) + "', '" + esc(r.choices || '') + "']";
+                        "', '" + esc(!r.cat || (r.cat !== 'USR' && !r.sel) ? r.desc : '') + "', '" + esc(r.choices || '') + "']";
                 });
                 const t = String(title).replace(/["`\r\n]/g, '');
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
@@ -1781,7 +1832,7 @@
                                                             return (
                                                                 <React.Fragment key={id + i}>
                                                                     {first && <tr className="room"><td colSpan={6}>{r.room}</td><td className={'n' + (roomSum < 0 ? ' neg' : '')}>{money(roomSum)}</td><td colSpan={3}></td></tr>}
-                                                                    <tr className={(off[id] ? 'leftout ' : '') + 'L' + r.kind}>
+                                                                    <tr className={(off[id] ? 'leftout ' : '') + (r.check ? 'check ' : '') + 'L' + r.kind}>
                                                                         <td><input type="checkbox" checked={!off[id]} onChange={e => { const on = e.target.checked; setOff(o => ({ ...o, [id]: !on })); }} /></td>
                                                                         <td className="kind">{r.entry === 'Info' ? 'Theirs only' : r.entry}</td>
                                                                         <td style={{ whiteSpace: 'nowrap' }}>{r.cat} {r.sel} {r.act}</td>
