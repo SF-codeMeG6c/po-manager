@@ -47,10 +47,46 @@
         .tag.Revised { background: #fff3e0; color: #a65c00; }
         .tag.New { background: #fdecea; color: #b71c1c; }
         .tag.Extra { background: #e3f2e5; color: #2e7d32; }
+        .po-by { font-size: 11px; color: #888; margin-top: 2px; }
+        .bills-btn { background: #eef4fb; color: #0052a3; border: 1px solid #c9dcf2; border-radius: 10px; font-size: 11px; padding: 1px 8px; margin-left: 6px; cursor: pointer; }
+        tr.bills td { background: #fafcff; padding-top: 4px; padding-bottom: 8px; }
+        table.bill-list { width: 100%; font-size: 12px; margin: 2px 0 0 0; }
+        table.bill-list th, table.bill-list td { padding: 3px 6px; border-bottom: 1px solid #eef1f5; }
+        .ap-tag { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 11px; background: #eee; }
+        .ap-tag.ok { background: #e3f2e5; color: #2e7d32; }
+        .ap-tag.qb { background: #455a64; color: white; }
+        .ap-tag.wait { background: #e3eefb; color: #0052a3; }
+        .ap-tag.hold { background: #fff3e0; color: #a65c00; }
+        td.left-neg { color: #b71c1c; font-weight: 600; }
         .tag.Credit { background: #f3e5f5; color: #6a1b9a; }
         .up { color: #b71c1c; }
         .down { color: #2e7d32; }
         .muted { color: #888; font-size: 12px; }
+        .nbtn { margin-left: 8px; padding: 1px 8px; font-size: 11px; font-weight: 500; border-radius: 10px; background: #eef2f7; color: #335; border: 1px solid #d5dce6; cursor: pointer; vertical-align: middle; }
+        .nbtn:hover { background: #e2e9f3; }
+        .nbtn.open { background: #fff3e0; color: #8a4b00; border-color: #f0a020; font-weight: 700; }
+        .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 30px 12px; overflow-y: auto; }
+        .modal { background: white; border-radius: 8px; padding: 20px; width: 100%; max-width: 640px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+        .msg { border: 1px solid #e6e6e6; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 14px; }
+        .msg.q { border-color: #f0a020; background: #fffaf0; }
+        .msg.q.done { border-color: #c8e6c9; background: #f6fbf6; }
+        .msg.ponote { background: #f7f9fc; border-style: dashed; }
+        .msg .who { font-size: 12px; color: #666; margin-bottom: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .msg .body { white-space: pre-wrap; color: #222; }
+        .msg .acts { margin-top: 6px; display: flex; gap: 12px; }
+        .qtag { font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 8px; background: #f0a020; color: white; }
+        .qtag.done { background: #2e7d32; }
+        .modal textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical; }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-small { padding: 5px 10px; font-size: 13px; }
+        .mic.on { background: #d32f2f; color: white; }
+        .sup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 40px; font-size: 14px; margin-bottom: 12px; }
+        .sup-grid div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
+        .sup-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 10px 0; }
+        .sup-form label { font-size: 12px; color: #555; display: flex; flex-direction: column; gap: 3px; }
+        .sup-form input { width: 140px; }
+        .sup-form input.wide { width: 240px; }
+        @media (max-width: 700px) { .sup-grid { grid-template-columns: 1fr; } }
         @media (max-width: 700px) { .summary { grid-template-columns: 1fr; } .container { padding: 16px; } body { padding: 8px; } .hide-sm { display: none; } }
     </style>
 </head>
@@ -121,7 +157,7 @@
         const extraCounts = (x) => (COUNTING[extraType(x)] || []).includes(x.status);
         const extraIncome = (x) => extraType(x) !== 'internal' && x.status === 'Signed' ? toNumber(x.total) : 0;
 
-        const buildJobCost = ({ lock, forms, extras, credits }) => {
+        const buildJobCost = ({ lock, forms, extras, credits, supPaid }) => {
             if (!lock) return null;
             const excluded = new Set(lock.excludedPoIds || []);
             const lockedPos = (lock.pos || []).filter(p => !excluded.has(p.id));
@@ -194,14 +230,425 @@
             const res = lock.results || {};
             const cesSelling = toNumber(res.sellingPrice);
             const creditsLessPA = toNumber(credits && credits.lessPA);
-            const sellingPrice = round2(cesSelling + extrasIncome - creditsLessPA);
+            const supervisionPaid = round2(toNumber(supPaid));
+            const sellingPrice = round2(cesSelling + extrasIncome - creditsLessPA + supervisionPaid);
             const inHouseLabor = round2(sellingPrice * IN_HOUSE_LABOR_PCT);
             const jobCost = round2(revisedBudget + inHouseLabor);
             const grossProfit = round2(sellingPrice - jobCost);
             const gpm = sellingPrice ? grossProfit / sellingPrice : 0;
-            return { cats, rows, left, counted, cesSelling, extrasIncome: round2(extrasIncome), creditsLessPA, sellingPrice,
+            return { cats, rows, left, counted, cesSelling, extrasIncome: round2(extrasIncome), creditsLessPA, supervisionPaid, sellingPrice,
                      originalBudget, revisedBudget, inHouseLabor, jobCost, grossProfit, gpm,
                      cesGpm: typeof res.gpm === 'number' ? res.gpm : null, cesPoTotal: toNumber(res.poTotal) };
+        };
+
+        // ---------- Notes (Job Cost step 2, decided Oct 27) ----------
+        // A conversation per PO and per Cat, in a pop-up so the table stays clean. Records: jobCost/{jobId}/messages/{id}
+        // { thread: 'po:{formId}' or 'cat:{CAT}', text, question, answered, answeredBy, answeredAt, createdBy {uid, name, role}, createdAt, editedAt, editedBy }.
+        // Owner, Admin, Estimator and Super post; Office reads only. Any message can be a Question; Owner, Admin or the job's Super
+        // marks it Answered (and can reopen it). No deletes; the author can edit for 24 hours and the old text is kept in messages/{id}/versions.
+        const NOTE_POST_ROLES = ['owner', 'admin', 'estimator', 'super'];
+        const NOTE_ANSWER_ROLES = ['owner', 'admin', 'super'];
+        const ROLE_NAMES = { owner: 'Owner', admin: 'Admin', estimator: 'Estimator', super: 'Super', office: 'Office' };
+        const EDIT_HOURS = 24;
+        const tsMillis = (t) => { try { return t && t.toMillis ? t.toMillis() : (t && t.toDate ? t.toDate().getTime() : (t ? new Date(t).getTime() : 0)); } catch (e) { return 0; } };
+        const fmtWhen = (t) => { const ms = tsMillis(t); if (!ms) return ''; const d = new Date(ms); return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }); };
+        const threadStats = (messages, thread) => {
+            const list = (messages || []).filter(m => m.thread === thread);
+            return { count: list.length, open: list.filter(m => m.question && !m.answered).length };
+        };
+        function NotesButton({ messages, thread, onOpen }) {
+            const st = threadStats(messages, thread);
+            return (
+                <button type="button" className={'nbtn' + (st.open ? ' open' : '')} onClick={e => { e.stopPropagation(); onOpen(); }}
+                    title={st.open ? `${st.open} open question${st.open === 1 ? '' : 's'}` : 'Notes'}>
+                    {st.open ? `? ${st.open} open` : `Notes${st.count ? ' (' + st.count + ')' : ''}`}
+                </button>
+            );
+        }
+
+        function NotesModal({ jobId, thread, title, poNotes, messages, profile, onClose }) {
+            const [text, setText] = useState('');
+            const [asQuestion, setAsQuestion] = useState(false);
+            const [busy, setBusy] = useState(false);
+            const [err, setErr] = useState('');
+            const [editId, setEditId] = useState(null);
+            const [editText, setEditText] = useState('');
+            const [listening, setListening] = useState(false);
+            const recRef = React.useRef(null);
+            const canPost = NOTE_POST_ROLES.includes(profile.role);
+            const canAnswer = NOTE_ANSWER_ROLES.includes(profile.role);
+            const me = { uid: profile.uid, name: profile.name || '', role: profile.role };
+            const list = (messages || []).filter(m => m.thread === thread).sort((a, b) => tsMillis(a.createdAt) - tsMillis(b.createdAt));
+            const col = db.collection('jobCost').doc(jobId).collection('messages');
+            const stopVoice = () => { if (recRef.current) { try { recRef.current.stop(); } catch (e) { } recRef.current = null; } setListening(false); };
+            useEffect(() => () => stopVoice(), []);
+            const toggleVoice = () => {
+                if (listening) { stopVoice(); return; }
+                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SR) { setErr('Voice works in Chrome or Edge.'); return; }
+                const rec = new SR();
+                rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = false;
+                rec.onresult = (e) => {
+                    let said = '';
+                    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript;
+                    said = said.trim();
+                    if (said) setText(t => (t && !/\s$/.test(t) ? t + ' ' : t) + said.charAt(0).toUpperCase() + said.slice(1));
+                };
+                rec.onend = () => { recRef.current = null; setListening(false); };
+                rec.onerror = () => { recRef.current = null; setListening(false); };
+                recRef.current = rec; rec.start(); setListening(true); setErr('');
+            };
+            const post = async () => {
+                const t = text.trim();
+                if (!t) return;
+                stopVoice(); setBusy(true); setErr('');
+                try {
+                    await col.add({ thread, text: t, question: asQuestion, answered: false, createdBy: me, createdAt: new Date() });
+                    setText(''); setAsQuestion(false);
+                } catch (e) { setErr('Could not post: ' + e.message); }
+                setBusy(false);
+            };
+            const saveEdit = async (m) => {
+                const t = editText.trim();
+                if (!t || t === m.text) { setEditId(null); return; }
+                setBusy(true); setErr('');
+                try {
+                    const now = new Date();
+                    await col.doc(m.id).collection('versions').add({ text: m.text, question: !!m.question, savedAt: m.editedAt || m.createdAt || null, replacedAt: now, replacedBy: me });
+                    await col.doc(m.id).update({ text: t, editedAt: now, editedBy: me });
+                    setEditId(null);
+                } catch (e) { setErr('Could not save the edit: ' + e.message); }
+                setBusy(false);
+            };
+            const setAnswered = async (m, answered) => {
+                setBusy(true); setErr('');
+                try { await col.doc(m.id).update({ answered, answeredBy: me, answeredAt: new Date() }); }
+                catch (e) { setErr('Could not save: ' + e.message); }
+                setBusy(false);
+            };
+            const close = () => {
+                if (text.trim() && !window.confirm('Close and drop the note you typed?')) return;
+                stopVoice(); onClose();
+            };
+            return (
+                <div className="modal-back" onClick={close}>
+                    <div className="modal" onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>Notes · {title}</div>
+                            <button className="btn-link" onClick={close}>Close</button>
+                        </div>
+                        <div className="muted" style={{ margin: '4px 0 12px' }}>{list.length} message{list.length === 1 ? '' : 's'}{list.filter(m => m.question && !m.answered).length ? ` · ${list.filter(m => m.question && !m.answered).length} open question${list.filter(m => m.question && !m.answered).length === 1 ? '' : 's'}` : ''}</div>
+                        {poNotes && (
+                            <div className="msg ponote">
+                                <div className="who">PO note (from Trades-EST / PO Manager)</div>
+                                <div className="body">{poNotes}</div>
+                            </div>
+                        )}
+                        {list.length === 0 && !poNotes && <p className="muted">No notes yet.</p>}
+                        {list.map(m => {
+                            const mine = m.createdBy && m.createdBy.uid === profile.uid;
+                            const canEdit = canPost && mine && (Date.now() - tsMillis(m.createdAt)) < EDIT_HOURS * 3600000;
+                            return (
+                                <div key={m.id} className={'msg' + (m.question ? ' q' : '') + (m.question && m.answered ? ' done' : '')}>
+                                    <div className="who">
+                                        <b style={{ color: '#333' }}>{m.createdBy ? m.createdBy.name : ''}</b>
+                                        <span>({ROLE_NAMES[m.createdBy && m.createdBy.role] || ''})</span>
+                                        <span>{fmtWhen(m.createdAt)}</span>
+                                        {m.editedAt && <span>· edited {fmtWhen(m.editedAt)}</span>}
+                                        {m.question && <span className={'qtag' + (m.answered ? ' done' : '')}>{m.answered ? 'Answered' : 'Question'}</span>}
+                                        {m.question && m.answered && m.answeredBy && <span>by {m.answeredBy.name} {fmtWhen(m.answeredAt)}</span>}
+                                    </div>
+                                    {editId === m.id ? (
+                                        <div>
+                                            <textarea rows={3} value={editText} onChange={e => setEditText(e.target.value)} />
+                                            <div className="acts">
+                                                <button className="btn-primary btn-small" disabled={busy} onClick={() => saveEdit(m)}>Save</button>
+                                                <button className="btn-link" onClick={() => setEditId(null)}>Cancel</button>
+                                            </div>
+                                        </div>
+                                    ) : <div className="body">{m.text}</div>}
+                                    {editId !== m.id && (canEdit || (m.question && canAnswer)) && (
+                                        <div className="acts">
+                                            {canEdit && <button className="btn-link" onClick={() => { setEditId(m.id); setEditText(m.text); }}>Edit</button>}
+                                            {m.question && canAnswer && (m.answered
+                                                ? <button className="btn-link" disabled={busy} onClick={() => setAnswered(m, false)}>Reopen question</button>
+                                                : <button className="btn-link" disabled={busy} onClick={() => setAnswered(m, true)}>Mark answered</button>)}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {canPost ? (
+                            <div style={{ marginTop: 12 }}>
+                                <textarea rows={3} value={text} placeholder="Type a note, or use Voice..." onChange={e => setText(e.target.value)} />
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                                    <button type="button" className={'btn-secondary btn-small mic' + (listening ? ' on' : '')} onClick={toggleVoice}>{listening ? '■ Stop' : '🎤 Voice'}</button>
+                                    <label className="radio-line" style={{ marginTop: 0 }}>
+                                        <input type="checkbox" checked={asQuestion} onChange={e => setAsQuestion(e.target.checked)} /> This is a question
+                                    </label>
+                                    <div style={{ flex: 1 }} />
+                                    <button className="btn-primary btn-small" disabled={busy || !text.trim()} onClick={post}>{busy ? 'Saving...' : 'Post'}</button>
+                                </div>
+                            </div>
+                        ) : <p className="muted" style={{ marginTop: 10 }}>Office can read notes. Posting is for Owner, Admin, Estimator and Super.</p>}
+                        {err && <div className="error">{err}</div>}
+                        <div className="hint" style={{ marginTop: 8 }}>Notes can't be deleted. You can edit your own note for {EDIT_HOURS} hours; the earlier text is kept.</div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ---------- Supervision hours (decided Nov 9) ----------
+        // Optional per job: blank = not tracked. Agreed hours (paid inside the CES) and the job's Xactimate supervision rate are typed per job.
+        // The Production Admin enters hours biweekly. Hours over the agreed amount are supplemented in Xactimate at rate x 1.2 (O&P).
+        // Income only, no expense. Only the PAID amount counts in the selling price and GPM.
+        // Record: jobCost/{jobId}/supervision/current { agreedHours, rate, entries [{id, period, hours, note, by, at, editedAt, editedBy}],
+        //   paidAmount, paidDate, startedAt, startedBy, updatedAt, updatedBy }. Each save keeps the previous record as supervision/v_{ms}.
+        // Owner and Admin enter; everyone else who sees Job Cost reads it.
+        const SUP_EDIT_ROLES = ['owner', 'admin'];
+        const SUP_OP = 1.2;
+        const hrs = (n) => { const v = Math.round((Number(n) || 0) * 100) / 100; return v.toLocaleString('en-US', { maximumFractionDigits: 2 }); };
+        const supMath = (s) => {
+            const agreed = toNumber(s && s.agreedHours);
+            const rate = toNumber(s && s.rate);
+            const used = round2(((s && s.entries) || []).reduce((a, e) => a + toNumber(e.hours), 0));
+            const over = round2(Math.max(0, used - agreed));
+            return { agreed, rate, used, over, toSupplement: round2(over * rate * SUP_OP), paid: round2(toNumber(s && s.paidAmount)) };
+        };
+
+        function SupervisionBox({ jobId, sup, profile }) {
+            const canEdit = SUP_EDIT_ROLES.includes(profile.role);
+            const [editTop, setEditTop] = useState(false);
+            const [shown, setShown] = useState(false);   // the box opens closed; Show / Hide (Spencer, Nov 9)
+            const [top, setTop] = useState({ agreedHours: '', rate: '', paidAmount: '', paidDate: '' });
+            const [entry, setEntry] = useState({ period: '', hours: '', note: '' });
+            const [editId, setEditId] = useState(null);
+            const [editEntry, setEditEntry] = useState({ period: '', hours: '', note: '' });
+            const [busy, setBusy] = useState(false);
+            const [err, setErr] = useState('');
+            const col = db.collection('jobCost').doc(jobId).collection('supervision');
+            const me = { uid: profile.uid, name: profile.name || '', role: profile.role };
+
+            // Every save: keep the previous record as v_{ms}, then write the new one
+            const save = async (next) => {
+                setBusy(true); setErr('');
+                try {
+                    const now = new Date();
+                    const batch = db.batch();
+                    if (sup) batch.set(col.doc('v_' + now.getTime()), { ...sup, replacedAt: now, replacedBy: me });
+                    batch.set(col.doc('current'), { ...next, updatedAt: now, updatedBy: me });
+                    await batch.commit();
+                    setBusy(false);
+                    return true;
+                } catch (e) { setErr('Could not save: ' + e.message); setBusy(false); return false; }
+            };
+            const openTop = () => {
+                setTop({ agreedHours: sup && sup.agreedHours !== undefined ? String(sup.agreedHours) : '', rate: sup && sup.rate !== undefined ? String(sup.rate) : '',
+                         paidAmount: sup && sup.paidAmount ? String(sup.paidAmount) : '', paidDate: (sup && sup.paidDate) || '' });
+                setEditTop(true); setErr('');
+            };
+            const saveTop = async () => {
+                if (top.agreedHours === '' || top.rate === '') { setErr('Type the agreed hours and the Xactimate rate.'); return; }
+                const paid = round2(toNumber(top.paidAmount));
+                if (paid > 0 && !top.paidDate) { setErr('Type the date it was paid.'); return; }
+                const base = sup ? { ...sup } : { entries: [], startedAt: new Date(), startedBy: me };
+                delete base.updatedAt; delete base.updatedBy;
+                const ok = await save({ ...base, agreedHours: toNumber(top.agreedHours), rate: round2(toNumber(top.rate)),
+                                        paidAmount: paid, paidDate: paid > 0 ? top.paidDate : '' });
+                if (ok) { setEditTop(false); if (!sup) setShown(true); } // open right after Start tracking
+            };
+            const addEntry = async () => {
+                const h = toNumber(entry.hours);
+                if (!entry.period.trim() || !h) { setErr('Type the period and the hours.'); return; }
+                const e = { id: String(Date.now()), period: entry.period.trim(), hours: h, note: entry.note.trim(), by: me, at: new Date() };
+                const base = { ...sup }; delete base.updatedAt; delete base.updatedBy;
+                const ok = await save({ ...base, entries: [...(sup.entries || []), e] });
+                if (ok) setEntry({ period: '', hours: '', note: '' });
+            };
+            const saveEntry = async (old) => {
+                const h = toNumber(editEntry.hours);
+                if (!editEntry.period.trim() || !h) { setErr('Type the period and the hours.'); return; }
+                const base = { ...sup }; delete base.updatedAt; delete base.updatedBy;
+                const entries = (sup.entries || []).map(e => e.id !== old.id ? e
+                    : { ...e, period: editEntry.period.trim(), hours: h, note: editEntry.note.trim(), editedAt: new Date(), editedBy: me });
+                const ok = await save({ ...base, entries });
+                if (ok) setEditId(null);
+            };
+
+            const topForm = (
+                <div>
+                    <div className="sup-form">
+                        <label>Agreed hours<input value={top.agreedHours} onChange={e => setTop({ ...top, agreedHours: e.target.value })} placeholder="50" /></label>
+                        <label>Xactimate rate ($/hour)<input value={top.rate} onChange={e => setTop({ ...top, rate: e.target.value })} placeholder="0.00" /></label>
+                        {sup && <label>Paid amount<input value={top.paidAmount} onChange={e => setTop({ ...top, paidAmount: e.target.value })} placeholder="blank until paid" /></label>}
+                        {sup && <label>Date paid<input type="date" value={top.paidDate} onChange={e => setTop({ ...top, paidDate: e.target.value })} /></label>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                        <button className="btn-primary btn-small" disabled={busy} onClick={saveTop}>{busy ? 'Saving...' : 'Save'}</button>
+                        <button className="btn-link" onClick={() => { setEditTop(false); setErr(''); }}>Cancel</button>
+                    </div>
+                </div>
+            );
+
+            if (!sup) {
+                return (
+                    <div className="section">
+                        <div className="section-title">SUPERVISION HOURS</div>
+                        <p className="muted">Not tracked on this job.</p>
+                        {canEdit && !editTop && <button className="btn-secondary btn-small" onClick={openTop}>Start tracking</button>}
+                        {canEdit && editTop && topForm}
+                        {err && <div className="error">{err}</div>}
+                    </div>
+                );
+            }
+
+            const m = supMath(sup);
+            const entries = [...(sup.entries || [])].sort((a, b) => tsMillis(a.at) - tsMillis(b.at));
+            return (
+                <div className="section">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: shown ? 10 : 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div className="section-title" style={{ marginBottom: 0 }}>SUPERVISION HOURS</div>
+                            <button className="btn-secondary btn-small" onClick={() => { if (shown) { setEditTop(false); setEditId(null); setErr(''); } setShown(!shown); }}>
+                                {shown ? 'Hide supervision hours' : 'Show supervision hours'}
+                            </button>
+                        </div>
+                        {shown && canEdit && !editTop && <button className="btn-link" onClick={openTop}>Edit hours, rate and paid</button>}
+                    </div>
+                    {shown && <>
+                    {editTop ? topForm : (
+                        <div className="sup-grid">
+                            <div><span>Agreed hours (in the CES)</span><span>{hrs(m.agreed)}</span></div>
+                            <div><span>Xactimate rate</span><span>{$(m.rate)}/hr</span></div>
+                            <div><span>Hours used</span><span>{hrs(m.used)}</span></div>
+                            <div><span>Hours over</span><span className={m.over > 0 ? 'up' : ''}>{hrs(m.over)}</span></div>
+                            <div><span>To supplement (over × rate × 1.2)</span><span><b>{$(m.toSupplement)}</b></span></div>
+                            <div><span>Paid</span><span>{m.paid > 0 ? <>{$(m.paid)} <span className="muted">{sup.paidDate ? new Date(sup.paidDate + 'T12:00:00').toLocaleDateString('en-US') : ''}</span></> : <span className="muted">Not paid</span>}</span></div>
+                        </div>
+                    )}
+                    {m.paid === 0 && m.toSupplement > 0 && <div className="info">{$(m.toSupplement)} is not counted in the selling price or GPM until it is paid.</div>}
+                    {m.paid > 0 && <div className="muted" style={{ marginBottom: 10 }}>The paid {$(m.paid)} is counted in the selling price above.</div>}
+                    {entries.length === 0 ? <p className="muted">No hours entered yet.</p> : (
+                        <table>
+                            <thead>
+                                <tr><th>Period</th><th className="num">Hours</th><th>Note</th><th className="hide-sm">Entered</th>{canEdit && <th></th>}</tr>
+                            </thead>
+                            <tbody>
+                                {entries.map(e => editId === e.id ? (
+                                    <tr key={e.id}>
+                                        <td><input value={editEntry.period} onChange={x => setEditEntry({ ...editEntry, period: x.target.value })} /></td>
+                                        <td className="num"><input style={{ width: 80 }} value={editEntry.hours} onChange={x => setEditEntry({ ...editEntry, hours: x.target.value })} /></td>
+                                        <td><input value={editEntry.note} onChange={x => setEditEntry({ ...editEntry, note: x.target.value })} /></td>
+                                        <td className="hide-sm"></td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            <button className="btn-link" disabled={busy} onClick={() => saveEntry(e)}>Save</button>{' '}
+                                            <button className="btn-link" onClick={() => setEditId(null)}>Cancel</button>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    <tr key={e.id}>
+                                        <td>{e.period}</td>
+                                        <td className="num">{hrs(e.hours)}</td>
+                                        <td>{e.note}</td>
+                                        <td className="hide-sm muted">{e.by ? e.by.name : ''} {fmtWhen(e.at)}{e.editedAt ? ` · edited ${fmtWhen(e.editedAt)}` : ''}</td>
+                                        {canEdit && <td><button className="btn-link" onClick={() => { setEditId(e.id); setEditEntry({ period: e.period, hours: String(e.hours), note: e.note || '' }); setErr(''); }}>Edit</button></td>}
+                                    </tr>
+                                ))}
+                                <tr className="total"><td>Total</td><td className="num">{hrs(m.used)}</td><td colSpan={canEdit ? 3 : 2}></td></tr>
+                            </tbody>
+                        </table>
+                    )}
+                    {canEdit && !editTop && (
+                        <div className="sup-form">
+                            <label>Period<input value={entry.period} onChange={e => setEntry({ ...entry, period: e.target.value })} placeholder="11/1 - 11/14" /></label>
+                            <label>Hours<input value={entry.hours} onChange={e => setEntry({ ...entry, hours: e.target.value })} placeholder="0" /></label>
+                            <label>Note<input className="wide" value={entry.note} onChange={e => setEntry({ ...entry, note: e.target.value })} placeholder="optional" /></label>
+                            <button className="btn-primary btn-small" disabled={busy} onClick={addEntry}>{busy ? 'Saving...' : 'Add hours'}</button>
+                        </div>
+                    )}
+                    {err && <div className="error">{err}</div>}
+                    {!editTop && <div style={{ marginTop: 10 }}><button className="btn-secondary btn-small" onClick={() => { setEditId(null); setErr(''); setShown(false); }}>Hide supervision hours</button></div>}
+                    <div className="hint" style={{ marginTop: 6 }}>{canEdit ? 'Hours can be edited, not deleted; every save keeps the earlier version.' : 'Owner and Admin enter supervision hours.'} The supplement is made in Xactimate; this shows the amount to put in.</div>
+                    </>}
+                </div>
+            );
+        }
+
+        // ---------- AP bills (Nov 16, Spencer's asks): bills approved for payment show against their PO ----------
+        // apInvoices with this jobId. "AP approved" = bills Ready to pay (Production Admin Pass + approver Pay) or In QuickBooks;
+        // hidden bills never count. Each PO's list shows every bill on it with who passed it and who approved it, and when.
+        const apInQb = (i) => !!(i.qbEntered && i.qbEntered.date);
+        const apReady = (i) => !!(i.pa && i.pa.status === 'Pass' && i.appr && i.appr.status === 'Pay');
+        const apCounts = (i) => i.deleted !== true && (apReady(i) || apInQb(i));
+        const apStatus = (i) => apInQb(i) ? { cls: 'qb', text: 'In QuickBooks ' + fmtDate(i.qbEntered.date + 'T12:00:00') }
+            : apReady(i) ? { cls: 'ok', text: 'Ready to pay' }
+            : i.pa && i.pa.status === 'Pass' ? (i.appr && i.appr.status ? { cls: 'hold', text: 'Approver: ' + i.appr.status } : { cls: 'wait', text: 'Waiting on the approver' })
+            : i.pa && i.pa.status ? { cls: 'hold', text: 'Production Admin: ' + i.pa.status } : { cls: 'wait', text: 'Waiting on Production Admin' };
+        const apByPo = (bills) => {
+            const by = {};
+            (bills || []).filter(i => i.deleted !== true && i.po && i.po.formId).forEach(i => {
+                const b = by[i.po.formId] || (by[i.po.formId] = { approved: 0, bills: [] });
+                b.bills.push(i);
+                if (apCounts(i)) b.approved += (Number(i.amount) || 0);
+            });
+            Object.values(by).forEach(b => { b.approved = round2(b.approved); b.bills.sort((a, c) => String(a.dateReceived || '').localeCompare(String(c.dateReceived || ''))); });
+            return by;
+        };
+        // Who approved the current PO, from what PO Manager and Trades-EST save
+        const poApprovedBy = (f) => {
+            if (!f) return '';
+            const nm = (b) => (b && b.name) || '';
+            const parts = [];
+            if (f.status === 'Revised') {
+                const who = nm(f.statusBy) || nm(f.editedBy);
+                parts.push(`Revised${who ? ' by ' + who : ''}${(f.statusAt || f.editedAt) ? ' on ' + fmtDate(f.statusAt || f.editedAt) : ''}`);
+            } else if (f.status === 'Extra' && f.fromExtra) {
+                parts.push(`From Extra #${f.fromExtra.number}${nm(f.createdBy) ? ' · made by ' + nm(f.createdBy) : ''}`);
+            } else if (f.fromTradesEst && f.fromTradesEst.handedOffBy) {
+                parts.push(`Sent from Trades-EST by ${nm(f.fromTradesEst.handedOffBy)}${f.fromTradesEst.handedOffAt ? ' on ' + fmtDate(f.fromTradesEst.handedOffAt) : ''}`);
+            } else if (f.createdBy) {
+                parts.push(`Made by ${nm(f.createdBy)}${f.dateCreated ? ' on ' + fmtDate(f.dateCreated) : ''}`);
+            }
+            if (f.editedBy && !(f.status === 'Revised' && !nm(f.statusBy))) parts.push(`Edited by ${nm(f.editedBy)}${f.editedAt ? ' on ' + fmtDate(f.editedAt) : ''}`);
+            return parts.join(' · ');
+        };
+        function BillsRow({ list, cols }) {
+            return (
+                <tr className="bills"><td colSpan={cols}>
+                    {list.length === 0 ? <span className="muted">No AP bills on this PO yet.</span> : (
+                        <table className="bill-list">
+                            <thead><tr><th>Received</th><th>Invoice #</th><th className="num">Amount</th><th>Status</th><th>Passed by</th><th>Approved by</th></tr></thead>
+                            <tbody>{list.map(i => { const s = apStatus(i); return (
+                                <tr key={i.id}>
+                                    <td>{i.dateReceived ? fmtDate(i.dateReceived + 'T12:00:00') : ''}</td>
+                                    <td>{i.invoiceNumber || '-'}</td>
+                                    <td className="num">{$(i.amount)}</td>
+                                    <td><span className={'ap-tag ' + s.cls}>{s.text}</span></td>
+                                    <td>{i.pa && i.pa.status ? `${i.pa.by ? i.pa.by.name : '-'}${i.pa.at ? ' · ' + fmtDate(i.pa.at) : ''}${i.pa.status !== 'Pass' ? ' (' + i.pa.status + ')' : ''}` : <span className="muted">-</span>}</td>
+                                    <td>{i.appr && i.appr.status ? `${i.appr.by ? i.appr.by.name : '-'}${i.appr.at ? ' · ' + fmtDate(i.appr.at) : ''}${i.appr.status !== 'Pay' ? ' (' + i.appr.status + ')' : ''}` : <span className="muted">-</span>}</td>
+                                </tr>); })}</tbody>
+                        </table>
+                    )}
+                </td></tr>
+            );
+        }
+
+        // Before the CES lock (decided Oct 27): show the POs already in PO Manager, such as TMP and DMO #1 POs handed off early.
+        // No GPM yet: that starts from the CES lock.
+        const buildEarly = (forms) => {
+            const cats = [];
+            const byCat = {};
+            (forms || []).filter(f => f.deleted !== true).forEach(f => {
+                const cat = catKey(f.category);
+                if (!byCat[cat]) { byCat[cat] = { cat, rows: [], current: 0 }; cats.push(byCat[cat]); }
+                const current = toNumber(f.contractAmount);
+                byCat[cat].rows.push({ key: 'po-' + f.id, id: f.id, poNumber: f.poNumber || '', vendor: f.subName || '', status: f.status || 'New', current,
+                                       note: f.fromTradesEst && f.fromTradesEst.early ? 'Handed off early from Trades-EST' : '' });
+                byCat[cat].current += current;
+            });
+            cats.sort((a, b) => a.cat.localeCompare(b.cat));
+            cats.forEach(c => { c.current = round2(c.current); c.rows.sort((a, b) => String(a.poNumber).localeCompare(String(b.poNumber))); });
+            return { cats, total: round2(cats.reduce((t, c) => t + c.current, 0)) };
         };
 
         function App() {
@@ -217,6 +664,11 @@
             const [credits, setCredits] = useState(null);
             const [errors, setErrors] = useState({});
             const [open, setOpen] = useState({});         // Cat -> true when its PO rows are shown
+            const [messages, setMessages] = useState([]); // the job's notes (jobCost/{jobId}/messages)
+            const [notesFor, setNotesFor] = useState(null); // { thread, title, poNotes } while the Notes pop-up is open
+            const [sup, setSup] = useState(null);           // supervision record; undefined = not tracked, null = loading
+            const [ap, setAp] = useState(null);             // AP bills on this job (Nov 16); null = loading
+            const [openBills, setOpenBills] = useState({}); // PO id -> true when its AP bills are shown
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -259,7 +711,7 @@
 
             // The picked job's records, all live and read-only
             useEffect(() => {
-                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({});
+                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null); setSup(null); setAp(null); setOpenBills({});
                 if (!allowed || !jobId) return;
                 const fail = (k, what) => (err) => setErr(k, `Can't read ${what}: ${err.message}`);
                 const u1 = db.collection('gpm').doc(jobId).onSnapshot(doc => {
@@ -275,7 +727,16 @@
                 const u4 = db.collection('extras').doc(jobId).collection('credits').doc('list').onSnapshot(doc => {
                     setCredits(doc.exists ? doc.data() : {});
                 }, (err) => { setCredits({}); fail('credits', 'the credits')(err); });
-                return () => { u1(); u2(); u3(); u4(); };
+                const u5 = db.collection('jobCost').doc(jobId).collection('messages').onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setMessages(list);
+                }, (err) => { setMessages([]); fail('notes', 'the notes')(err); });
+                const u6 = db.collection('jobCost').doc(jobId).collection('supervision').doc('current').onSnapshot(doc => {
+                    setSup(doc.exists ? doc.data() : undefined);
+                }, (err) => { setSup(undefined); fail('supervision', 'the supervision hours')(err); });
+                const u7 = db.collection('apInvoices').where('jobId', '==', jobId).onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setAp(list);
+                }, (err) => { setAp([]); fail('ap', 'the AP bills')(err); });
+                return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
             }, [allowed, jobId]);
 
             const login = async () => {
@@ -316,10 +777,24 @@
             }
 
             const visibleJobs = jobs.filter(j => showArchived || !j.archived || j.id === jobId);
-            const loading = jobId && (lock === null || forms === null || extras === null || credits === null);
-            const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits }) : null;
+            const loading = jobId && (lock === null || forms === null || extras === null || credits === null || sup === null);
+            const jc = !loading && lock ? buildJobCost({ lock, forms, extras, credits, supPaid: sup && sup.paidAmount }) : null;
+            const supBox = jobId && !loading && !errors.supervision && <SupervisionBox jobId={jobId} sup={sup} profile={profile} />;
             const errList = Object.values(errors).filter(Boolean);
             const allOpen = jc && jc.cats.length > 0 && jc.cats.every(c => open[c.cat]);
+            const openQuestions = messages.filter(m => m.question && !m.answered).length;
+            const formOf = (id) => (forms || []).find(f => f.id === id);
+            const apPo = apByPo(ap);
+            const apOf = (id) => apPo[id] || { approved: 0, bills: [] };
+            const apCat = (c) => round2(c.rows.reduce((t, r) => t + (r.kind === 'po' || r.kind === undefined ? apOf(r.id).approved : 0), 0));
+            const apTotal = (cats) => round2(cats.reduce((t, c) => t + apCat(c), 0));
+            const apLoading = ap === null;
+            const leftCell = (current, approved) => { const v = round2(current - approved); return <td className={'num' + (v < 0 ? ' left-neg' : '')}>{$(v)}</td>; };
+            const billsBtn = (r) => { const n = apOf(r.id).bills.length; return (
+                <button className="bills-btn" onClick={() => setOpenBills(o => ({ ...o, [r.id]: !o[r.id] }))}>{openBills[r.id] ? 'Hide bills' : `Bills (${n})`}</button>); };
+            const openPoNotes = (r) => { const f = formOf(r.id); setNotesFor({ thread: 'po:' + r.id, title: `PO ${r.poNumber}${r.vendor ? ' · ' + r.vendor : ''}`, poNotes: (f && f.notes) || '' }); };
+            const openCatNotes = (cat) => setNotesFor({ thread: 'cat:' + cat, title: `${cat} (whole trade)`, poNotes: '' });
+            const qLine = openQuestions > 0 && <div className="info" style={{ background: '#fff3e0', borderColor: '#f0a020' }}><b>Open questions: {openQuestions}</b> · look for the orange "? open" buttons.</div>;
             const chg = (n) => { const v = round2(n); return v === 0 ? <span className="muted">–</span> : <span className={v > 0 ? 'up' : 'down'}>{v > 0 ? '+' : ''}{$(v)}</span>; };
 
             return (
@@ -343,14 +818,80 @@
 
                     {jobId && loading && <div className="section"><p>Loading...</p></div>}
 
-                    {jobId && !loading && !lock && !errors.lock && (
-                        <div className="section">
-                            <div className="info">CES not locked yet. Job Cost starts from the GPM CES lock. Lock it in GPM when the customer signs the CES.</div>
-                        </div>
-                    )}
+                    {jobId && !loading && !lock && !errors.lock && (() => {
+                        const early = buildEarly(forms);
+                        const allOpenEarly = early.cats.length > 0 && early.cats.every(c => open[c.cat]);
+                        return (
+                            <div className="section">
+                                <div className="info">CES not locked yet. Showing POs issued so far. GPM shows once the CES is locked in GPM.</div>
+                                {qLine}
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                    <div className="section-title" style={{ marginBottom: 0 }}>POS ISSUED BEFORE THE CES</div>
+                                    {early.cats.length > 0 && (
+                                        <button className="btn-link" onClick={() => setOpen(allOpenEarly ? {} : Object.fromEntries(early.cats.map(c => [c.cat, true])))}>
+                                            {allOpenEarly ? 'Close all' : 'Open all'}
+                                        </button>
+                                    )}
+                                </div>
+                                {early.cats.length === 0 ? <p>No POs in PO Manager yet.</p> : (
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>Cat / PO</th>
+                                                <th className="hide-sm">Vendor</th>
+                                                <th>Status</th>
+                                                <th className="num">Amount</th>
+                                                <th className="num">AP approved</th>
+                                                <th className="num">Left on PO</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {early.cats.map(c => (
+                                                <React.Fragment key={c.cat}>
+                                                    <tr className="cat">
+                                                        <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
+                                                            {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'PO' : 'POs'})</span>
+                                                            <NotesButton messages={messages} thread={'cat:' + c.cat} onOpen={() => openCatNotes(c.cat)} />
+                                                        </td>
+                                                        <td className="num">{$(c.current)}</td>
+                                                        <td className="num">{$(apCat(c))}</td>
+                                                        {leftCell(c.current, apCat(c))}
+                                                    </tr>
+                                                    {open[c.cat] && c.rows.map(r => (
+                                                        <React.Fragment key={r.key}>
+                                                            <tr className="sub">
+                                                                <td><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{billsBtn(r)}
+                                                                    {poApprovedBy(formOf(r.id)) && <div className="po-by">{poApprovedBy(formOf(r.id))}</div>}
+                                                                    {r.note && <div className="muted">{r.note}</div>}</td>
+                                                                <td className="hide-sm">{r.vendor}</td>
+                                                                <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                                <td className="num">{$(r.current)}</td>
+                                                                <td className="num">{$(apOf(r.id).approved)}</td>
+                                                                {leftCell(r.current, apOf(r.id).approved)}
+                                                            </tr>
+                                                            {openBills[r.id] && <BillsRow list={apOf(r.id).bills} cols={6} />}
+                                                        </React.Fragment>
+                                                    ))}
+                                                </React.Fragment>
+                                            ))}
+                                            <tr className="total">
+                                                <td colSpan={3}>All POs</td>
+                                                <td className="num">{$(early.total)}</td>
+                                                <td className="num">{$(apTotal(early.cats))}</td>
+                                                {leftCell(early.total, apTotal(early.cats))}
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                )}
+                                <div className="hint" style={{ marginTop: 6 }}>Hidden POs are left out. Click a trade to see its POs.</div>
+                            </div>
+                        );
+                    })()}
+                    {jobId && !loading && !lock && !errors.lock && supBox}
 
                     {jc && (
                         <div className="section">
+                            {qLine}
                             <div className="section-title">RUNNING GPM</div>
                             <div className="muted" style={{ marginBottom: 10 }}>From the CES locked {fmtDate(lock.at)}{lock.by && lock.by.name ? ' by ' + lock.by.name : ''}, plus extras, credits and PO changes since.</div>
                             <div className="summary">
@@ -359,6 +900,7 @@
                                 <div><span>+ Signed extras</span><span>{$(jc.extrasIncome)}</span></div>
                                 <div><span>Revised budget</span><span>{$(jc.revisedBudget)}</span></div>
                                 <div><span>− Credits less PA fee</span><span>({$(jc.creditsLessPA)})</span></div>
+                                {jc.supervisionPaid > 0 && <div><span>+ Supervision paid</span><span>{$(jc.supervisionPaid)}</span></div>}
                                 <div><span>In-house labor ({pct(IN_HOUSE_LABOR_PCT)} of selling price)</span><span>{$(jc.inHouseLabor)}</span></div>
                                 <div className="big"><span>Selling price</span><span>{$(jc.sellingPrice)}</span></div>
                                 <div className="big"><span>Job cost</span><span>{$(jc.jobCost)}</span></div>
@@ -372,6 +914,7 @@
                             )}
                         </div>
                     )}
+                    {jc && supBox}
 
                     {jc && (
                         <div className="section">
@@ -393,6 +936,8 @@
                                             <th className="num">Original</th>
                                             <th className="num">Current</th>
                                             <th className="num">Change</th>
+                                            <th className="num">AP approved</th>
+                                            <th className="num">Left on PO</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -401,23 +946,32 @@
                                                 <tr className="cat">
                                                     <td className="name" colSpan={3} onClick={() => setOpen(o => ({ ...o, [c.cat]: !o[c.cat] }))}>
                                                         {open[c.cat] ? '▾' : '▸'} {c.cat} <span className="muted" style={{ fontWeight: 400 }}>({c.rows.length} {c.rows.length === 1 ? 'line' : 'lines'})</span>
+                                                        <NotesButton messages={messages} thread={'cat:' + c.cat} onOpen={() => openCatNotes(c.cat)} />
                                                     </td>
                                                     <td className="num">{$(c.original)}</td>
                                                     <td className="num">{$(c.current)}</td>
                                                     <td className="num">{chg(c.current - c.original)}</td>
+                                                    <td className="num">{$(apCat(c))}</td>
+                                                    {leftCell(c.current, apCat(c))}
                                                 </tr>
                                                 {open[c.cat] && c.rows.map(r => (
-                                                    <tr key={r.key} className="sub">
-                                                        <td>
-                                                            {r.kind === 'po' ? <b>PO {r.poNumber}</b> : r.label}
-                                                            {r.note && <div className="muted">{r.note}</div>}
-                                                        </td>
-                                                        <td className="hide-sm">{r.vendor}</td>
-                                                        <td><span className={'tag ' + r.status}>{r.status}</span></td>
-                                                        <td className="num">{$(r.original)}</td>
-                                                        <td className="num">{$(r.current)}</td>
-                                                        <td className="num">{chg(r.current - r.original)}</td>
-                                                    </tr>
+                                                    <React.Fragment key={r.key}>
+                                                        <tr className="sub">
+                                                            <td>
+                                                                {r.kind === 'po' ? <><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{billsBtn(r)}</> : r.label}
+                                                                {r.kind === 'po' && poApprovedBy(formOf(r.id)) && <div className="po-by">{poApprovedBy(formOf(r.id))}</div>}
+                                                                {r.note && <div className="muted">{r.note}</div>}
+                                                            </td>
+                                                            <td className="hide-sm">{r.vendor}</td>
+                                                            <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                            <td className="num">{$(r.original)}</td>
+                                                            <td className="num">{$(r.current)}</td>
+                                                            <td className="num">{chg(r.current - r.original)}</td>
+                                                            <td className="num">{r.kind === 'po' ? $(apOf(r.id).approved) : <span className="muted">–</span>}</td>
+                                                            {r.kind === 'po' ? leftCell(r.current, apOf(r.id).approved) : <td className="num"><span className="muted">–</span></td>}
+                                                        </tr>
+                                                        {r.kind === 'po' && openBills[r.id] && <BillsRow list={apOf(r.id).bills} cols={8} />}
+                                                    </React.Fragment>
                                                 ))}
                                             </React.Fragment>
                                         ))}
@@ -426,13 +980,21 @@
                                             <td className="num">{$(jc.originalBudget)}</td>
                                             <td className="num">{$(jc.revisedBudget)}</td>
                                             <td className="num">{chg(jc.revisedBudget - jc.originalBudget)}</td>
+                                            <td className="num">{$(apTotal(jc.cats))}</td>
+                                            {leftCell(jc.cats.reduce((t, c) => t + c.rows.filter(r => r.kind === 'po').reduce((a, r) => a + r.current, 0), 0), apTotal(jc.cats))}
                                         </tr>
                                     </tbody>
                                 </table>
                             )}
                             {jc.left.length > 0 && <div className="hint" style={{ marginTop: 8 }}>Left out, as in the CES GPM: PO {jc.left.join(', ')}.</div>}
-                            <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits.</div>
+                            <div className="hint" style={{ marginTop: 6 }}>AP approved = Accounts Payable bills Ready to pay or In QuickBooks on that PO; Left on PO = the PO's current amount less AP approved (red when over). Bills (n) lists every AP bill on the PO with who passed it and who approved it.{apLoading ? ' Loading AP bills...' : ''}</div>
+                            <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits. Notes: one conversation per PO, and one per trade for extras and credits.</div>
                         </div>
+                    )}
+
+                    {notesFor && jobId && (
+                        <NotesModal jobId={jobId} thread={notesFor.thread} title={notesFor.title} poNotes={notesFor.poNotes}
+                            messages={messages} profile={profile} onClose={() => setNotesFor(null)} />
                     )}
                 </div>
             );
@@ -442,4 +1004,5 @@
     </script>
 </body>
 </html>
+
 
