@@ -47,6 +47,17 @@
         .tag.Revised { background: #fff3e0; color: #a65c00; }
         .tag.New { background: #fdecea; color: #b71c1c; }
         .tag.Extra { background: #e3f2e5; color: #2e7d32; }
+        .po-by { font-size: 11px; color: #888; margin-top: 2px; }
+        .bills-btn { background: #eef4fb; color: #0052a3; border: 1px solid #c9dcf2; border-radius: 10px; font-size: 11px; padding: 1px 8px; margin-left: 6px; cursor: pointer; }
+        tr.bills td { background: #fafcff; padding-top: 4px; padding-bottom: 8px; }
+        table.bill-list { width: 100%; font-size: 12px; margin: 2px 0 0 0; }
+        table.bill-list th, table.bill-list td { padding: 3px 6px; border-bottom: 1px solid #eef1f5; }
+        .ap-tag { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 11px; background: #eee; }
+        .ap-tag.ok { background: #e3f2e5; color: #2e7d32; }
+        .ap-tag.qb { background: #455a64; color: white; }
+        .ap-tag.wait { background: #e3eefb; color: #0052a3; }
+        .ap-tag.hold { background: #fff3e0; color: #a65c00; }
+        td.left-neg { color: #b71c1c; font-weight: 600; }
         .tag.Credit { background: #f3e5f5; color: #6a1b9a; }
         .up { color: #b71c1c; }
         .down { color: #2e7d32; }
@@ -563,6 +574,65 @@
             );
         }
 
+        // ---------- AP bills (Nov 16, Spencer's asks): bills approved for payment show against their PO ----------
+        // apInvoices with this jobId. "AP approved" = bills Ready to pay (Production Admin Pass + approver Pay) or In QuickBooks;
+        // hidden bills never count. Each PO's list shows every bill on it with who passed it and who approved it, and when.
+        const apInQb = (i) => !!(i.qbEntered && i.qbEntered.date);
+        const apReady = (i) => !!(i.pa && i.pa.status === 'Pass' && i.appr && i.appr.status === 'Pay');
+        const apCounts = (i) => i.deleted !== true && (apReady(i) || apInQb(i));
+        const apStatus = (i) => apInQb(i) ? { cls: 'qb', text: 'In QuickBooks ' + fmtDate(i.qbEntered.date + 'T12:00:00') }
+            : apReady(i) ? { cls: 'ok', text: 'Ready to pay' }
+            : i.pa && i.pa.status === 'Pass' ? (i.appr && i.appr.status ? { cls: 'hold', text: 'Approver: ' + i.appr.status } : { cls: 'wait', text: 'Waiting on the approver' })
+            : i.pa && i.pa.status ? { cls: 'hold', text: 'Production Admin: ' + i.pa.status } : { cls: 'wait', text: 'Waiting on Production Admin' };
+        const apByPo = (bills) => {
+            const by = {};
+            (bills || []).filter(i => i.deleted !== true && i.po && i.po.formId).forEach(i => {
+                const b = by[i.po.formId] || (by[i.po.formId] = { approved: 0, bills: [] });
+                b.bills.push(i);
+                if (apCounts(i)) b.approved += (Number(i.amount) || 0);
+            });
+            Object.values(by).forEach(b => { b.approved = round2(b.approved); b.bills.sort((a, c) => String(a.dateReceived || '').localeCompare(String(c.dateReceived || ''))); });
+            return by;
+        };
+        // Who approved the current PO, from what PO Manager and Trades-EST save
+        const poApprovedBy = (f) => {
+            if (!f) return '';
+            const nm = (b) => (b && b.name) || '';
+            const parts = [];
+            if (f.status === 'Revised') {
+                const who = nm(f.statusBy) || nm(f.editedBy);
+                parts.push(`Revised${who ? ' by ' + who : ''}${(f.statusAt || f.editedAt) ? ' on ' + fmtDate(f.statusAt || f.editedAt) : ''}`);
+            } else if (f.status === 'Extra' && f.fromExtra) {
+                parts.push(`From Extra #${f.fromExtra.number}${nm(f.createdBy) ? ' · made by ' + nm(f.createdBy) : ''}`);
+            } else if (f.fromTradesEst && f.fromTradesEst.handedOffBy) {
+                parts.push(`Sent from Trades-EST by ${nm(f.fromTradesEst.handedOffBy)}${f.fromTradesEst.handedOffAt ? ' on ' + fmtDate(f.fromTradesEst.handedOffAt) : ''}`);
+            } else if (f.createdBy) {
+                parts.push(`Made by ${nm(f.createdBy)}${f.dateCreated ? ' on ' + fmtDate(f.dateCreated) : ''}`);
+            }
+            if (f.editedBy && !(f.status === 'Revised' && !nm(f.statusBy))) parts.push(`Edited by ${nm(f.editedBy)}${f.editedAt ? ' on ' + fmtDate(f.editedAt) : ''}`);
+            return parts.join(' · ');
+        };
+        function BillsRow({ list, cols }) {
+            return (
+                <tr className="bills"><td colSpan={cols}>
+                    {list.length === 0 ? <span className="muted">No AP bills on this PO yet.</span> : (
+                        <table className="bill-list">
+                            <thead><tr><th>Received</th><th>Invoice #</th><th className="num">Amount</th><th>Status</th><th>Passed by</th><th>Approved by</th></tr></thead>
+                            <tbody>{list.map(i => { const s = apStatus(i); return (
+                                <tr key={i.id}>
+                                    <td>{i.dateReceived ? fmtDate(i.dateReceived + 'T12:00:00') : ''}</td>
+                                    <td>{i.invoiceNumber || '-'}</td>
+                                    <td className="num">{$(i.amount)}</td>
+                                    <td><span className={'ap-tag ' + s.cls}>{s.text}</span></td>
+                                    <td>{i.pa && i.pa.status ? `${i.pa.by ? i.pa.by.name : '-'}${i.pa.at ? ' · ' + fmtDate(i.pa.at) : ''}${i.pa.status !== 'Pass' ? ' (' + i.pa.status + ')' : ''}` : <span className="muted">-</span>}</td>
+                                    <td>{i.appr && i.appr.status ? `${i.appr.by ? i.appr.by.name : '-'}${i.appr.at ? ' · ' + fmtDate(i.appr.at) : ''}${i.appr.status !== 'Pay' ? ' (' + i.appr.status + ')' : ''}` : <span className="muted">-</span>}</td>
+                                </tr>); })}</tbody>
+                        </table>
+                    )}
+                </td></tr>
+            );
+        }
+
         // Before the CES lock (decided Oct 27): show the POs already in PO Manager, such as TMP and DMO #1 POs handed off early.
         // No GPM yet: that starts from the CES lock.
         const buildEarly = (forms) => {
@@ -597,6 +667,8 @@
             const [messages, setMessages] = useState([]); // the job's notes (jobCost/{jobId}/messages)
             const [notesFor, setNotesFor] = useState(null); // { thread, title, poNotes } while the Notes pop-up is open
             const [sup, setSup] = useState(null);           // supervision record; undefined = not tracked, null = loading
+            const [ap, setAp] = useState(null);             // AP bills on this job (Nov 16); null = loading
+            const [openBills, setOpenBills] = useState({}); // PO id -> true when its AP bills are shown
 
             useEffect(() => {
                 auth.onAuthStateChanged(async currentUser => {
@@ -639,7 +711,7 @@
 
             // The picked job's records, all live and read-only
             useEffect(() => {
-                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null); setSup(null);
+                setLock(null); setForms(null); setExtras(null); setCredits(null); setErrors({}); setOpen({}); setMessages([]); setNotesFor(null); setSup(null); setAp(null); setOpenBills({});
                 if (!allowed || !jobId) return;
                 const fail = (k, what) => (err) => setErr(k, `Can't read ${what}: ${err.message}`);
                 const u1 = db.collection('gpm').doc(jobId).onSnapshot(doc => {
@@ -661,7 +733,10 @@
                 const u6 = db.collection('jobCost').doc(jobId).collection('supervision').doc('current').onSnapshot(doc => {
                     setSup(doc.exists ? doc.data() : undefined);
                 }, (err) => { setSup(undefined); fail('supervision', 'the supervision hours')(err); });
-                return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+                const u7 = db.collection('apInvoices').where('jobId', '==', jobId).onSnapshot(snap => {
+                    const list = []; snap.forEach(doc => list.push({ id: doc.id, ...doc.data() })); setAp(list);
+                }, (err) => { setAp([]); fail('ap', 'the AP bills')(err); });
+                return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
             }, [allowed, jobId]);
 
             const login = async () => {
@@ -709,6 +784,14 @@
             const allOpen = jc && jc.cats.length > 0 && jc.cats.every(c => open[c.cat]);
             const openQuestions = messages.filter(m => m.question && !m.answered).length;
             const formOf = (id) => (forms || []).find(f => f.id === id);
+            const apPo = apByPo(ap);
+            const apOf = (id) => apPo[id] || { approved: 0, bills: [] };
+            const apCat = (c) => round2(c.rows.reduce((t, r) => t + (r.kind === 'po' || r.kind === undefined ? apOf(r.id).approved : 0), 0));
+            const apTotal = (cats) => round2(cats.reduce((t, c) => t + apCat(c), 0));
+            const apLoading = ap === null;
+            const leftCell = (current, approved) => { const v = round2(current - approved); return <td className={'num' + (v < 0 ? ' left-neg' : '')}>{$(v)}</td>; };
+            const billsBtn = (r) => { const n = apOf(r.id).bills.length; return (
+                <button className="bills-btn" onClick={() => setOpenBills(o => ({ ...o, [r.id]: !o[r.id] }))}>{openBills[r.id] ? 'Hide bills' : `Bills (${n})`}</button>); };
             const openPoNotes = (r) => { const f = formOf(r.id); setNotesFor({ thread: 'po:' + r.id, title: `PO ${r.poNumber}${r.vendor ? ' · ' + r.vendor : ''}`, poNotes: (f && f.notes) || '' }); };
             const openCatNotes = (cat) => setNotesFor({ thread: 'cat:' + cat, title: `${cat} (whole trade)`, poNotes: '' });
             const qLine = openQuestions > 0 && <div className="info" style={{ background: '#fff3e0', borderColor: '#f0a020' }}><b>Open questions: {openQuestions}</b> · look for the orange "? open" buttons.</div>;
@@ -758,6 +841,8 @@
                                                 <th className="hide-sm">Vendor</th>
                                                 <th>Status</th>
                                                 <th className="num">Amount</th>
+                                                <th className="num">AP approved</th>
+                                                <th className="num">Left on PO</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -769,20 +854,31 @@
                                                             <NotesButton messages={messages} thread={'cat:' + c.cat} onOpen={() => openCatNotes(c.cat)} />
                                                         </td>
                                                         <td className="num">{$(c.current)}</td>
+                                                        <td className="num">{$(apCat(c))}</td>
+                                                        {leftCell(c.current, apCat(c))}
                                                     </tr>
                                                     {open[c.cat] && c.rows.map(r => (
-                                                        <tr key={r.key} className="sub">
-                                                            <td><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{r.note && <div className="muted">{r.note}</div>}</td>
-                                                            <td className="hide-sm">{r.vendor}</td>
-                                                            <td><span className={'tag ' + r.status}>{r.status}</span></td>
-                                                            <td className="num">{$(r.current)}</td>
-                                                        </tr>
+                                                        <React.Fragment key={r.key}>
+                                                            <tr className="sub">
+                                                                <td><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{billsBtn(r)}
+                                                                    {poApprovedBy(formOf(r.id)) && <div className="po-by">{poApprovedBy(formOf(r.id))}</div>}
+                                                                    {r.note && <div className="muted">{r.note}</div>}</td>
+                                                                <td className="hide-sm">{r.vendor}</td>
+                                                                <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                                <td className="num">{$(r.current)}</td>
+                                                                <td className="num">{$(apOf(r.id).approved)}</td>
+                                                                {leftCell(r.current, apOf(r.id).approved)}
+                                                            </tr>
+                                                            {openBills[r.id] && <BillsRow list={apOf(r.id).bills} cols={6} />}
+                                                        </React.Fragment>
                                                     ))}
                                                 </React.Fragment>
                                             ))}
                                             <tr className="total">
                                                 <td colSpan={3}>All POs</td>
                                                 <td className="num">{$(early.total)}</td>
+                                                <td className="num">{$(apTotal(early.cats))}</td>
+                                                {leftCell(early.total, apTotal(early.cats))}
                                             </tr>
                                         </tbody>
                                     </table>
@@ -840,6 +936,8 @@
                                             <th className="num">Original</th>
                                             <th className="num">Current</th>
                                             <th className="num">Change</th>
+                                            <th className="num">AP approved</th>
+                                            <th className="num">Left on PO</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -853,19 +951,27 @@
                                                     <td className="num">{$(c.original)}</td>
                                                     <td className="num">{$(c.current)}</td>
                                                     <td className="num">{chg(c.current - c.original)}</td>
+                                                    <td className="num">{$(apCat(c))}</td>
+                                                    {leftCell(c.current, apCat(c))}
                                                 </tr>
                                                 {open[c.cat] && c.rows.map(r => (
-                                                    <tr key={r.key} className="sub">
-                                                        <td>
-                                                            {r.kind === 'po' ? <><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} /></> : r.label}
-                                                            {r.note && <div className="muted">{r.note}</div>}
-                                                        </td>
-                                                        <td className="hide-sm">{r.vendor}</td>
-                                                        <td><span className={'tag ' + r.status}>{r.status}</span></td>
-                                                        <td className="num">{$(r.original)}</td>
-                                                        <td className="num">{$(r.current)}</td>
-                                                        <td className="num">{chg(r.current - r.original)}</td>
-                                                    </tr>
+                                                    <React.Fragment key={r.key}>
+                                                        <tr className="sub">
+                                                            <td>
+                                                                {r.kind === 'po' ? <><b>PO {r.poNumber}</b><NotesButton messages={messages} thread={'po:' + r.id} onOpen={() => openPoNotes(r)} />{billsBtn(r)}</> : r.label}
+                                                                {r.kind === 'po' && poApprovedBy(formOf(r.id)) && <div className="po-by">{poApprovedBy(formOf(r.id))}</div>}
+                                                                {r.note && <div className="muted">{r.note}</div>}
+                                                            </td>
+                                                            <td className="hide-sm">{r.vendor}</td>
+                                                            <td><span className={'tag ' + r.status}>{r.status}</span></td>
+                                                            <td className="num">{$(r.original)}</td>
+                                                            <td className="num">{$(r.current)}</td>
+                                                            <td className="num">{chg(r.current - r.original)}</td>
+                                                            <td className="num">{r.kind === 'po' ? $(apOf(r.id).approved) : <span className="muted">–</span>}</td>
+                                                            {r.kind === 'po' ? leftCell(r.current, apOf(r.id).approved) : <td className="num"><span className="muted">–</span></td>}
+                                                        </tr>
+                                                        {r.kind === 'po' && openBills[r.id] && <BillsRow list={apOf(r.id).bills} cols={8} />}
+                                                    </React.Fragment>
                                                 ))}
                                             </React.Fragment>
                                         ))}
@@ -874,11 +980,14 @@
                                             <td className="num">{$(jc.originalBudget)}</td>
                                             <td className="num">{$(jc.revisedBudget)}</td>
                                             <td className="num">{chg(jc.revisedBudget - jc.originalBudget)}</td>
+                                            <td className="num">{$(apTotal(jc.cats))}</td>
+                                            {leftCell(jc.cats.reduce((t, c) => t + c.rows.filter(r => r.kind === 'po').reduce((a, r) => a + r.current, 0), 0), apTotal(jc.cats))}
                                         </tr>
                                     </tbody>
                                 </table>
                             )}
                             {jc.left.length > 0 && <div className="hint" style={{ marginTop: 8 }}>Left out, as in the CES GPM: PO {jc.left.join(', ')}.</div>}
+                            <div className="hint" style={{ marginTop: 6 }}>AP approved = Accounts Payable bills Ready to pay or In QuickBooks on that PO; Left on PO = the PO's current amount less AP approved (red when over). Bills (n) lists every AP bill on the PO with who passed it and who approved it.{apLoading ? ' Loading AP bills...' : ''}</div>
                             <div className="hint" style={{ marginTop: 6 }}>Click a trade to see its POs, extra lines with no PO, and credits. Status: CES = in the CES lock, Revised = changed by the Super, New = made after the CES, Extra = from Extras &amp; Credits. Notes: one conversation per PO, and one per trade for extras and credits.</div>
                         </div>
                     )}
@@ -895,4 +1004,5 @@
     </script>
 </body>
 </html>
+
 
