@@ -594,7 +594,8 @@
                         rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : (code && code.act) || ACT_OF[x.action],
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
-                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort });
+                            what: what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
+                            choices: !code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : '' });
                     };
                     order.forEach(key => {
                         const s = slots[key];
@@ -612,7 +613,8 @@
                             const dq = r2(qo - qt), dd = r2(po - pt), qtyDiff = over(qo, qt);
                             if (same && qo && qt && dd && (!qtyDiff || dq * dd > 0)) {
                                 const x = s.o[0].it, q = qtyDiff ? Math.abs(dq) : qo, pr = r2(Math.abs(dd) / q), cr = dd < 0;
-                                const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt);
+                                const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt)
+                                    + ' = ' + (qtyDiff ? f2(dq) : f2(qo) + ' @ ' + (cr ? '-' : '') + f2(pr));   // Nov 16: note ends with the net
                                 rows.push({ id: 'n' + x.no, room: g.name, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: q, unit: u,
                                     price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt, note: x.note || '', xnote: nt, sort: x.no });
                                 return;
@@ -787,7 +789,7 @@
                 "INI := A_ScriptDir \"\\XactEntry_settings.ini\"",
                 "STOP_LOG := A_ScriptDir \"\\XactEntry_stops.txt\"   ; one line per stop: row, item, reason, window in front",
                 "",
-                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"CreditItem\", \"Exempt\", \"OK\", \"Attach\", \"NotesClose\"]",
+                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"CreditItem\", \"Exempt\", \"OK\", \"Search\", \"Attach\", \"NotesClose\"]",
                 "LABELS := Map(",
                 "    \"Cat\", \"the Cat box\",",
                 "    \"Sel\", \"the Sel box\",",
@@ -798,10 +800,11 @@
                 "    \"CreditItem\", \"the Credit Item button\",",
                 "    \"Exempt\", \"the Exempt button\",",
                 "    \"OK\", \"the OK button\",",
+                "    \"Search\", \"the Search box (top of the Search panel)\",",
                 "    \"Attach\", \"the Attachments button (top of Quick Entry)\",",
                 "    \"NotesClose\", \"the Close button in the Notes window (click Attachments first to open it)\")",
                 "",
-                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note]",
+                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note, Description to search (no code), Code choices]",
                 "ROWS := [",
                 "%%ROWS%%",
                 "]",
@@ -942,7 +945,10 @@
                 "        if res = \"hand\" || res = \"nocode\" {",
                 "            idx += 1",
                 "            SaveProgress()",
-                "            MsgBox \"Excel row \" r[1] (res = \"nocode\" ? \" has no CAT code (look it up):`n`n\" : \" is a remove-and-replace (&) line:`n`n\") r[4] \" \" r[5] \"  qty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") (res = \"nocode\" ? \"`n`nEnter it by hand.\" : \"`n`nIt has two price boxes, so enter it by hand.\") \" Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
+                "            if res = \"nocode\"",
+                "                MsgBox \"Excel row \" r[1] \" has no CAT code:`n`n\" r[12] \"`nqty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[13] != \"\" ? \"`nCode choices: \" r[13] : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") \"`n`nThe description was typed in the Search box and Search pressed. Pick the item, enter the qty and price\" (r[3] ? \", click Credit Item\" : \"\") \", click OK. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
+                "            else",
+                "                MsgBox \"Excel row \" r[1] \" is a remove-and-replace (&) line:`n`n\" r[4] \" \" r[5] \"  qty \" r[8] \"  price \" r[9] (r[3] ? \"  (Credit)\" : \"\") (r[11] != \"\" ? \"`nNote: \" r[11] : \"\") \"`n`nIt has two price boxes, so enter it by hand. Then press F9 to carry on with this room.\", \"Xactimate Entry - enter by hand\", MSG_TOP",
                 "            ShowNext()",
                 "            return",
                 "        }",
@@ -963,11 +969,18 @@
                 "}",
                 "",
                 "EnterRow(r) {",
-                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note]",
+                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note, search text, code choices]",
                 "    if r[6] = \"&\"",
                 "        return \"hand\"                             ; R&R has two prices; key it by hand",
-                "    if r[4] = \"\"",
-                "        return \"nocode\"                           ; no CAT code found; key it by hand",
+                "    if r[4] = \"\" {                                 ; no CAT code: type the description in the Search box, press Search, stop for hand entry",
+                "        if r[12] != \"\" {",
+                "            try {",
+                "                Fill(\"Search\", r[12]), W(200)",
+                "                Key(\"{Enter}\"), W(300)",
+                "            }",
+                "        }",
+                "        return \"nocode\"",
+                "    }",
                 "    try {",
                 "        Fill(\"Cat\", r[4]), W(700)                 ; Cat jumps to Sel on its own",
                 "        if r[4] != \"USR\" {",
@@ -1097,7 +1110,8 @@
                     const q = Number(r.qty).toFixed(2).replace(/\.?0+$/, '');
                     const p = Math.abs(Number(r.price)).toFixed(2);                  // typed positive; Credit Item makes it negative
                     return '    [' + (i + 2) + ", '" + esc(r.room) + "', " + (r.entry === 'Credit' ? 1 : 0) + ", '" + esc(r.cat) + "', '" + esc(sel) + "', '" + esc(act) +
-                        "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ", '" + esc(r.xnote || '') + "']";
+                        "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ", '" + esc(r.xnote || '') +
+                        "', '" + esc(r.cat ? '' : r.desc) + "', '" + esc(r.choices || '') + "']";
                 });
                 const t = String(title).replace(/["`\r\n]/g, '');
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
@@ -1592,20 +1606,20 @@
                 window.XLSX.writeFile(wb, 'Ours_vs_Insurance_' + base + '.xlsx');
             };
             // Xactimate script for the Differences rows (Nov 14): same rows and row numbers as the Excel Differences tab; notes typed through Attachments
-            const downloadScript = () => {
-                const entry = kept.filter(r => r.entry !== 'Info');
+            const downloadScript = (theirsOnly) => {
+                const entry = kept.filter(r => theirsOnly ? r.entry === 'Info' : r.entry !== 'Info');
                 if (!entry.length) return;
                 const job = jobs.find(j => j.id === jobId);
                 const who = (job && job.code) || ours.est.estimate || 'estimate';
                 const now = new Date();
                 const roomCount = new Set(entry.map(r => r.room)).size;
                 const total = entry.reduce((a, r) => a + r.amount, 0);
-                const title = who + ' | Differences: ' + ours.est.fileName + ' vs ' + ins.est.fileName + ' | ' + entry.length + ' rows, ' + roomCount + ' rooms, total ' + money(total) + ' | made ' + now.toLocaleString();
+                const title = who + (theirsOnly ? ' | Theirs only (into our revised estimate): ' : ' | Differences: ') + ours.est.fileName + ' vs ' + ins.est.fileName + ' | ' + entry.length + ' rows, ' + roomCount + ' rooms, total ' + money(total) + ' | made ' + now.toLocaleString();
                 const text = EstCompare.xactScript(entry, title, 'p' + now.getTime().toString(36));
                 const day = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/plain' }));
-                a.download = 'Xact_Differences_' + who.replace(/[^\w.-]+/g, '_') + '_' + day + '.ahk';
+                a.download = (theirsOnly ? 'Xact_TheirsOnly_' : 'Xact_Differences_') + who.replace(/[^\w.-]+/g, '_') + '_' + day + '.ahk';
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -1736,7 +1750,8 @@
                                     ))}
                                     <span className="grow"></span>
                                     {lines && <button className="btn-secondary" onClick={download}>Download Excel</button>}
-                                    {lines && <button className="btn-secondary" onClick={downloadScript}>Download Xactimate script</button>}
+                                    {lines && <button className="btn-secondary" onClick={() => downloadScript(false)}>Download Xactimate script</button>}
+                                    {lines && <button className="btn-secondary" onClick={() => downloadScript(true)} title="Ticked Theirs only rows, at their unit price, for a copy of our estimate with rooms renamed to match theirs">Download script: theirs only</button>}
                                 </div>
                                 <div className="muted" style={{ marginBottom: '6px' }}>{lib === null ? 'Loading the code library…' : lib ? 'Code library: ' + lib.count.toLocaleString() + ' codes' + (lib.made ? ' (made ' + lib.made + ')' : '') + '. Used for their lines with no code.' : 'Code library not found (est-compare/codes.json). Their lines with no code are guessed from our lines only.'}</div>
                                 {!lines && <div className="muted">Uses the room pairings above. Lines in common (within 10%) are hidden. Changing a pairing clears the results.</div>}
