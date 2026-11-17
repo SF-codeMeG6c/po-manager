@@ -522,7 +522,7 @@
             const STOP_W = new Set(['the', 'a', 'an', 'of', 'and', 'or', 'to', 'per', 'with', 'w', 'in', 'on', 'for', 'r']);
             const SURF_W = new Set(['wall', 'walls', 'ceiling', 'ceilings', 'part', 'surface', 'area', 'floor', 'floors']);
             const wordsOf = (t) => (String(t).toLowerCase().match(/[a-z0-9/"']+/g) || []).filter(w => !STOP_W.has(w));
-            const WORD_MIN = 0.6, WORD_TIE = 0.05;
+            const WORD_MIN = 0.6, WORD_TIE = 0.05, PAIR_MIN = 0.45;
             // best library codes by shared words (same unit). Returns the tied top codes, or null.
             const wordTop = (lib, desc, unit) => {
                 const all = wordsOf(desc);
@@ -644,7 +644,8 @@
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
                             what: (check ? 'CHECK CODE. ' : '') + what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
-                            choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check, xnote: check ? 'CHECK CODE' : '' });
+                            choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check,
+                            xnote: check ? 'CHECK CODE - Ins: ' + cleanDesc(x.it.desc).replace(/\*+$/, '') + ' ' + f2(x.it.qty) + ' ' + x.it.unit + ' @ ' + f2(x.it.price) : '' });
                     };
                     order.forEach(key => {
                         const s = slots[key];
@@ -678,6 +679,22 @@
                         } else if (s.o.length) s.o.forEach(x => add(x, 'OURS', 'Not in their estimate'));
                         else if (s.t.length && !s.o2.length) s.t.forEach(x => { theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
                     });
+                });
+                // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
+                const dice = (p, q) => { const A = new Set(wordsOf(p)), B = new Set(wordsOf(q)); let k = 0; A.forEach(w => { if (B.has(w)) k++; }); return A.size + B.size ? 2 * k / (A.size + B.size) : 0; };
+                const usedT = new Set();
+                rows.filter(r => r.kind === 'OURS').forEach(o => {
+                    let best = null, bs = 0;
+                    rows.forEach(t => {
+                        if (t.kind !== 'THEIRS' || t.room !== o.room || usedT.has(t) || !t.cat || t.cat !== o.cat || t.unit !== o.unit) return;
+                        if (Math.abs(o.qty - t.qty) > DIFF_PCT * Math.max(o.qty, t.qty) + 0.005) return;
+                        const sc = dice(o.desc, t.desc);
+                        if (sc >= PAIR_MIN && sc > bs) { best = t; bs = sc; }
+                    });
+                    if (!best) return;
+                    usedT.add(best);
+                    o.xnote = 'Ins has: ' + best.desc + ' ' + f2(best.qty) + ' ' + best.unit + ' @ ' + f2(best.price);
+                    o.what += '. ' + o.xnote;
                 });
                 const order = {};
                 groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
