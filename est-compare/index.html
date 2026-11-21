@@ -854,7 +854,7 @@
                 "INI := A_ScriptDir \"\\XactEntry_settings.ini\"",
                 "STOP_LOG := A_ScriptDir \"\\XactEntry_stops.txt\"   ; one line per stop: row, item, reason, window in front",
                 "",
-                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"RemovePrice\", \"CreditItem\", \"Exempt\", \"OK\", \"Search\", \"Attach\", \"Bold\", \"NotesClose\"]",
+                "SPOT_NAMES := [\"Cat\", \"Sel\", \"Act\", \"Desc\", \"Calc\", \"Price\", \"RemovePrice\", \"CreditItem\", \"Exempt\", \"OK\", \"Cancel\", \"Search\", \"Attach\", \"Bold\", \"NoteText\", \"NoteType\", \"LineBreak\", \"NotesClose\"]",
                 "LABELS := Map(",
                 "    \"Cat\", \"the Cat box\",",
                 "    \"Sel\", \"the Sel box\",",
@@ -866,9 +866,13 @@
                 "    \"CreditItem\", \"the Credit Item button\",",
                 "    \"Exempt\", \"the Exempt button\",",
                 "    \"OK\", \"the OK button\",",
+                "    \"Cancel\", \"the Cancel button in Quick Entry\",",
                 "    \"Search\", \"the Search box (top of the Search panel)\",",
                 "    \"Attach\", \"the Attachments button (top of Quick Entry)\",",
                 "    \"Bold\", \"the Bold (B) button in the Notes window (click Attachments first to open it)\",",
+                "    \"NoteText\", \"the big box in the Notes window where the note is typed\",",
+                "    \"NoteType\", \"the drop-down that says Note (Notes window, left side)\",",
+                "    \"LineBreak\", \"Line Break in that drop-down's list (click the drop-down first so the list shows; after F8, click Line Break)\",",
                 "    \"NotesClose\", \"the Close button in the Notes window\")",
                 "",
                 "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note, Description to search (no code), Code choices, Our note, Bold end of note, Heading to add first]",
@@ -906,7 +910,7 @@
                 "    global setupStep, newSpots, newExe",
                 "    if running",
                 "        return",
-                "    MsgBox \"Set-up`n`n1. In Xactimate, open the Search panel and leave it open (the script needs it open while it runs too).`n2. Click a room and type FNC, then B3, and set Act to &, so the whole Quick Entry panel shows (Replace Price, Remove Price, Credit Item, Exempt).`n3. Click OK on this message.`n4. For each spot named at the bottom of the screen, rest the mouse on it (don't click) and press F8.`n`nFor the last three spots: rest the mouse on Attachments and press F8, then click Attachments to open the Notes window and do its Bold (B) button and its Close button.`n`nPress Esc to cancel. When done, close the Notes window and press Cancel in Xactimate's Quick Entry.\", \"Xactimate Entry\", MSG_TOP",
+                "    MsgBox \"Set-up`n`n1. In Xactimate, open the Search panel and leave it open (the script needs it open while it runs too).`n2. Click a room and type FNC, then B3, and set Act to &, so the whole Quick Entry panel shows (Replace Price, Remove Price, Credit Item, Exempt).`n3. Click OK on this message.`n4. For each spot named at the bottom of the screen, rest the mouse on it (don't click) and press F8.`n`nFor the last spots: rest the mouse on Attachments and press F8, then click Attachments to open the Notes window and do: its Bold (B) button, the big note box, the Note drop-down, Line Break in the drop-down's list (click the drop-down so the list shows, F8 on Line Break, then click Line Break), and its Close button. Do not press Esc during set-up (Esc cancels it).`n`nPress Esc to cancel. When done, close the Notes window and press Cancel in Xactimate's Quick Entry.\", \"Xactimate Entry\", MSG_TOP",
                 "    newSpots := Map(), newExe := \"\", setupStep := 1",
                 "    SetupTip()",
                 "}",
@@ -1089,12 +1093,19 @@
                 "}",
                 "",
                 "; Attachments opens the Notes window; the cursor starts in the lower box; Close saves the note to this line",
-                "; Heading: Attachments on a blank Quick Entry, type the heading, Close (Attach to previous item left unticked). Bold them by hand at the end.",
+                "; Heading: Attachments on a blank Quick Entry, pick Line Break in the Note drop-down, click the note box, type the heading, Close, then Cancel in Quick Entry. Bold them by hand at the end.",
                 "AddHeading(t) {",
                 "    ClickSpot(\"Attach\")",
                 "    if !WinWaitActive(\"Notes ahk_exe \" xexe, , 5 * SPEED)",
                 "        throw Error(\"popup\")",
                 "    W(500)",
+                "    if stopFlag",
+                "        throw Error(\"stopped\")",
+                "    for name in [\"NoteType\", \"LineBreak\", \"NoteText\"] {   ; spots are inside the Notes window",
+                "        p := spots[name]",
+                "        Click p[1], p[2]",
+                "        W(400)",
+                "    }",
                 "    if stopFlag",
                 "        throw Error(\"stopped\")",
                 "    Send \"{Text}\" t",
@@ -1104,6 +1115,8 @@
                 "    if !WinWaitActive(\"ahk_id \" mainWin, , 5 * SPEED)",
                 "        throw Error(\"popup\")",
                 "    W(500)",
+                "    ClickSpot(\"Cancel\")                     ; the Line Break stays selected; Cancel gives a blank Quick Entry below it",
+                "    W(600)",
                 "}",
                 "",
                 "; r[14] = our original note (first line), r[11] = note, r[15] = typed in bold after clicking the Bold button",
@@ -1212,7 +1225,9 @@
             const xactScript = (entry, title, key) => {
                 const esc = (s) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').replace(/`/g, '``').replace(/'/g, "`'");
                 const lines = entry.map((r, i) => {
-                    const hd = r.head && (i === 0 || entry[i - 1].room !== r.room || entry[i - 1].head !== r.head) ? r.head : '';   // Nov 20: heading before this row
+                    // Nov 20 evening: heading before the first row of a heading group in a room, entered as a Line Break note, then Cancel in Quick Entry
+                    // (a plain note heading left its line selected: next rows were lost and later lines went in above the headings).
+                    const hd = r.head && (i === 0 || entry[i - 1].room !== r.room || entry[i - 1].head !== r.head) ? r.head : '';
                     const sel = r.sel || '';
                     const act = /^BID/i.test(sel) ? '' : (r.act || '');           // bid items have no Act
                     const exempt = r.cat === 'USR' && r.desc === 'Minor price differences' ? 1 : 0;
