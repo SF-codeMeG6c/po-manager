@@ -480,7 +480,7 @@
             const tradeRecap = (ours, ins) => {
                 const a = (ours.recap || {}).cats || {}, b = (ins.recap || {}).cats || {};
                 const names = Object.keys(a).concat(Object.keys(b).filter(k => !(k in a))).sort();
-                const rows = names.map(t => { const o = a[t] || 0, n = b[t] || 0, d = r2(o - n); return { trade: t, ours: o, ins: n, diff: d, left: Math.abs(d) <= TRADE_MIN }; });
+                const rows = names.map(t => { const o = a[t] || 0, n = b[t] || 0, d = r2(o - n); return { trade: t, ours: o, ins: n, diff: d, left: false /* Nov 20 (Spencer): $200 rule dropped, no trade is left out */ }; });
                 const check = (est) => {
                     const rc = est.recap;
                     if (!rc || !Object.keys(rc.cats).length) return { found: false };
@@ -622,8 +622,8 @@
                     g.ours.concat(g.theirs).forEach(it => { const c = it.cat || (codeOf[lineKey(it).base] || {}).cat; if (c) roomCats[c] = (roomCats[c] || 0) + 1; });
                     const pref = (c) => (roomCats[c] || 0) * 1000 + (jobCats[c] || 0);
                     const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
-                        price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no });
-                    const theirs = (x, kind, what, sort, ourPrice) => {
+                        price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no, head: x.it.head || '' });
+                    const theirs = (x, kind, what, sort, ourPrice, head) => {
                         const found = x.it.cat || codeOf[x.base] ? null : libFind(x.it);
                         let code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : (codeOf[x.base] || (found && found.length === 1 ? found[0] : null));
                         let from = x.it.cat ? '' : codeOf[x.base] ? '. Code guessed from our line' : code ? '. Code from library'
@@ -644,7 +644,7 @@
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
                             what: (check ? 'CHECK CODE. ' : '') + what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
-                            choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check,
+                            choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check, head: head || '',
                             xnote: check ? 'CHECK CODE - Ins: ' + cleanDesc(x.it.desc).replace(/\*+$/, '') + ' ' + f2(x.it.qty) + ' ' + x.it.unit + ' @ ' + f2(x.it.price) : '' });
                     };
                     order.forEach(key => {
@@ -666,12 +666,12 @@
                                 const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt) + ' = ';
                                 const nb = (cr ? 'Credit ' : 'Add ') + (qtyDiff ? f2(Math.abs(dq)) : f2(qo) + ' @ ' + f2(pr));   // Nov 20: "= Add 1.00" / "= Credit 9.75", typed in bold
                                 rows.push({ id: 'n' + x.no, room: g.name, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: q, unit: u,
-                                    price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt + nb, note: x.note || '', xnote: nt, xbold: nb, sort: x.no });
+                                    price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt + nb, note: x.note || '', xnote: nt, xbold: nb, sort: x.no, head: x.head || '' });
                                 return;
                             }
                             const ourPrice = s.o[0].it.cat ? (s.o[0].action === 'rr' ? s.o[0].it.replace : s.o[0].it.price) : 0;
                             s.o.forEach(x => add(x, 'DIFF', what));
-                            s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice));
+                            s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice, s.o[0].it.head));
                         } else if (s.o.length && s.t2.length) {
                             // our separate Remove line against the remove half of their R&R line: no credit
                             const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t2.map(x => x.it));
@@ -722,8 +722,8 @@
                 XLSX.utils.book_append_sheet(wb, ws2, 'Trade recap');
                 if (meta.lines) {
                     const L = meta.lines, e = L.rows.filter(r => r.entry !== 'Info'), info = L.rows.filter(r => r.entry === 'Info');
-                    const head = ['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Unit price', 'Amount', 'Our line #', 'Their line #', 'Their room', 'Note'];
-                    const body = (list) => list.map(r => [r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.ourNo, r.insNo, r.insRoom, r.what]);
+                    const head = ['Room', 'Entry', 'CAT', 'SEL', 'ACT', 'Description', 'Qty', 'Unit', 'Unit price', 'Amount', 'Our line #', 'Their line #', 'Their room', 'Note', 'Heading'];
+                    const body = (list) => list.map(r => [r.room, r.entry, r.cat, r.sel, r.act, r.desc, r.qty, r.unit, r.price, r.amount, r.ourNo, r.insNo, r.insRoom, r.what, r.head || '']);
                     const a3 = [head].concat(body(e)), end = e.length + 1, t = end + 2;
                     const total = r2(e.reduce((x, r) => x + r.amount, 0)), gap = r2(L.oursTotal - L.insTotal);
                     const line = (label, cell) => { const row = new Array(14).fill(null); row[5] = label; row[9] = cell; return row; };
@@ -732,16 +732,15 @@
                     a3.push(line('Our estimate, line items before tax and O&P', L.oursTotal));
                     a3.push(line('Insurance estimate, line items before tax and O&P', L.insTotal));
                     a3.push(line('Difference between the two estimates', { t: 'n', v: gap, f: 'J' + (t + 1) + '-J' + (t + 2) }));
-                    a3.push(line('Not in the rows: trades left out ($' + recap.limit + ' rule)', L.leftOut));
                     a3.push(line('Not in the rows: lines in common (differences of 10% or less)', L.common));
                     a3.push(line('Not in the rows: theirs only, no credit', -L.theirsOnly));
-                    a3.push(line('Not in the rows: everything else (replace-only credits, lines you unticked)', { t: 'n', v: r2(gap - total - L.leftOut - L.common + L.theirsOnly), f: 'J' + (t + 3) + '-J' + t + '-J' + (t + 4) + '-J' + (t + 5) + '-J' + (t + 6) }));
+                    a3.push(line('Not in the rows: everything else (replace-only credits, lines you unticked)', { t: 'n', v: r2(gap - total - L.common + L.theirsOnly), f: 'J' + (t + 3) + '-J' + t + '-J' + (t + 4) + '-J' + (t + 5) }));
                     a3.push(line('Amounts are before tax and O&P. Credits are negative.', null));
                     const fmt = (ws) => Object.keys(ws).forEach(k => { if (k[0] !== '!' && 'GIJ'.includes(k.replace(/\d+/g, '')) && ws[k].t === 'n') ws[k].z = '#,##0.00'; });
-                    const widths = [24, 8, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 22, 60].map(w => ({ wch: w }));
+                    const widths = [24, 8, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 22, 60, 30].map(w => ({ wch: w }));
                     const ws3 = XLSX.utils.aoa_to_sheet(a3);
                     ws3['!cols'] = widths;
-                    if (e.length) ws3['!autofilter'] = { ref: 'A1:N' + end };
+                    if (e.length) ws3['!autofilter'] = { ref: 'A1:O' + end };
                     fmt(ws3);
                     XLSX.utils.book_append_sheet(wb, ws3, 'Differences');
                     const ws4 = XLSX.utils.aoa_to_sheet([head].concat(body(info)));
@@ -872,12 +871,13 @@
                 "    \"Bold\", \"the Bold (B) button in the Notes window (click Attachments first to open it)\",",
                 "    \"NotesClose\", \"the Close button in the Notes window\")",
                 "",
-                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note, Description to search (no code), Code choices, Our note, Bold end of note]",
+                "; [Excel row, Room, Credit?, CAT, SEL, ACT, Desc (USR only), Qty, Price (positive), Exempt?, Note, Description to search (no code), Code choices, Our note, Bold end of note, Heading to add first]",
                 "ROWS := [",
                 "%%ROWS%%",
                 "]",
                 "",
                 "global spots := Map(), xexe := \"\", idx := 1, running := false, stopFlag := false, mainWin := 0",
+                "global headDone := 0   ; row whose heading is already in (so a redo of that row doesn't add it twice)",
                 "global setupStep := 0, newSpots := Map(), newExe := \"\", lastF8 := 0   ; set-up: 0 = not setting up, else which spot is next",
                 "LoadSettings()",
                 "ShowNext()",
@@ -1037,7 +1037,14 @@
                 "}",
                 "",
                 "EnterRow(r) {",
-                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note, search text, code choices]",
+                "    ; r: [xlRow, room, credit, cat, sel, act, desc, qty, price, exempt, note, search text, code choices, our note, bold, heading]",
+                "    global headDone",
+                "    if r[16] != \"\" && headDone != r[1] {",
+                "        try AddHeading(r[16])",
+                "        catch as e",
+                "            return e.Message = \"stopped\" ? \"stopped\" : \"popup\"",
+                "        headDone := r[1]",
+                "    }",
                                 "    if r[4] = \"\" || (r[4] != \"USR\" && r[5] = \"\") {   ; no code (or Cat only): type Cat if known, search the description, stop for hand entry",
                 "        if r[12] != \"\" {",
                 "            try {",
@@ -1082,6 +1089,23 @@
                 "}",
                 "",
                 "; Attachments opens the Notes window; the cursor starts in the lower box; Close saves the note to this line",
+                "; Heading: Attachments on a blank Quick Entry, type the heading, Close (Attach to previous item left unticked). Bold them by hand at the end.",
+                "AddHeading(t) {",
+                "    ClickSpot(\"Attach\")",
+                "    if !WinWaitActive(\"Notes ahk_exe \" xexe, , 5 * SPEED)",
+                "        throw Error(\"popup\")",
+                "    W(500)",
+                "    if stopFlag",
+                "        throw Error(\"stopped\")",
+                "    Send \"{Text}\" t",
+                "    W(300)",
+                "    p := spots[\"NotesClose\"]",
+                "    Click p[1], p[2]",
+                "    if !WinWaitActive(\"ahk_id \" mainWin, , 5 * SPEED)",
+                "        throw Error(\"popup\")",
+                "    W(500)",
+                "}",
+                "",
                 "; r[14] = our original note (first line), r[11] = note, r[15] = typed in bold after clicking the Bold button",
                 "AddNote(r) {",
                 "    ClickSpot(\"Attach\")",
@@ -1173,7 +1197,7 @@
                 "        return",
                 "    }",
                 "    if idx > ROWS.Length {",
-                "        Tip(\"Xactimate Entry: all \" ROWS.Length \" rows done. Check the totals in Xactimate.\")",
+                "        Tip(\"Xactimate Entry: all \" ROWS.Length \" rows done. Check the totals in Xactimate. Headings: Ctrl+click them, right-click, Line Edit Options > Bold.\")",
                 "        return",
                 "    }",
                 "    r := ROWS[idx], n := 0",
@@ -1188,6 +1212,7 @@
             const xactScript = (entry, title, key) => {
                 const esc = (s) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').replace(/`/g, '``').replace(/'/g, "`'");
                 const lines = entry.map((r, i) => {
+                    const hd = r.head && (i === 0 || entry[i - 1].room !== r.room || entry[i - 1].head !== r.head) ? r.head : '';   // Nov 20: heading before this row
                     const sel = r.sel || '';
                     const act = /^BID/i.test(sel) ? '' : (r.act || '');           // bid items have no Act
                     const exempt = r.cat === 'USR' && r.desc === 'Minor price differences' ? 1 : 0;
@@ -1196,7 +1221,7 @@
                     return '    [' + (i + 2) + ", '" + esc(r.room) + "', " + (r.entry === 'Credit' ? 1 : 0) + ", '" + esc(r.cat) + "', '" + esc(sel) + "', '" + esc(act) +
                         "', '" + esc(r.cat === 'USR' ? r.desc : '') + "', '" + q + "', '" + p + "', " + exempt + ", '" + esc(r.xnote || '') +
                         "', '" + esc(!r.cat || (r.cat !== 'USR' && !r.sel) ? r.desc : '') + "', '" + esc(r.choices || '') +
-                        "', '" + esc(r.ourNo && r.note && /[a-z]/.test(r.note) ? r.note : '') + "', '" + esc(r.xbold || '') + "']";   // Nov 20: our note, bold tail
+                        "', '" + esc(r.ourNo && r.note && /[a-z]/.test(r.note) ? r.note : '') + "', '" + esc(r.xbold || '') + "', '" + esc(hd) + "']";   // Nov 20: our note, bold tail, heading
                 });
                 const t = String(title).replace(/["`\r\n]/g, '');
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
@@ -1823,7 +1848,7 @@
                                         </tbody>
                                     </table>
                                 )}
-                                <div className="muted">From each estimate's Recap by Category, before tax and O&P. Trades within ${recap.limit} of each other are left out of the line comparison.</div>
+                                <div className="muted">From each estimate's Recap by Category, before tax and O&P.</div>
                             </div>
 
                             <div className="section">
@@ -1846,10 +1871,9 @@
                                             <tbody>
                                                 <tr><td>Rows to enter (ticked adds and credits)</td><td className="n">{money(entryTotal)}</td></tr>
                                                 <tr><td>Our estimate less the insurance estimate, line items</td><td className="n">{money(lines.oursTotal - lines.insTotal)}</td></tr>
-                                                <tr><td>Not in the rows: trades left out (${recap.limit} rule)</td><td className="n">{money(lines.leftOut)}</td></tr>
                                                 <tr><td>Not in the rows: lines in common (10% or less apart)</td><td className="n">{money(lines.common)}</td></tr>
                                                 <tr><td>Not in the rows: theirs only, no credit</td><td className="n">{money(-lines.theirsOnly)}</td></tr>
-                                                <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.leftOut - lines.common + lines.theirsOnly)}</td></tr>
+                                                <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.common + lines.theirsOnly)}</td></tr>
                                             </tbody>
                                         </table>
                                         {shownLines.length === 0 && <div className="msg">Nothing to show. Tick a type above.</div>}
