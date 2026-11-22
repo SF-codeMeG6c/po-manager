@@ -649,6 +649,8 @@
                     };
                     order.forEach(key => {
                         const s = slots[key];
+                        // Nov 22 (Spencer): two or more of ours, one of theirs -> theirs pairs with the FIRST of ours (in our order), never the sum; the rest of ours are Ours only
+                        if (s.o.length > 1 && s.t.length === 1) { s.o.slice(1).forEach(x => add(x, 'OURS', 'Not in their estimate')); s.o = s.o.slice(0, 1); }
                         if (s.o.length && s.t.length) {
                             const same = s.o.concat(s.t).every(x => x.action === s.o[0].action);
                             const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t.map(x => x.it)), po = sumP(s.o.map(x => x.it)), pt = sumP(s.t.map(x => x.it));
@@ -682,7 +684,7 @@
                 });
                 // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
                 const dice = (p, q) => { const A = new Set(wordsOf(p)), B = new Set(wordsOf(q)); let k = 0; A.forEach(w => { if (B.has(w)) k++; }); return A.size + B.size ? 2 * k / (A.size + B.size) : 0; };
-                const usedT = new Set();
+                const usedT = new Set(), drop = new Set();
                 rows.filter(r => r.kind === 'OURS').forEach(o => {
                     let best = null, bs = 0;
                     rows.forEach(t => {
@@ -693,9 +695,14 @@
                     });
                     if (!best) return;
                     usedT.add(best);
+                    // Nov 22 (Spencer): unit price also within 10% -> same scope, counts as in common: out of the Differences and the theirs-only list
+                    if (!over(o.price, best.price)) {   /* same 10% test as lines in common */
+                        drop.add(o); drop.add(best); common += o.amount - best.amount; theirsOnly -= best.amount; return;
+                    }
                     o.xnote = 'Ins has: ' + best.desc + ' ' + f2(best.qty) + ' ' + best.unit + ' @ ' + f2(best.price);
                     o.what += '. ' + o.xnote;
                 });
+                for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i])) rows.splice(i, 1);
                 const order = {};
                 groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
                 rows.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
