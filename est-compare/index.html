@@ -735,8 +735,30 @@
                         else if (s.t.length && !s.o2.length) s.t.forEach(x => { if (isAI(x.it)) { aiLeft.push({ g, it: x.it }); return; } theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
                     });
                 });
+                // Nov 23 (Spencer, build 3): several insurance lines connected to ONE of ours are added together -> one net line on our code.
+                // Same unit: net quantity. Mixed units (e.g. SF + LF): our quantity at the dollar difference, and Spencer writes that note by hand.
+                const LKn = {};
+                LK.forEach(k => { (LKn[k.o.no] = LKn[k.o.no] || []).push(k); });
+                Object.keys(LKn).map(n => LKn[n]).filter(ks => ks.length > 1).forEach(ks => {
+                    const o = ks[0].o, priced = ks.filter(k => !isAI(k.t)).map(k => k.t), g = groupOf[ks[0].t.room], po = o.pre || 0;
+                    if (!priced.length) { asInc(g, o, ks[0].t, '. Connected by hand'); return; }
+                    const pt = sumP(priced), dd = r2(po - pt), nos = priced.map(t => t.no).join(', ');
+                    if (!dd) { common += po - pt; return; }
+                    if (dd < 0) { chg(g, o, priced, 'Insurance more (connected by hand, Ins lines ' + nos + ' together)'); return; }
+                    const cp = copies.filter(x => ks.includes(x.k)).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + x.k.t.no + ': remove it from our estimate').join('');
+                    const sameU = priced.every(t => t.unit === o.unit), qt = sumQ(priced), qd = sameU && o.qty - qt > 0.005;
+                    const q = qd ? r2(o.qty - qt) : o.qty, pr = r2(dd / q);
+                    const differs = o.cat && priced.some(t => cleanDesc(o.desc) !== cleanDesc(t.desc).replace(/\*+$/, ''));
+                    const nt = 'Ours ' + f2(o.qty) + ' ' + o.unit + ' @ ' + f2(po / o.qty) + priced.map(t => ' - Ins ' + f2(t.qty) + ' ' + t.unit + ' @ ' + f2((t.pre || 0) / t.qty)).join('') + ' = '
+                        + (differs ? 'Change to our code ' + o.cat + ' ' + o.sel + ', ' : '');
+                    const nb = 'Add ' + f2(q) + ' ' + o.unit + (qd ? '' : ' @ ' + f2(pr));
+                    rows.push({ id: 'k' + o.no, room: g ? g.name : priced[0].room, kind: 'DIFF', entry: 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: q, unit: o.unit,
+                        price: pr, amount: r2(q * pr), ourNo: o.no, insNo: priced[0].no, insRoom: priced[0].room,
+                        what: nt + nb + '. Connected by hand to Ins lines ' + nos + (sameU ? '' : '. Mixed units: write the note by hand') + cp, note: o.note || '',
+                        xnote: sameU ? nt : '', xbold: sameU ? nb : '', sort: o.no, head: o.head || '', linked: true });
+                });
                 // Nov 22 (Spencer): each connected pair -> ONE net line on our code; "Change to our code" when the items differ
-                LK.forEach(k => {
+                LK.filter(k => LKn[k.o.no].length === 1).forEach(k => {
                     const o = k.o, t = k.t, g = groupOf[t.room], po = o.pre || 0, pt = t.pre || 0, dd = r2(po - pt);
                     if (isAI(t)) { asInc(g, o, t, '. Connected by hand'); return; }
                     if (!dd) { common += po - pt; return; }
@@ -781,6 +803,54 @@
                         if (sh.length >= 2) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
                     });
                 });
+                // Nov 23 (Spencer, build 4): more suggested pairs, only among lines still Ours only / Theirs only. Each of theirs gets ONE suggestion (the best);
+                // several of theirs may point at the same line of ours. Nothing is paired until he clicks Connect.
+                {
+                    const GEN_W = new Set(['clean', 'paint', 'seal', 'prime', 'stain', 'finish', 'coat', 'coats', 'one', 'two', '1', '2', 'side', 'detach', 'reset', 'remove', 'replace', 'r&r', 'install', 'material', 'only',
+                        'add', 'additional', 'charge', 'labor', 'minimum', 'hour', 'unit', 'large', 'small', 'high', 'grade', 'surface', 'area', 'part', 'then', 'up', 'lf', 'sf', 'ea', 'item', 'bid', 'including', 'average', 'standard']);
+                    const keyW = (t) => [...new Set(wordsOf(String(t || '').replace(/[\/&()+,.-]/g, ' ')).filter(w => w.length > 2 && !GEN_W.has(w) && !/^[0-9'"]+$/.test(w)))];
+                    const likeW = (a, b) => sameWord(a, b) || (Math.min(a.length, b.length) >= 5 && (a.includes(b) || b.includes(a)));   /* splash = backsplash */
+                    const oItem = {}, tItem = {};
+                    ours.items.forEach(it => { oItem[it.no] = it; });
+                    ins.items.forEach(it => { tItem[it.no] = it; });
+                    const measured = (r) => !['EA', 'HR', 'MO', 'DA', 'WK'].includes(r.unit) && r.qty >= 10;   /* a real measurement, not a count */
+                    /* ours: not labor hours, and not a line that already has its "Ins has" suggestion */
+                    const OU = rows.filter(r => r.kind === 'OURS' && !drop.has(r) && oItem[r.ourNo] && r.unit !== 'HR' && !/^Ins has/.test(r.xnote || ''));
+                    const TH = rows.filter(r => r.kind === 'THEIRS' && !drop.has(r) && tItem[r.insNo] && !suggest.some(x => x.ins === r.insNo));
+                    const near = (a, b, pct) => Math.abs(a - b) <= pct * Math.max(a, b) + 0.005;
+                    const made = [];
+                    TH.forEach(t => {
+                        const ti = tItem[t.insNo], kt = lineKey(ti), pr = P(ti.room), wt = keyW(t.desc);
+                        let best = null;
+                        const offer = (o, rank, score, why) => { if (!best || rank < best.rank || (rank === best.rank && score > best.score + 1e-9)) best = { o, rank, score, why }; };
+                        OU.forEach(o => {
+                            const oi = oItem[o.ourNo], ko = lineKey(oi);
+                            // 1. the same item in the same room of ours, under another heading (our ALL ELEVATIONS line against their Left Elevation)
+                            if (o.room !== t.room && pr && oi.room === pr.room && ko.base === kt.base && ko.action === kt.action) { offer(o, 1, 0, 'Same item elsewhere in our ' + oi.room + (oi.head ? ' (' + oi.head + ')' : '')); return; }
+                            if (o.room !== t.room) return;
+                            // 2. same room, same unit and action, quantity within 2%, any category (their quarter round against our base shoe)
+                            if (o.unit === t.unit && ko.action === kt.action && near(o.qty, t.qty, 0.02) && measured(o) && measured(t)) offer(o, 2, -Math.abs(o.qty - t.qty), 'Same quantity and action');
+                            // 3. same room, same category, a key word in common (in the descriptions, or in our note)
+                            if (!t.cat || t.cat !== o.cat) return;
+                            const wo = keyW(o.desc), sh = wt.filter(w => wo.some(v => likeW(w, v)));
+                            if (sh.length) { offer(o, 3, 2 * sh.length / (wt.length + wo.length), 'Same category ' + o.cat + ', both say: ' + sh.join(' ')); return; }
+                            const wn = keyW(o.note), sn = wt.filter(w => wn.some(v => likeW(w, v)));
+                            if (sn.length) offer(o, 4, sn.length / wt.length, 'Same category ' + o.cat + ', our note says: ' + sn.join(' '));
+                        });
+                        if (best) made.push({ t, ti, o: best.o, oi: oItem[best.o.ourNo], why: best.why });
+                    });
+                    // 4. goes with a pair above: their line has the same quantity as their line of that pair, our line the same quantity as ours, same category (clean stucco next to paint stucco)
+                    made.slice().forEach(m => {
+                        TH.forEach(t => {
+                            const ti = tItem[t.insNo];
+                            if (made.some(x => x.t === t) || ti.room !== m.ti.room || t.unit !== m.t.unit || Math.abs(t.qty - m.t.qty) > 0.005 || !t.cat || !measured(t)) return;
+                            const o = OU.find(x => x !== m.o && oItem[x.ourNo].room === m.oi.room && (oItem[x.ourNo].head || '') === (m.oi.head || '') && x.unit === m.o.unit && Math.abs(x.qty - m.o.qty) <= 0.005 && x.cat === t.cat);
+                            if (o) made.push({ t, ti, o, oi: oItem[o.ourNo], why: 'Goes with Ins #' + m.t.insNo + ' and ours #' + m.o.ourNo + ' (same quantities, category ' + t.cat + ')' });
+                        });
+                    });
+                    made.forEach(m => suggest.push({ room: m.t.room, ours: m.o.ourNo, ins: m.t.insNo, why: m.why }));
+                    suggest.sort((a, b) => a.ins - b.ins || a.ours - b.ours);
+                }
                 // unpaired AS INCURRED lines: "add by hand" on Change in ours; suggested with our Ours only lines in the same room and category
                 aiLeft.forEach(({ g, it }) => {
                     const f = it.cat ? [{ cat: it.cat }] : libFind(it), cats = new Set((f || []).map(c => c.cat));
@@ -1824,17 +1894,17 @@
             const itemText = (it) => '#' + it.no + ' ' + cd(it.desc) + ' ' + qty(it.qty) + ' ' + it.unit + ' @ ' + qty(it.price);
             const liveItem = (it) => !it.status && it.qty > 0;
             const linkPart = linkRoom ? partFromValue(pairs[linkRoom]) : null;
-            const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part) && !links.some(l => l.ours === it.no)) : [];
+            const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part)) : [];
             const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom && !links.some(l => l.ins === it.no)) : [];
             const setLinksAndCompare = (lk) => { setLinks(lk); setSaveMsg(''); if (lines) compareLines(lk); };
             const connectNos = (oNo, tNo) => {
                 const o = ours.est.items.find(it => it.no === +oNo), t = ins.est.items.find(it => it.no === +tNo);
-                if (!o || !t || links.some(l => l.ours === o.no || l.ins === t.no)) return;
+                if (!o || !t || links.some(l => l.ins === t.no)) return;   /* Nov 23: several of theirs may connect to one of ours */
                 setLinksAndCompare(links.concat([{ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]));
             };
             const connect = () => { connectNos(linkOurs, linkIns); setLinkOurs(''); setLinkIns(''); };
             const itemNo = (est, no) => est.items.find(it => it.no === no);
-            const suggestions = lines && lines.suggest ? lines.suggest.filter(x => !links.some(l => l.ours === x.ours || l.ins === x.ins)) : [];
+            const suggestions = lines && lines.suggest ? lines.suggest.filter(x => !links.some(l => l.ins === x.ins)) : [];
             const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
             const kindCount = (k) => lines ? lines.rows.filter(r => r.kind === k).length : 0;
             const shownLines = lines ? lines.rows.filter(r => showKind[r.kind]) : [];
@@ -2053,7 +2123,7 @@
                                         </table>
                                         <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
                                             <div style={{ fontWeight: 600, marginBottom: '6px' }}>Connect lines by hand</div>
-                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. A connected pair becomes one net line on our code. Saved with Save room pairings.</div>
+                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. A connected pair becomes one net line on our code. Two or more of their lines can be connected to the same line of ours; they are added together. Saved with Save room pairings.</div>
                                             <div className="bar" style={{ marginTop: 0, flexWrap: 'wrap' }}>
                                                 <select value={linkRoom} onChange={e => { setLinkRoom(e.target.value); setLinkOurs(''); setLinkIns(''); }}>
                                                     <option value="">-- Their room --</option>
@@ -2072,15 +2142,20 @@
                                             {suggestions.length > 0 && (
                                                 <div style={{ marginTop: '10px' }}>
                                                     <div style={{ fontWeight: 600 }}>Suggested pairs ({suggestions.length})</div>
-                                                    <div className="muted" style={{ marginTop: 0, marginBottom: '6px' }}>Nothing is paired until you click Connect. Left alone, our line keeps its "Ins has" note and theirs stays Theirs only.</div>
+                                                    <div className="muted" style={{ marginTop: 0, marginBottom: '6px' }}>Nothing is paired until you click Connect. Left alone, our line stays as it is and theirs stays Theirs only. The last column shows what connecting would do.</div>
                                                     <table>
                                                         <tbody>
                                                             {suggestions.map(x => {
                                                                 const o = itemNo(ours.est, x.ours), t = itemNo(ins.est, x.ins);
                                                                 if (!o || !t) return null;
+                                                                /* Nov 23 (build 4): what connecting would do, from the two lines' dollars (and any of theirs already connected to this line of ours) */
+                                                                const already = links.filter(l => l.ours === x.ours).map(l => itemNo(ins.est, l.ins)).filter(Boolean);
+                                                                const po = o.pre || 0, pt = (t.pre || 0) + already.reduce((a, y) => a + (y.pre || 0), 0), net = po - pt;
+                                                                const result = t.status ? '' : 'Ours ' + money(po) + ' - Ins ' + money(pt) + (already.length ? ' (with Ins #' + already.map(y => y.no).join(', #') + ')' : '') + ' = '
+                                                                    + (Math.abs(net) < 0.005 ? 'same' : net > 0 ? 'Add ' + money(net) : 'insurance more, ours changes to theirs');
                                                                 return (
                                                                     <tr key={x.ours + '-' + x.ins}>
-                                                                        <td>{x.room}</td><td>Ins {itemText(t)}</td><td>with ours {itemText(o)}</td><td className="small">{x.why}</td>
+                                                                        <td>{x.room}</td><td>Ins {itemText(t)}</td><td>with ours {itemText(o)}</td><td className="small">{x.why}</td><td className="small">{result}</td>
                                                                         <td><button className="btn-secondary" onClick={() => connectNos(x.ours, x.ins)}>Connect</button></td>
                                                                     </tr>
                                                                 );
