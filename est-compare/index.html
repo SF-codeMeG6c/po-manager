@@ -852,6 +852,36 @@
                     ws4['!cols'] = widths;
                     fmt(ws4);
                     XLSX.utils.book_append_sheet(wb, ws4, 'Theirs only (info)');
+                    // Nov 22 (build 2c): tie-out. Ticked rows only. Column C = the line item total he reads from Xactimate; D = C - B
+                    const toK = r2(info.reduce((x, r) => x + r.amount, 0)), ch = L.changed || 0;
+                    const els = r2(gap - total - L.common + L.theirsOnly - ch), unt = r2(toK - L.theirsOnly);
+                    const n = (v, f) => f ? { t: 'n', v: r2(v), f } : r2(v);
+                    const dif = (r) => ({ t: 's', v: '', f: 'IF(C' + r + '="","",C' + r + '-B' + r + ')' });
+                    const rev = r2(L.oursTotal + toK - ch), g2 = r2(rev - L.insTotal - total);
+                    const a6 = [['Tie-out check, line items before tax and O&P. Type the line item totals from Xactimate in column C; column D should be 0.00 (or a few cents).'], [],
+                        ['Item', 'From the tool', 'Your Xactimate total', 'Difference', 'Where it comes from'],
+                        ['1. OUR REVISED ESTIMATE'],
+                        ['Our original estimate', L.oursTotal, null, null, 'Our PDF, line items'],
+                        ['+ Theirs only adds (ticked)', toK, null, null, 'Theirs-only script (Theirs only tab)'],
+                        ['+ Change in ours (insurance more, copies to remove)', r2(-ch), null, null, 'Change in ours tab, hand edits'],
+                        ['= Our revised estimate should total', n(rev, 'SUM(B5:B7)'), null, dif(8), 'Compare with the revised estimate in Xactimate'],
+                        [],
+                        ['2. DIFFERENCES ESTIMATE'],
+                        ['= Differences estimate should total', n(total, "SUM('Differences'!J2:J" + end + ')'), null, dif(11), 'Rows to enter (Differences tab / script)'],
+                        [],
+                        ["3. WHY THE TWO DON'T TIE EXACTLY"],
+                        ['Revised ours should total', n(rev, 'B8')],
+                        ['- Insurance estimate', L.insTotal, null, null, 'Insurance PDF, line items'],
+                        ['- Differences should total', n(total, 'B11')],
+                        ['= Gap', n(g2, 'B14-B15-B16')],
+                        ['Lines in common (10% or less apart, left out on purpose)', L.common],
+                        ['Everything else (replace-only credits, unticked adds and credits)', els],
+                        ['Theirs only rows you unticked', unt],
+                        ['Check: gap less the three lines above (should be 0.00)', n(g2 - L.common - els - unt, 'ROUND(B17-B18-B19-B20,2)')]];
+                    const ws6 = XLSX.utils.aoa_to_sheet(a6);
+                    ws6['!cols'] = [58, 16, 20, 14, 46].map(w => ({ wch: w }));
+                    Object.keys(ws6).forEach(k => { if (k[0] !== '!' && 'BCD'.includes(k.replace(/\d+/g, '')) && ws6[k].t === 'n') ws6[k].z = '#,##0.00'; });
+                    XLSX.utils.book_append_sheet(wb, ws6, 'Tie-out');
                 }
                 return wb;
             };
@@ -2017,6 +2047,8 @@
                                                 <tr><td>Not in the rows: theirs only, no credit</td><td className="n">{money(-lines.theirsOnly)}</td></tr>
                                                 <tr><td>Not in the rows: changes in our estimate (Change in ours, below)</td><td className="n">{money(lines.changed)}</td></tr>
                                                 <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.common + lines.theirsOnly - lines.changed)}</td></tr>
+                                                <tr className="sum"><td>Our revised estimate should total (ours + ticked theirs only + Change in ours)</td><td className="n">{money(lines.oursTotal + kept.filter(r => r.entry === 'Info').reduce((a, r) => a + r.amount, 0) - lines.changed)}</td></tr>
+                                                <tr className="sum"><td>Differences estimate should total</td><td className="n">{money(entryTotal)}</td></tr>
                                             </tbody>
                                         </table>
                                         <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
