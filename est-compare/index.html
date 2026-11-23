@@ -709,7 +709,7 @@
                 });
                 // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
                 const dice = (p, q) => { const A = new Set(wordsOf(p)), B = new Set(wordsOf(q)); let k = 0; A.forEach(w => { if (B.has(w)) k++; }); return A.size + B.size ? 2 * k / (A.size + B.size) : 0; };
-                const usedT = new Set(), drop = new Set();
+                const usedT = new Set(), drop = new Set(), suggest = [];
                 rows.filter(r => r.kind === 'OURS').forEach(o => {
                     let best = null, bs = 0;
                     rows.forEach(t => {
@@ -726,6 +726,18 @@
                     }
                     o.xnote = 'Ins has: ' + best.desc + ' ' + f2(best.qty) + ' ' + best.unit + ' @ ' + f2(best.price);
                     o.what += '. ' + o.xnote;
+                    suggest.push({ room: o.room, ours: o.ourNo, ins: best.insNo, why: 'Similar item, qty within 10%' });
+                });
+                // Nov 22 (Spencer): also suggest an Ours only and a Theirs only line in the same room whose notes share 2 or more words (e.g. "window sill")
+                const noteW = (t) => new Set(wordsOf(t || '').filter(w => w.length > 2));
+                rows.filter(r => r.kind === 'OURS' && !drop.has(r) && r.note).forEach(o => {
+                    const wo = noteW(o.note);
+                    if (wo.size < 2) return;
+                    rows.forEach(t => {
+                        if (t.kind !== 'THEIRS' || t.room !== o.room || drop.has(t) || !t.note || suggest.some(x => x.ours === o.ourNo && x.ins === t.insNo)) return;
+                        const sh = [...noteW(t.note)].filter(w => wo.has(w));
+                        if (sh.length >= 2) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
+                    });
                 });
                 for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i])) rows.splice(i, 1);
                 const order = {};
@@ -733,7 +745,7 @@
                 rows.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
                 const oursTotal = r2(sumP(ours.items)), insTotal = r2(sumP(ins.items));
                 return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly),
-                    copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
+                    copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), suggest, linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
             };
             const oursWorkbook = (XLSX, changes, recap, meta) => {
                 const wb = XLSX.utils.book_new();
@@ -1725,12 +1737,14 @@
             const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part) && !links.some(l => l.ours === it.no)) : [];
             const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom && !links.some(l => l.ins === it.no)) : [];
             const setLinksAndCompare = (lk) => { setLinks(lk); setSaveMsg(''); if (lines) compareLines(lk); };
-            const connect = () => {
-                const o = ours.est.items.find(it => it.no === +linkOurs), t = ins.est.items.find(it => it.no === +linkIns);
-                if (!o || !t) return;
+            const connectNos = (oNo, tNo) => {
+                const o = ours.est.items.find(it => it.no === +oNo), t = ins.est.items.find(it => it.no === +tNo);
+                if (!o || !t || links.some(l => l.ours === o.no || l.ins === t.no)) return;
                 setLinksAndCompare(links.concat([{ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]));
-                setLinkOurs(''); setLinkIns('');
             };
+            const connect = () => { connectNos(linkOurs, linkIns); setLinkOurs(''); setLinkIns(''); };
+            const itemNo = (est, no) => est.items.find(it => it.no === no);
+            const suggestions = lines && lines.suggest ? lines.suggest.filter(x => !links.some(l => l.ours === x.ours || l.ins === x.ins)) : [];
             const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
             const kindCount = (k) => lines ? lines.rows.filter(r => r.kind === k).length : 0;
             const shownLines = lines ? lines.rows.filter(r => showKind[r.kind]) : [];
@@ -1962,6 +1976,27 @@
                                                 </select>
                                                 <button className="btn-secondary" disabled={!linkOurs || !linkIns} onClick={connect}>Connect</button>
                                             </div>
+                                            {suggestions.length > 0 && (
+                                                <div style={{ marginTop: '10px' }}>
+                                                    <div style={{ fontWeight: 600 }}>Suggested pairs ({suggestions.length})</div>
+                                                    <div className="muted" style={{ marginTop: 0, marginBottom: '6px' }}>Nothing is paired until you click Connect. Left alone, our line keeps its "Ins has" note and theirs stays Theirs only.</div>
+                                                    <table>
+                                                        <tbody>
+                                                            {suggestions.map(x => {
+                                                                const o = itemNo(ours.est, x.ours), t = itemNo(ins.est, x.ins);
+                                                                if (!o || !t) return null;
+                                                                return (
+                                                                    <tr key={x.ours + '-' + x.ins}>
+                                                                        <td>{x.room}</td><td>Ins {itemText(t)}</td><td>with ours {itemText(o)}</td><td className="small">{x.why}</td>
+                                                                        <td><button className="btn-secondary" onClick={() => connectNos(x.ours, x.ins)}>Connect</button></td>
+                                                                    </tr>
+                                                                );
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                            {links.length > 0 && <div style={{ fontWeight: 600, marginTop: '10px' }}>Connected ({links.length})</div>}
                                             {links.length > 0 && (
                                                 <table style={{ marginTop: '8px' }}>
                                                     <tbody>
