@@ -607,7 +607,17 @@
                 ourNames.forEach((name, k) => { if (!byRoom[name]) { const o = rest(name); if (o.length) groups.push({ name, at: 1e6 + k, ours: o, theirs: [] }); } });
                 groups.sort((a, b) => a.at - b.at);
                 const rows = [];
-                let common = 0, theirsOnly = 0;
+                let common = 0, theirsOnly = 0, changed = 0;
+                // Nov 22 (Spencer, build 2a): insurance more -> nothing in the Differences; our line is changed to theirs ("Change in ours" list)
+                const change = [];
+                const chg = (g, o, ts, why) => {
+                    const t0 = ts[0], qt = ts.reduce((a, x) => a + x.qty, 0), pt = ts.reduce((a, x) => a + (x.pre || 0), 0);
+                    const f = !t0.cat && lineKey(o).base !== lineKey(t0).base ? libFind(t0) : null;
+                    const code = t0.cat ? t0.cat + ' ' + t0.sel : lineKey(o).base === lineKey(t0).base ? o.cat + ' ' + o.sel : f && f.length === 1 ? f[0].cat + ' ' + f[0].sel : '';
+                    change.push({ room: g ? g.name : t0.room, ourNo: o.no, cat: o.cat, sel: o.sel, desc: cleanDesc(o.desc), qty: o.qty, unit: o.unit, price: o.price, amount: r2(o.pre || 0),
+                        insNo: ts.map(x => x.no).join(', '), insCode: code, insDesc: cleanDesc(t0.desc).replace(/\*+$/, ''), insQty: r2(qt), insUnit: t0.unit, insPrice: qt ? r2(pt / qt) : t0.price, insAmount: r2(pt), why, sort: o.no });
+                    changed += (o.pre || 0) - pt;
+                };
                 const sumQ = (l) => l.reduce((t, x) => t + x.qty, 0), sumP = (l) => l.reduce((t, x) => t + (x.pre || 0), 0);
                 const over = (a, b) => Math.abs(a - b) > DIFF_PCT * Math.abs(b) + 0.005;
                 const f2 = (n) => n.toFixed(2);
@@ -617,7 +627,12 @@
                     const g = groupOf[k.t.room]; if (!g) return;
                     const kt = lineKey(k.t);
                     const c = g.ours.find(it => !copies.some(x => x.c === it) && lineKey(it).base === kt.base && lineKey(it).action === kt.action && !over(it.qty, k.t.qty) && !over(it.price, k.t.price));
-                    if (c) { copies.push({ c, k }); g.ours = g.ours.filter(it => it !== c); }
+                    if (c) {
+                        copies.push({ c, k }); g.ours = g.ours.filter(it => it !== c);
+                        change.push({ room: g.name, ourNo: c.no, cat: c.cat, sel: c.sel, desc: cleanDesc(c.desc), qty: c.qty, unit: c.unit, price: c.price, amount: r2(c.pre || 0),
+                            insNo: String(k.t.no), insCode: '', insDesc: '', insQty: null, insUnit: '', insPrice: null, insAmount: null, why: 'Copy of Ins line ' + k.t.no + ': remove it from our estimate', sort: c.no, remove: true });
+                        changed += c.pre || 0;
+                    }
                 });
                 groups.forEach(g => {
                     const slots = {}, order = [];
@@ -677,6 +692,7 @@
                             // price only -> our full qty at the per-unit difference. Note "Ours ... - Ins ...". Mixed actions or qty and $ going opposite ways: our line + their credit, as before.
                             const dq = r2(qo - qt), dd = r2(po - pt), qtyDiff = over(qo, qt);
                             if (same && qo && qt && dd && (!qtyDiff || dq * dd > 0)) {
+                                if (dd < 0 && s.o.length === 1) { chg(g, s.o[0].it, s.t.map(x => x.it), 'Insurance more'); return; }
                                 const x = s.o[0].it, q = qtyDiff ? Math.abs(dq) : qo, pr = r2(Math.abs(dd) / q), cr = dd < 0;
                                 const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt) + ' = ';
                                 const nb = (cr ? 'Credit ' : 'Add ') + (qtyDiff ? f2(Math.abs(dq)) : f2(qo) + ' @ ' + f2(pr));   // Nov 20: "= Add 1.00" / "= Credit 9.75", typed in bold
@@ -684,6 +700,7 @@
                                     price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt + nb, note: x.note || '', xnote: nt, xbold: nb, sort: x.no, head: x.head || '' });
                                 return;
                             }
+                            if (s.o.length === 1 && pt > po) { chg(g, s.o[0].it, s.t.map(x => x.it), 'Insurance more'); return; }
                             const ourPrice = s.o[0].it.cat ? (s.o[0].action === 'rr' ? s.o[0].it.replace : s.o[0].it.price) : 0;
                             s.o.forEach(x => add(x, 'DIFF', what));
                             s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice, s.o[0].it.head));
@@ -699,6 +716,7 @@
                 LK.forEach(k => {
                     const o = k.o, t = k.t, g = groupOf[t.room], po = o.pre || 0, pt = t.pre || 0, dd = r2(po - pt);
                     if (!dd) { common += po - pt; return; }
+                    if (dd < 0) { chg(g, o, [t], 'Insurance more (connected by hand)'); return; }
                     const cp = copies.filter(x => x.k === k).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + t.no + ': remove it from our estimate').join('');
                     const qd = o.unit === t.unit && Math.abs(o.qty - t.qty) > 0.005, q = qd ? r2(Math.abs(o.qty - t.qty)) : o.qty, pr = r2(Math.abs(dd) / q), cr = dd < 0;
                     const nt = 'Ours ' + f2(o.qty) + ' ' + o.unit + ' @ ' + f2(po / o.qty) + ' - Ins ' + f2(t.qty) + ' ' + t.unit + ' @ ' + f2(pt / t.qty) + ' = '
@@ -743,8 +761,9 @@
                 const order = {};
                 groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
                 rows.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
+                change.sort((a, b) => (order[a.room] ?? 1e9) - (order[b.room] ?? 1e9) || a.sort - b.sort);
                 const oursTotal = r2(sumP(ours.items)), insTotal = r2(sumP(ins.items));
-                return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly),
+                return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly), change, changed: r2(changed),
                     copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), suggest, linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
             };
             const oursWorkbook = (XLSX, changes, recap, meta) => {
@@ -779,7 +798,8 @@
                     a3.push(line('Difference between the two estimates', { t: 'n', v: gap, f: 'J' + (t + 1) + '-J' + (t + 2) }));
                     a3.push(line('Not in the rows: lines in common (differences of 10% or less)', L.common));
                     a3.push(line('Not in the rows: theirs only, no credit', -L.theirsOnly));
-                    a3.push(line('Not in the rows: everything else (replace-only credits, lines you unticked)', { t: 'n', v: r2(gap - total - L.common + L.theirsOnly), f: 'J' + (t + 3) + '-J' + t + '-J' + (t + 4) + '-J' + (t + 5) }));
+                    a3.push(line('Not in the rows: changes in our estimate (Change in ours tab)', L.changed || 0));
+                    a3.push(line('Not in the rows: everything else (replace-only credits, lines you unticked)', { t: 'n', v: r2(gap - total - L.common + L.theirsOnly - (L.changed || 0)), f: 'J' + (t + 3) + '-J' + t + '-J' + (t + 4) + '-J' + (t + 5) + '-J' + (t + 6) }));
                     a3.push(line('Amounts are before tax and O&P. Credits are negative.', null));
                     const fmt = (ws) => Object.keys(ws).forEach(k => { if (k[0] !== '!' && 'GIJ'.includes(k.replace(/\d+/g, '')) && ws[k].t === 'n') ws[k].z = '#,##0.00'; });
                     const widths = [24, 8, 6, 11, 5, 60, 10, 6, 12, 13, 9, 9, 22, 60, 30].map(w => ({ wch: w }));
@@ -788,6 +808,13 @@
                     if (e.length) ws3['!autofilter'] = { ref: 'A1:O' + end };
                     fmt(ws3);
                     XLSX.utils.book_append_sheet(wb, ws3, 'Differences');
+                    // Nov 22 (build 2a): changes to make by hand in our estimate (the script can't select an existing line)
+                    const a5 = [['Room', 'Our line #', 'Our code', 'Our description', 'Our qty', 'Unit', 'Our unit price', 'Our amount', 'Change to: code', 'Change to: description', 'Qty', 'Unit', 'Unit price', 'Amount', 'Their line #', 'Why']];
+                    (L.change || []).forEach(c => a5.push([c.room, c.ourNo, (c.cat + ' ' + c.sel).trim(), c.desc, c.qty, c.unit, c.price, c.amount, c.remove ? 'REMOVE' : c.insCode, c.insDesc, c.insQty, c.insUnit, c.insPrice, c.insAmount, c.insNo, c.why]));
+                    const ws5 = XLSX.utils.aoa_to_sheet(a5);
+                    ws5['!cols'] = [24, 9, 12, 50, 9, 6, 11, 12, 12, 50, 9, 6, 11, 12, 9, 40].map(w => ({ wch: w }));
+                    Object.keys(ws5).forEach(k => { if (k[0] !== '!' && ['E', 'G', 'H', 'K', 'M', 'N'].includes(k.replace(/\d+/g, '')) && ws5[k].t === 'n') ws5[k].z = '#,##0.00'; });
+                    XLSX.utils.book_append_sheet(wb, ws5, 'Change in ours');
                     const ws4 = XLSX.utils.aoa_to_sheet([head].concat(body(info)));
                     ws4['!cols'] = widths;
                     fmt(ws4);
@@ -1955,7 +1982,8 @@
                                                 <tr><td>Our estimate less the insurance estimate, line items</td><td className="n">{money(lines.oursTotal - lines.insTotal)}</td></tr>
                                                 <tr><td>Not in the rows: lines in common (10% or less apart)</td><td className="n">{money(lines.common)}</td></tr>
                                                 <tr><td>Not in the rows: theirs only, no credit</td><td className="n">{money(-lines.theirsOnly)}</td></tr>
-                                                <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.common + lines.theirsOnly)}</td></tr>
+                                                <tr><td>Not in the rows: changes in our estimate (Change in ours, below)</td><td className="n">{money(lines.changed)}</td></tr>
+                                                <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.common + lines.theirsOnly - lines.changed)}</td></tr>
                                             </tbody>
                                         </table>
                                         <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
@@ -2046,6 +2074,26 @@
                                             </div>
                                         )}
                                         <div className="muted">Dollars are before tax and O&P. Untick a line to leave it out of the Excel. "Theirs only" lines are for information and are never credited.</div>
+                                        {lines.change.length > 0 && (
+                                            <div style={{ marginTop: '16px' }}>
+                                                <div style={{ fontWeight: 600, marginBottom: '6px' }}>Change in ours ({lines.change.length}) — edit these lines by hand in our revised estimate</div>
+                                                <div className="scroll">
+                                                    <table>
+                                                        <thead><tr><th>Room</th><th className="n">Ours #</th><th>Our line now</th><th>Change to</th><th className="n">Theirs #</th><th>Why</th></tr></thead>
+                                                        <tbody>
+                                                            {lines.change.map(c => (
+                                                                <tr key={'c' + c.ourNo}>
+                                                                    <td>{c.room}</td><td className="n">{c.ourNo}</td>
+                                                                    <td>{c.cat} {c.sel} {c.desc} — {qty(c.qty)} {c.unit} @ {qty(c.price)} = {money(c.amount)}</td>
+                                                                    <td>{c.remove ? <b>REMOVE</b> : <span>{c.insCode} {c.insDesc} — {qty(c.insQty)} {c.insUnit} @ {qty(c.insPrice)} = {money(c.insAmount)}</span>}</td>
+                                                                    <td className="n">{c.insNo}</td><td>{c.why}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
