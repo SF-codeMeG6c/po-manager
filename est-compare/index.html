@@ -816,6 +816,13 @@
                     const measured = (r) => !['EA', 'HR', 'MO', 'DA', 'WK'].includes(r.unit) && r.qty >= 10;   /* a real measurement, not a count */
                     /* ours: not labor hours, and not a line that already has its "Ins has" suggestion */
                     const OU = rows.filter(r => r.kind === 'OURS' && !drop.has(r) && oItem[r.ourNo] && r.unit !== 'HR' && !/^Ins has/.test(r.xnote || ''));
+                    /* Nov 23 fix: a line of ours that is already connected stays a candidate, so a second line of theirs is still suggested with it (backsplash after granite, Porch stucco after Left Elevation) */
+                    const homeOf = (it) => {
+                        if ((claim[it.room] || {})[it.head]) { const adj = insRooms.find(a => { const q = P(a); return q && q.kind === 'h' && q.room === it.room && q.part === it.head; }); if (adj) return adj; }
+                        return byRoom[it.room] ? byRoom[it.room].name : it.room;
+                    };
+                    [...linkO].filter(it => it.unit !== 'HR' && !left[ourTrade[it.cat]] && !LK.some(k => k.o === it && isAI(k.t)))
+                        .forEach(it => OU.push({ kind: 'OURS', room: homeOf(it), ourNo: it.no, cat: it.cat, sel: it.sel, desc: cleanDesc(it.desc), qty: it.qty, unit: it.unit, note: it.note || '' }));
                     const TH = rows.filter(r => r.kind === 'THEIRS' && !drop.has(r) && tItem[r.insNo] && !suggest.some(x => x.ins === r.insNo));
                     const near = (a, b, pct) => Math.abs(a - b) <= pct * Math.max(a, b) + 0.005;
                     const made = [];
@@ -840,7 +847,9 @@
                         if (best) made.push({ t, ti, o: best.o, oi: oItem[best.o.ourNo], why: best.why });
                     });
                     // 4. goes with a pair above: their line has the same quantity as their line of that pair, our line the same quantity as ours, same category (clean stucco next to paint stucco)
-                    made.slice().forEach(m => {
+                    /* also next to a pair that is already connected (clean stucco still suggested after paint stucco is connected) */
+                    const anchors = made.concat(LK.filter(k => !isAI(k.t) && OU.some(x => x.ourNo === k.o.no)).map(k => ({ t: { insNo: k.t.no, unit: k.t.unit, qty: k.t.qty }, ti: k.t, o: OU.find(x => x.ourNo === k.o.no), oi: k.o })));
+                    anchors.forEach(m => {
                         TH.forEach(t => {
                             const ti = tItem[t.insNo];
                             if (made.some(x => x.t === t) || ti.room !== m.ti.room || t.unit !== m.t.unit || Math.abs(t.qty - m.t.qty) > 0.005 || !t.cat || !measured(t)) return;
