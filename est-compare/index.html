@@ -559,7 +559,7 @@
                 });
                 return { map, byUnit, count: (json.items || []).length, made: json.made || '' };
             };
-            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib) => {
+            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib, links) => {
                 const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
                 const area = (adj) => / \(general\)$/.test(adj);
                 const left = {};
@@ -576,26 +576,31 @@
                 const codeOf = {};   // description + unit -> our code
                 ours.items.forEach(it => { const k = lineKey(it).base; if (it.cat && !codeOf[k]) codeOf[k] = { cat: it.cat, sel: it.sel }; });
                 const live = (it) => !it.status && it.qty > 0;
+                // Nov 22 (Spencer): lines connected by hand [{ ours, ins, ourDesc, insDesc }]; a saved connection whose line number now holds a different description is skipped
+                const LK = (links || []).map(l => ({ l, o: ours.items.find(it => it.no === l.ours && live(it)), t: ins.items.find(it => it.no === l.ins && live(it)) }))
+                    .filter(k => k.o && k.t && (!k.l.ourDesc || cleanDesc(k.o.desc) === k.l.ourDesc) && (!k.l.insDesc || cleanDesc(k.t.desc) === k.l.insDesc));
+                const linkO = new Set(LK.map(k => k.o)), linkT = new Set(LK.map(k => k.t));
                 const jobCats = {};
                 ours.items.concat(ins.items).forEach(it => { if (it.cat) jobCats[it.cat] = (jobCats[it.cat] || 0) + 1; });
                 const leftOurs = ours.items.filter(it => live(it) && left[ourTrade[it.cat]]);
                 const tradeOfIns = (it) => it.cat ? insTrade[it.cat] : (codeOf[lineKey(it).base] ? ourTrade[codeOf[lineKey(it).base].cat] : undefined);
                 const leftIns = ins.items.filter(it => live(it) && left[tradeOfIns(it)]);
-                const O = (room) => ours.items.filter(it => it.room === room && live(it) && !left[ourTrade[it.cat]]);
-                const T = (room) => ins.items.filter(it => it.room === room && live(it) && !left[tradeOfIns(it)]);
+                const O = (room) => ours.items.filter(it => it.room === room && live(it) && !left[ourTrade[it.cat]] && !linkO.has(it));
+                const T = (room) => ins.items.filter(it => it.room === room && live(it) && !left[tradeOfIns(it)] && !linkT.has(it));
                 // groups: our room (or the lines under one of its headings) against the adjuster room(s) paired to it
                 const claim = {};
                 insRooms.forEach(adj => { const p = P(adj); if (p && p.kind === 'h') (claim[p.room] = claim[p.room] || {})[p.part] = true; });
                 const rest = (room) => O(room).filter(it => !(claim[room] || {})[it.head]);
-                const groups = [], byRoom = {};
+                const groups = [], byRoom = {}, groupOf = {};
                 insRooms.forEach((adj, i) => {
                     const p = P(adj);
-                    if (!p) groups.push({ name: adj, at: i, ours: [], theirs: T(adj) });
-                    else if (p.kind === 'h') groups.push({ name: adj, at: i, ours: O(p.room).filter(it => it.head === p.part), theirs: T(adj) });
+                    if (!p) groups.push(groupOf[adj] = { name: adj, at: i, ours: [], theirs: T(adj) });
+                    else if (p.kind === 'h') groups.push(groupOf[adj] = { name: adj, at: i, ours: O(p.room).filter(it => it.head === p.part), theirs: T(adj) });
                     else {
                         let g = byRoom[p.room];
                         if (!g) { g = byRoom[p.room] = { name: p.room, at: i, ours: rest(p.room), theirs: [], whole: false }; groups.push(g); }
                         g.theirs = g.theirs.concat(T(adj));
+                        groupOf[adj] = g;
                         if (!p.part && !area(adj) && !g.whole) { g.name = adj; g.at = i; g.whole = true; }
                     }
                 });
@@ -606,6 +611,14 @@
                 const sumQ = (l) => l.reduce((t, x) => t + x.qty, 0), sumP = (l) => l.reduce((t, x) => t + (x.pre || 0), 0);
                 const over = (a, b) => Math.abs(a - b) > DIFF_PCT * Math.abs(b) + 0.005;
                 const f2 = (n) => n.toFixed(2);
+                // a connected insurance line that was also copied into our estimate (same item, qty and price within 10%): the copy is left out and listed to remove
+                const copies = [];
+                LK.forEach(k => {
+                    const g = groupOf[k.t.room]; if (!g) return;
+                    const kt = lineKey(k.t);
+                    const c = g.ours.find(it => !copies.some(x => x.c === it) && lineKey(it).base === kt.base && lineKey(it).action === kt.action && !over(it.qty, k.t.qty) && !over(it.price, k.t.price));
+                    if (c) { copies.push({ c, k }); g.ours = g.ours.filter(it => it !== c); }
+                });
                 groups.forEach(g => {
                     const slots = {}, order = [];
                     const put = (it, side) => {
@@ -682,6 +695,18 @@
                         else if (s.t.length && !s.o2.length) s.t.forEach(x => { theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
                     });
                 });
+                // Nov 22 (Spencer): each connected pair -> ONE net line on our code; "Change to our code" when the items differ
+                LK.forEach(k => {
+                    const o = k.o, t = k.t, g = groupOf[t.room], po = o.pre || 0, pt = t.pre || 0, dd = r2(po - pt);
+                    if (!dd) { common += po - pt; return; }
+                    const cp = copies.filter(x => x.k === k).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + t.no + ': remove it from our estimate').join('');
+                    const qd = o.unit === t.unit && Math.abs(o.qty - t.qty) > 0.005, q = qd ? r2(Math.abs(o.qty - t.qty)) : o.qty, pr = r2(Math.abs(dd) / q), cr = dd < 0;
+                    const nt = 'Ours ' + f2(o.qty) + ' ' + o.unit + ' @ ' + f2(po / o.qty) + ' - Ins ' + f2(t.qty) + ' ' + t.unit + ' @ ' + f2(pt / t.qty) + ' = '
+                        + (o.cat && cleanDesc(o.desc) !== cleanDesc(t.desc).replace(/\*+$/, '') ? 'Change to our code ' + o.cat + ' ' + o.sel + ', ' : '');
+                    const nb = (cr ? 'Credit ' : 'Add ') + f2(q) + ' ' + o.unit + (qd ? '' : ' @ ' + f2(pr));
+                    rows.push({ id: 'k' + o.no, room: g ? g.name : t.room, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: q, unit: o.unit,
+                        price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: o.no, insNo: t.no, insRoom: t.room, what: nt + nb + '. Connected by hand' + cp, note: o.note || '', xnote: nt, xbold: nb, sort: o.no, head: o.head || '', linked: true });
+                });
                 // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
                 const dice = (p, q) => { const A = new Set(wordsOf(p)), B = new Set(wordsOf(q)); let k = 0; A.forEach(w => { if (B.has(w)) k++; }); return A.size + B.size ? 2 * k / (A.size + B.size) : 0; };
                 const usedT = new Set(), drop = new Set();
@@ -707,7 +732,8 @@
                 groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
                 rows.sort((a, b) => order[a.room] - order[b.room] || a.sort - b.sort);
                 const oursTotal = r2(sumP(ours.items)), insTotal = r2(sumP(ins.items));
-                return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly) };
+                return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly),
+                    copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
             };
             const oursWorkbook = (XLSX, changes, recap, meta) => {
                 const wb = XLSX.utils.book_new();
@@ -1249,7 +1275,7 @@
                 return XACT_TEMPLATE.join('\r\n').split('%%ROWS%%').join(lines.join(',\r\n')).split('%%TITLE%%').join(t).split('%%KEY%%').join(key) + '\r\n';
             };
 
-            return { pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook, lineCompare, makeLib };
+            return { cleanDesc, pageRows, parseEstimate, diffVersions, entryRows, suggestRoom, versionWorkbook, xactScript, suggestOurs, roomChanges, tradeRecap, oursWorkbook, lineCompare, makeLib };
         })();
 
         const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1623,6 +1649,12 @@
             }, []);
             const [off, setOff] = useState({});
             const [showKind, setShowKind] = useState({ OURS: true, DIFF: true, THEIRS: false });
+            // Nov 22: lines connected by hand [{ ours, ins, ourDesc, insDesc }], saved with the room pairings
+            const [links, setLinks] = useState([]);
+            const [linkRoom, setLinkRoom] = useState('');
+            const [linkOurs, setLinkOurs] = useState('');
+            const [linkIns, setLinkIns] = useState('');
+            useEffect(() => { setLinks((saved && saved.links) || []); }, [saved]);
 
             useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
                 const list = [];
@@ -1680,11 +1712,24 @@
                 setNewRooms(fresh);
             }, [ourRooms, insRooms, saved]);
             useEffect(() => { setLines(null); setOff({}); }, [pairs]);
-            const compareLines = () => {
+            const compareLines = (lk) => {
                 const m = {};
                 insRooms.forEach(r => { m[r.name] = partFromValue(pairs[r.name]); });
                 setOff({});
-                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap, lib || null));
+                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap, lib || null, Array.isArray(lk) ? lk : links));
+            };
+            const cd = EstCompare.cleanDesc;
+            const itemText = (it) => '#' + it.no + ' ' + cd(it.desc) + ' ' + qty(it.qty) + ' ' + it.unit + ' @ ' + qty(it.price);
+            const liveItem = (it) => !it.status && it.qty > 0;
+            const linkPart = linkRoom ? partFromValue(pairs[linkRoom]) : null;
+            const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part) && !links.some(l => l.ours === it.no)) : [];
+            const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom && !links.some(l => l.ins === it.no)) : [];
+            const setLinksAndCompare = (lk) => { setLinks(lk); setSaveMsg(''); if (lines) compareLines(lk); };
+            const connect = () => {
+                const o = ours.est.items.find(it => it.no === +linkOurs), t = ins.est.items.find(it => it.no === +linkIns);
+                if (!o || !t) return;
+                setLinksAndCompare(links.concat([{ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]));
+                setLinkOurs(''); setLinkIns('');
             };
             const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
             const kindCount = (k) => lines ? lines.rows.filter(r => r.kind === k).length : 0;
@@ -1712,6 +1757,7 @@
                         ourFile: ours.est.fileName, ourTotal: ours.est.readTotal, ourRooms: ourRooms.map(r => ({ name: r.name, subs: r.subs, heads: r.heads })),
                         insFile: ins.est.fileName, insTotal: ins.est.readTotal, insRooms: insRooms.map(r => r.name),
                         pairs: insRooms.map(r => { const p = partFromValue(pairs[r.name]); return { adj: r.name, ours: p ? p.room : '', kind: p ? p.kind : '', part: p ? p.part : '' }; }),
+                        links,
                         savedBy: { uid: profile.uid, name: profile.name || profile.email || '' },
                         savedAt: now
                     };
@@ -1781,7 +1827,7 @@
                             {jobId && saved === false && !loadMsg && <div className="muted">No Ours vs insurance room pairings saved for this job yet.</div>}
                             {jobId && saved && (
                                 <div className="read ok">
-                                    Saved for this job: {(saved.pairs || []).length} room pairings ({saved.ourFile || 'our estimate'} and {saved.insFile || 'insurance estimate'})
+                                    Saved for this job: {(saved.pairs || []).length} room pairings{(saved.links || []).length ? ', ' + saved.links.length + ' connected lines' : ''} ({saved.ourFile || 'our estimate'} and {saved.insFile || 'insurance estimate'})
                                     {(saved.savedBy || savedWhen) && <span> — saved{saved.savedBy && saved.savedBy.name ? ' by ' + saved.savedBy.name : ''}{savedWhen ? ' ' + savedWhen : ''}</span>}.
                                     {' '}Upload both estimates and the saved pairings are filled in.
                                 </div>
@@ -1876,7 +1922,7 @@
                             <div className="section">
                                 <div className="section-title">Line differences</div>
                                 <div className="bar" style={{ marginTop: 0 }}>
-                                    <button className="btn-primary" onClick={compareLines}>Compare lines</button>
+                                    <button className="btn-primary" onClick={() => compareLines()}>Compare lines</button>
                                     {lines && ['OURS', 'DIFF', 'THEIRS'].map(k => (
                                         <label key={k}><input type="checkbox" checked={showKind[k]} onChange={e => setShowKind(s => ({ ...s, [k]: e.target.checked }))} /> {LINE_KIND[k]} ({kindCount(k)})</label>
                                     ))}
@@ -1898,6 +1944,43 @@
                                                 <tr><td>Not in the rows: everything else (replace-only credits, unticked lines)</td><td className="n">{money(lines.oursTotal - lines.insTotal - entryTotal - lines.common + lines.theirsOnly)}</td></tr>
                                             </tbody>
                                         </table>
+                                        <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
+                                            <div style={{ fontWeight: 600, marginBottom: '6px' }}>Connect lines by hand</div>
+                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. A connected pair becomes one net line on our code. Saved with Save room pairings.</div>
+                                            <div className="bar" style={{ marginTop: 0, flexWrap: 'wrap' }}>
+                                                <select value={linkRoom} onChange={e => { setLinkRoom(e.target.value); setLinkOurs(''); setLinkIns(''); }}>
+                                                    <option value="">-- Their room --</option>
+                                                    {insRooms.map(r => <option key={r.name} value={r.name}>{r.name}</option>)}
+                                                </select>
+                                                <select value={linkIns} disabled={!linkRoom} onChange={e => setLinkIns(e.target.value)} style={{ maxWidth: '420px' }}>
+                                                    <option value="">-- Their line --</option>
+                                                    {linkInsList.map(it => <option key={it.no} value={it.no}>{itemText(it)}</option>)}
+                                                </select>
+                                                <select value={linkOurs} disabled={!linkRoom} onChange={e => setLinkOurs(e.target.value)} style={{ maxWidth: '420px' }}>
+                                                    <option value="">{linkRoom && !linkPart ? '(no room of ours paired)' : '-- Our line --'}</option>
+                                                    {linkOurList.map(it => <option key={it.no} value={it.no}>{itemText(it)}</option>)}
+                                                </select>
+                                                <button className="btn-secondary" disabled={!linkOurs || !linkIns} onClick={connect}>Connect</button>
+                                            </div>
+                                            {links.length > 0 && (
+                                                <table style={{ marginTop: '8px' }}>
+                                                    <tbody>
+                                                        {links.map((l, i) => {
+                                                            const skip = lines && lines.linksSkipped.includes(l);
+                                                            const cp = lines ? lines.copies.filter(c => c.ins === l.ins) : [];
+                                                            return (
+                                                                <tr key={l.ours + '-' + l.ins}>
+                                                                    <td>Ins #{l.ins} {l.insDesc}</td><td>with ours #{l.ours} {l.ourDesc}</td>
+                                                                    <td>{skip && <span style={{ color: '#b3261e', fontWeight: 600 }}>Not found in these PDFs (line numbers changed); not used. </span>}
+                                                                        {cp.map(c => <span key={c.ours} style={{ color: '#b3261e', fontWeight: 600 }}>Our line {c.ours} is a copy of Ins line {c.ins}: remove it from our estimate. </span>)}</td>
+                                                                    <td><button className="btn-secondary" onClick={() => setLinksAndCompare(links.filter(x => x !== l))}>Remove</button></td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                        </div>
                                         {shownLines.length === 0 && <div className="msg">Nothing to show. Tick a type above.</div>}
                                         {shownLines.length > 0 && (
                                             <div className="scroll">
