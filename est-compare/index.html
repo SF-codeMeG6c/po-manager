@@ -576,8 +576,10 @@
                 const codeOf = {};   // description + unit -> our code
                 ours.items.forEach(it => { const k = lineKey(it).base; if (it.cat && !codeOf[k]) codeOf[k] = { cat: it.cat, sel: it.sel }; });
                 const live = (it) => !it.status && it.qty > 0;
+                // Nov 22 (build 2b): their "AS INCURRED" lines (no price) are read too
+                const AI = 'AS INCURRED', isAI = (it) => it.status === AI, liveT = (it) => (!it.status || isAI(it)) && it.qty > 0;
                 // Nov 22 (Spencer): lines connected by hand [{ ours, ins, ourDesc, insDesc }]; a saved connection whose line number now holds a different description is skipped
-                const LK = (links || []).map(l => ({ l, o: ours.items.find(it => it.no === l.ours && live(it)), t: ins.items.find(it => it.no === l.ins && live(it)) }))
+                const LK = (links || []).map(l => ({ l, o: ours.items.find(it => it.no === l.ours && live(it)), t: ins.items.find(it => it.no === l.ins && liveT(it)) }))
                     .filter(k => k.o && k.t && (!k.l.ourDesc || cleanDesc(k.o.desc) === k.l.ourDesc) && (!k.l.insDesc || cleanDesc(k.t.desc) === k.l.insDesc));
                 const linkO = new Set(LK.map(k => k.o)), linkT = new Set(LK.map(k => k.t));
                 const jobCats = {};
@@ -586,7 +588,7 @@
                 const tradeOfIns = (it) => it.cat ? insTrade[it.cat] : (codeOf[lineKey(it).base] ? ourTrade[codeOf[lineKey(it).base].cat] : undefined);
                 const leftIns = ins.items.filter(it => live(it) && left[tradeOfIns(it)]);
                 const O = (room) => ours.items.filter(it => it.room === room && live(it) && !left[ourTrade[it.cat]] && !linkO.has(it));
-                const T = (room) => ins.items.filter(it => it.room === room && live(it) && !left[tradeOfIns(it)] && !linkT.has(it));
+                const T = (room) => ins.items.filter(it => it.room === room && liveT(it) && !left[tradeOfIns(it)] && !linkT.has(it));
                 // groups: our room (or the lines under one of its headings) against the adjuster room(s) paired to it
                 const claim = {};
                 insRooms.forEach(adj => { const p = P(adj); if (p && p.kind === 'h') (claim[p.room] = claim[p.room] || {})[p.part] = true; });
@@ -617,6 +619,26 @@
                     change.push({ room: g ? g.name : t0.room, ourNo: o.no, cat: o.cat, sel: o.sel, desc: cleanDesc(o.desc), qty: o.qty, unit: o.unit, price: o.price, amount: r2(o.pre || 0),
                         insNo: ts.map(x => x.no).join(', '), insCode: code, insDesc: cleanDesc(t0.desc).replace(/\*+$/, ''), insQty: r2(qt), insUnit: t0.unit, insPrice: qt ? r2(pt / qt) : t0.price, insAmount: r2(pt), why, sort: o.no });
                     changed += (o.pre || 0) - pt;
+                };
+                // their code for a paired line: printed code, else ours when it is the same item, else a single library match
+                const theirCode = (o, t) => {
+                    if (t.cat) return { cat: t.cat, sel: t.sel };
+                    if (lineKey(o).base === lineKey(t).base) return { cat: o.cat, sel: o.sel };
+                    const f = libFind(t);
+                    return f && f.length === 1 ? { cat: f[0].cat, sel: f[0].sel } : null;
+                };
+                // Nov 22 (Spencer, build 2b): our line paired with their AS INCURRED line -> Differences: Add our line at OUR price under THEIR code, note "Ins has AS INCURRED";
+                // Change in ours: their code at our price (only when the code differs)
+                const aiLeft = [];
+                const asInc = (g, o, t, how) => {
+                    const c = theirCode(o, t), diff = c && (c.cat !== o.cat || c.sel !== o.sel), code = c || { cat: o.cat, sel: o.sel };
+                    rows.push({ id: 'a' + o.no, room: g ? g.name : t.room, kind: 'DIFF', entry: 'Add', cat: code.cat, sel: code.sel, act: o.act, desc: diff ? cleanDesc(t.desc).replace(/\*+$/, '') : cleanDesc(o.desc),
+                        qty: o.qty, unit: o.unit, price: o.price, amount: r2(o.pre || 0), ourNo: o.no, insNo: t.no, insRoom: t.room,
+                        what: 'Ins has AS INCURRED' + (diff ? '. Code changed to theirs (ours was ' + o.cat + ' ' + o.sel + ')' : c ? '' : '. Their code not found; our code kept') + how,
+                        note: o.note || '', xnote: 'Ins has AS INCURRED', sort: o.no, head: o.head || '' });
+                    if (diff) change.push({ room: g ? g.name : t.room, ourNo: o.no, cat: o.cat, sel: o.sel, desc: cleanDesc(o.desc), qty: o.qty, unit: o.unit, price: o.price, amount: r2(o.pre || 0),
+                        insNo: String(t.no), insCode: c.cat + ' ' + c.sel, insDesc: cleanDesc(t.desc).replace(/\*+$/, ''), insQty: o.qty, insUnit: o.unit, insPrice: o.price, insAmount: r2(o.pre || 0),
+                        why: 'Ins has AS INCURRED: their code at our price', sort: o.no });
                 };
                 const sumQ = (l) => l.reduce((t, x) => t + x.qty, 0), sumP = (l) => l.reduce((t, x) => t + (x.pre || 0), 0);
                 const over = (a, b) => Math.abs(a - b) > DIFF_PCT * Math.abs(b) + 0.005;
@@ -679,6 +701,7 @@
                         const s = slots[key];
                         // Nov 22 (Spencer): two or more of ours, one of theirs -> theirs pairs with the FIRST of ours (in our order), never the sum; the rest of ours are Ours only
                         if (s.o.length > 1 && s.t.length === 1) { s.o.slice(1).forEach(x => add(x, 'OURS', 'Not in their estimate')); s.o = s.o.slice(0, 1); }
+                        if (s.o.length === 1 && s.t.length === 1 && isAI(s.t[0].it)) { asInc(g, s.o[0].it, s.t[0].it, ''); return; }
                         if (s.o.length && s.t.length) {
                             const same = s.o.concat(s.t).every(x => x.action === s.o[0].action);
                             const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t.map(x => x.it)), po = sumP(s.o.map(x => x.it)), pt = sumP(s.t.map(x => x.it));
@@ -709,12 +732,13 @@
                             const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t2.map(x => x.it));
                             if (over(qo, qt)) s.o.forEach(x => add(x, 'DIFF', 'Qty ' + f2(qo) + ' ours, ' + f2(qt) + ' theirs (their remove is inside their R&R line, no credit)'));
                         } else if (s.o.length) s.o.forEach(x => add(x, 'OURS', 'Not in their estimate'));
-                        else if (s.t.length && !s.o2.length) s.t.forEach(x => { theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
+                        else if (s.t.length && !s.o2.length) s.t.forEach(x => { if (isAI(x.it)) { aiLeft.push({ g, it: x.it }); return; } theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
                     });
                 });
                 // Nov 22 (Spencer): each connected pair -> ONE net line on our code; "Change to our code" when the items differ
                 LK.forEach(k => {
                     const o = k.o, t = k.t, g = groupOf[t.room], po = o.pre || 0, pt = t.pre || 0, dd = r2(po - pt);
+                    if (isAI(t)) { asInc(g, o, t, '. Connected by hand'); return; }
                     if (!dd) { common += po - pt; return; }
                     if (dd < 0) { chg(g, o, [t], 'Insurance more (connected by hand)'); return; }
                     const cp = copies.filter(x => x.k === k).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + t.no + ': remove it from our estimate').join('');
@@ -756,6 +780,15 @@
                         const sh = [...noteW(t.note)].filter(w => wo.has(w));
                         if (sh.length >= 2) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
                     });
+                });
+                // unpaired AS INCURRED lines: "add by hand" on Change in ours; suggested with our Ours only lines in the same room and category
+                aiLeft.forEach(({ g, it }) => {
+                    const f = it.cat ? [{ cat: it.cat }] : libFind(it), cats = new Set((f || []).map(c => c.cat));
+                    change.push({ room: g.name, ourNo: null, cat: '', sel: '', desc: '', qty: null, unit: '', price: null, amount: null,
+                        insNo: String(it.no), insCode: f && f.length === 1 ? f[0].cat + ' ' + (f[0].sel || '') : '', insDesc: cleanDesc(it.desc).replace(/\*+$/, ''), insQty: it.qty, insUnit: it.unit, insPrice: null, insAmount: null,
+                        why: 'Ins has AS INCURRED, not in ours: add by hand', sort: 1e6 + it.no, addAI: true });
+                    rows.filter(r => r.kind === 'OURS' && r.room === g.name && cats.has(r.cat) && !drop.has(r))
+                        .forEach(o => suggest.push({ room: g.name, ours: o.ourNo, ins: it.no, why: 'Ins AS INCURRED, same category ' + o.cat }));
                 });
                 for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i])) rows.splice(i, 1);
                 const order = {};
@@ -810,7 +843,7 @@
                     XLSX.utils.book_append_sheet(wb, ws3, 'Differences');
                     // Nov 22 (build 2a): changes to make by hand in our estimate (the script can't select an existing line)
                     const a5 = [['Room', 'Our line #', 'Our code', 'Our description', 'Our qty', 'Unit', 'Our unit price', 'Our amount', 'Change to: code', 'Change to: description', 'Qty', 'Unit', 'Unit price', 'Amount', 'Their line #', 'Why']];
-                    (L.change || []).forEach(c => a5.push([c.room, c.ourNo, (c.cat + ' ' + c.sel).trim(), c.desc, c.qty, c.unit, c.price, c.amount, c.remove ? 'REMOVE' : c.insCode, c.insDesc, c.insQty, c.insUnit, c.insPrice, c.insAmount, c.insNo, c.why]));
+                    (L.change || []).forEach(c => a5.push([c.room, c.ourNo, (c.cat + ' ' + c.sel).trim(), c.desc, c.qty, c.unit, c.price, c.amount, c.remove ? 'REMOVE' : c.addAI ? 'ADD ' + c.insCode : c.insCode, c.insDesc, c.insQty, c.insUnit, c.insPrice, c.insAmount, c.insNo, c.why]));
                     const ws5 = XLSX.utils.aoa_to_sheet(a5);
                     ws5['!cols'] = [24, 9, 12, 50, 9, 6, 11, 12, 12, 50, 9, 6, 11, 12, 9, 40].map(w => ({ wch: w }));
                     Object.keys(ws5).forEach(k => { if (k[0] !== '!' && ['E', 'G', 'H', 'K', 'M', 'N'].includes(k.replace(/\d+/g, '')) && ws5[k].t === 'n') ws5[k].z = '#,##0.00'; });
@@ -2082,10 +2115,10 @@
                                                         <thead><tr><th>Room</th><th className="n">Ours #</th><th>Our line now</th><th>Change to</th><th className="n">Theirs #</th><th>Why</th></tr></thead>
                                                         <tbody>
                                                             {lines.change.map(c => (
-                                                                <tr key={'c' + c.ourNo}>
+                                                                <tr key={'c' + c.ourNo + '-' + c.insNo}>
                                                                     <td>{c.room}</td><td className="n">{c.ourNo}</td>
-                                                                    <td>{c.cat} {c.sel} {c.desc} — {qty(c.qty)} {c.unit} @ {qty(c.price)} = {money(c.amount)}</td>
-                                                                    <td>{c.remove ? <b>REMOVE</b> : <span>{c.insCode} {c.insDesc} — {qty(c.insQty)} {c.insUnit} @ {qty(c.insPrice)} = {money(c.insAmount)}</span>}</td>
+                                                                    <td>{c.addAI ? '(not in ours)' : <span>{c.cat} {c.sel} {c.desc} — {qty(c.qty)} {c.unit} @ {qty(c.price)} = {money(c.amount)}</span>}</td>
+                                                                    <td>{c.remove ? <b>REMOVE</b> : c.addAI ? <span><b>ADD</b> {c.insCode} {c.insDesc} — {qty(c.insQty)} {c.insUnit}, AS INCURRED</span> : <span>{c.insCode} {c.insDesc} — {qty(c.insQty)} {c.insUnit} @ {qty(c.insPrice)} = {money(c.insAmount)}</span>}</td>
                                                                     <td className="n">{c.insNo}</td><td>{c.why}</td>
                                                                 </tr>
                                                             ))}
