@@ -559,7 +559,8 @@
                 });
                 return { map, byUnit, count: (json.items || []).length, made: json.made || '' };
             };
-            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib, links) => {
+            const lineCompare = (ours, ins, insRooms, ourNames, pairs, recap, lib, links, noPairs) => {
+                const notPair = (o, t) => (noPairs || []).some(x => x.ins === t);   /* Nov 23 (build 5): a suggestion marked "Not a pair": their line stays Theirs only and is not suggested again (with any line of ours) */
                 const P = (adj) => { const p = pairs[adj]; return p && p.room && ourNames.includes(p.room) ? p : null; };
                 const area = (adj) => / \(general\)$/.test(adj);
                 const left = {};
@@ -656,24 +657,12 @@
                         changed += c.pre || 0;
                     }
                 });
-                groups.forEach(g => {
-                    const slots = {}, order = [];
-                    const put = (it, side) => {
-                        const k = lineKey(it);
-                        (k.action === 'rr' ? ['replace', 'remove'] : [k.action]).forEach((slot, n) => {
-                            const key = k.base + '|' + slot;
-                            if (!slots[key]) { slots[key] = { o: [], t: [], o2: [], t2: [] }; order.push(key); }
-                            slots[key][side + (n ? '2' : '')].push({ it, action: k.action, base: k.base });
-                        });
-                    };
-                    g.ours.forEach(it => put(it, 'o'));
-                    g.theirs.forEach(it => put(it, 't'));
+                const prefOf = (g) => {
                     const roomCats = {};
                     g.ours.concat(g.theirs).forEach(it => { const c = it.cat || (codeOf[lineKey(it).base] || {}).cat; if (c) roomCats[c] = (roomCats[c] || 0) + 1; });
-                    const pref = (c) => (roomCats[c] || 0) * 1000 + (jobCats[c] || 0);
-                    const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
-                        price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no, head: x.it.head || '' });
-                    const theirs = (x, kind, what, sort, ourPrice, head) => {
+                    return (c) => (roomCats[c] || 0) * 1000 + (jobCats[c] || 0);
+                };
+                const mkTheirs = (g, pref) => (x, kind, what, sort, ourPrice, head, full) => {
                         const found = x.it.cat || codeOf[x.base] ? null : libFind(x.it);
                         let code = x.it.cat ? { cat: x.it.cat, sel: x.it.sel } : (codeOf[x.base] || (found && found.length === 1 ? found[0] : null));
                         let from = x.it.cat ? '' : codeOf[x.base] ? '. Code guessed from our line' : code ? '. Code from library'
@@ -688,7 +677,7 @@
                             if (g2 && g2.one) { code = g2; check = true; from = '. CHECK CODE: ' + (p ? 'picked ' + g2.cat + ' ' + g2.sel + ' (category used in this room/job)' : 'guessed from words'); }
                             else if (g2) { code = { cat: g2.cat, sel: '' }; catOnly = g2.choices; from = '. Category guessed (' + g2.cat + '); pick the SEL. Choices: ' + g2.choices; }
                         }
-                        const rr = x.action === 'rr' && kind === 'DIFF';
+                        const rr = x.action === 'rr' && kind === 'DIFF' && !full;
                         const price = rr && ourPrice ? ourPrice : x.it.price;
                         rows.push({ id: 't' + x.it.no, room: g.name, kind, entry: kind === 'DIFF' ? 'Credit' : 'Info', cat: code ? code.cat : '', sel: code ? code.sel : '', act: rr ? '+' : (code && code.act) || ACT_OF[x.action],
                             desc: cleanDesc(x.it.desc).replace(/\*+$/, ''), qty: x.it.qty, unit: x.it.unit, price: kind === 'DIFF' ? -price : price,
@@ -696,7 +685,23 @@
                             what: (check ? 'CHECK CODE. ' : '') + what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
                             choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check, head: head || '',
                             xnote: check ? 'CHECK CODE - Ins: ' + cleanDesc(x.it.desc).replace(/\*+$/, '') + ' ' + f2(x.it.qty) + ' ' + x.it.unit + ' @ ' + f2(x.it.price) : '' });
+                };
+                groups.forEach(g => {
+                    const slots = {}, order = [];
+                    const put = (it, side) => {
+                        const k = lineKey(it);
+                        (k.action === 'rr' ? ['replace', 'remove'] : [k.action]).forEach((slot, n) => {
+                            const key = k.base + '|' + slot;
+                            if (!slots[key]) { slots[key] = { o: [], t: [], o2: [], t2: [] }; order.push(key); }
+                            slots[key][side + (n ? '2' : '')].push({ it, action: k.action, base: k.base });
+                        });
                     };
+                    g.ours.forEach(it => put(it, 'o'));
+                    g.theirs.forEach(it => put(it, 't'));
+                    const pref = prefOf(g);
+                    const add = (x, kind, what) => rows.push({ id: 'o' + x.it.no, room: g.name, kind, entry: 'Add', cat: x.it.cat, sel: x.it.sel, act: x.it.act, desc: cleanDesc(x.it.desc), qty: x.it.qty, unit: x.it.unit,
+                        price: x.it.price, amount: r2(x.it.pre || 0), ourNo: x.it.no, insNo: null, insRoom: '', what, note: x.it.note || '', sort: x.it.no, head: x.it.head || '' });
+                    const theirs = mkTheirs(g, pref);
                     order.forEach(key => {
                         const s = slots[key];
                         // Nov 22 (Spencer): two or more of ours, one of theirs -> theirs pairs with the FIRST of ours (in our order), never the sum; the rest of ours are Ours only
@@ -711,22 +716,12 @@
                             if (same && !bits.length && over(po, pt)) bits.push('Line $ ' + f2(po) + ' ours, ' + f2(pt) + ' theirs');
                             if (!bits.length) { common += po - pt; return; }
                             const what = bits.join('; ');
-                            // Nov 14 (Spencer): same item, qty and/or $ differ -> ONE net line on our code: qty = ours - theirs at (our $ - their $) / qty;
-                            // price only -> our full qty at the per-unit difference. Note "Ours ... - Ins ...". Mixed actions or qty and $ going opposite ways: our line + their credit, as before.
-                            const dq = r2(qo - qt), dd = r2(po - pt), qtyDiff = over(qo, qt);
-                            if (same && qo && qt && dd && (!qtyDiff || dq * dd > 0)) {
-                                if (dd < 0 && s.o.length === 1) { chg(g, s.o[0].it, s.t.map(x => x.it), 'Insurance more'); return; }
-                                const x = s.o[0].it, q = qtyDiff ? Math.abs(dq) : qo, pr = r2(Math.abs(dd) / q), cr = dd < 0;
-                                const u = x.unit, nt = 'Ours ' + f2(qo) + ' ' + u + ' @ ' + f2(po / qo) + ' - Ins ' + f2(qt) + ' ' + u + ' @ ' + f2(pt / qt) + ' = ';
-                                const nb = (cr ? 'Credit ' : 'Add ') + (qtyDiff ? f2(Math.abs(dq)) : f2(qo) + ' @ ' + f2(pr));   // Nov 20: "= Add 1.00" / "= Credit 9.75", typed in bold
-                                rows.push({ id: 'n' + x.no, room: g.name, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: q, unit: u,
-                                    price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: x.no, insNo: s.t[0].it.no, insRoom: s.t[0].it.room, what: nt + nb, note: x.note || '', xnote: nt, xbold: nb, sort: x.no, head: x.head || '' });
-                                return;
-                            }
+                            // Nov 23 (Spencer, build 5): no more net line. Insurance more -> Change in ours. Otherwise our full line as an Add and each of their lines as a Credit
+                            // right below it (their own quantity and price, no comparison note). Replaces the Nov 14 "one net line" rule.
                             if (s.o.length === 1 && pt > po) { chg(g, s.o[0].it, s.t.map(x => x.it), 'Insurance more'); return; }
                             const ourPrice = s.o[0].it.cat ? (s.o[0].action === 'rr' ? s.o[0].it.replace : s.o[0].it.price) : 0;
                             s.o.forEach(x => add(x, 'DIFF', what));
-                            s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice, s.o[0].it.head));
+                            s.t.forEach(x => theirs(x, 'DIFF', what, s.o[0].it.no + 0.5, ourPrice, s.o[0].it.head, same));   /* same action: their whole line at their price */
                         } else if (s.o.length && s.t2.length) {
                             // our separate Remove line against the remove half of their R&R line: no credit
                             const qo = sumQ(s.o.map(x => x.it)), qt = sumQ(s.t2.map(x => x.it));
@@ -735,41 +730,24 @@
                         else if (s.t.length && !s.o2.length) s.t.forEach(x => { if (isAI(x.it)) { aiLeft.push({ g, it: x.it }); return; } theirsOnly += x.it.pre || 0; theirs(x, 'THEIRS', 'Not in our estimate. No credit', 1e6 + x.it.no); });
                     });
                 });
-                // Nov 23 (Spencer, build 3): several insurance lines connected to ONE of ours are added together -> one net line on our code.
-                // Same unit: net quantity. Mixed units (e.g. SF + LF): our quantity at the dollar difference, and Spencer writes that note by hand.
+                // Nov 23 (Spencer, build 5): connected pairs, one or several of theirs on ONE of ours (their dollars added together):
+                // same dollars -> nothing; insurance more -> Change in ours; ours more -> our full line as an Add, then each of theirs as a Credit below it. No net line, no comparison note.
                 const LKn = {};
                 LK.forEach(k => { (LKn[k.o.no] = LKn[k.o.no] || []).push(k); });
-                Object.keys(LKn).map(n => LKn[n]).filter(ks => ks.length > 1).forEach(ks => {
+                Object.keys(LKn).map(n => LKn[n].slice().sort((p, q) => p.t.no - q.t.no)).forEach(ks => {
                     const o = ks[0].o, priced = ks.filter(k => !isAI(k.t)).map(k => k.t), g = groupOf[ks[0].t.room], po = o.pre || 0;
                     if (!priced.length) { asInc(g, o, ks[0].t, '. Connected by hand'); return; }
-                    const pt = sumP(priced), dd = r2(po - pt), nos = priced.map(t => t.no).join(', ');
+                    const pt = sumP(priced), dd = r2(po - pt), nos = priced.map(t => t.no).join(', '), many = priced.length > 1;
                     if (!dd) { common += po - pt; return; }
-                    if (dd < 0) { chg(g, o, priced, 'Insurance more (connected by hand, Ins lines ' + nos + ' together)'); return; }
+                    if (dd < 0) { chg(g, o, priced, 'Insurance more (connected by hand' + (many ? ', Ins lines ' + nos + ' together' : '') + ')'); return; }
                     const cp = copies.filter(x => ks.includes(x.k)).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + x.k.t.no + ': remove it from our estimate').join('');
-                    const sameU = priced.every(t => t.unit === o.unit), qt = sumQ(priced), qd = sameU && o.qty - qt > 0.005;
-                    const q = qd ? r2(o.qty - qt) : o.qty, pr = r2(dd / q);
-                    const differs = o.cat && priced.some(t => cleanDesc(o.desc) !== cleanDesc(t.desc).replace(/\*+$/, ''));
-                    const nt = 'Ours ' + f2(o.qty) + ' ' + o.unit + ' @ ' + f2(po / o.qty) + priced.map(t => ' - Ins ' + f2(t.qty) + ' ' + t.unit + ' @ ' + f2((t.pre || 0) / t.qty)).join('') + ' = '
-                        + (differs ? 'Change to our code ' + o.cat + ' ' + o.sel + ', ' : '');
-                    const nb = 'Add ' + f2(q) + ' ' + o.unit + (qd ? '' : ' @ ' + f2(pr));
-                    rows.push({ id: 'k' + o.no, room: g ? g.name : priced[0].room, kind: 'DIFF', entry: 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: q, unit: o.unit,
-                        price: pr, amount: r2(q * pr), ourNo: o.no, insNo: priced[0].no, insRoom: priced[0].room,
-                        what: nt + nb + '. Connected by hand to Ins lines ' + nos + (sameU ? '' : '. Mixed units: write the note by hand') + cp, note: o.note || '',
-                        xnote: sameU ? nt : '', xbold: sameU ? nb : '', sort: o.no, head: o.head || '', linked: true });
-                });
-                // Nov 22 (Spencer): each connected pair -> ONE net line on our code; "Change to our code" when the items differ
-                LK.filter(k => LKn[k.o.no].length === 1).forEach(k => {
-                    const o = k.o, t = k.t, g = groupOf[t.room], po = o.pre || 0, pt = t.pre || 0, dd = r2(po - pt);
-                    if (isAI(t)) { asInc(g, o, t, '. Connected by hand'); return; }
-                    if (!dd) { common += po - pt; return; }
-                    if (dd < 0) { chg(g, o, [t], 'Insurance more (connected by hand)'); return; }
-                    const cp = copies.filter(x => x.k === k).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + t.no + ': remove it from our estimate').join('');
-                    const qd = o.unit === t.unit && Math.abs(o.qty - t.qty) > 0.005, q = qd ? r2(Math.abs(o.qty - t.qty)) : o.qty, pr = r2(Math.abs(dd) / q), cr = dd < 0;
-                    const nt = 'Ours ' + f2(o.qty) + ' ' + o.unit + ' @ ' + f2(po / o.qty) + ' - Ins ' + f2(t.qty) + ' ' + t.unit + ' @ ' + f2(pt / t.qty) + ' = '
-                        + (o.cat && cleanDesc(o.desc) !== cleanDesc(t.desc).replace(/\*+$/, '') ? 'Change to our code ' + o.cat + ' ' + o.sel + ', ' : '');
-                    const nb = (cr ? 'Credit ' : 'Add ') + f2(q) + ' ' + o.unit + (qd ? '' : ' @ ' + f2(pr));
-                    rows.push({ id: 'k' + o.no, room: g ? g.name : t.room, kind: 'DIFF', entry: cr ? 'Credit' : 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: q, unit: o.unit,
-                        price: cr ? -pr : pr, amount: r2((cr ? -1 : 1) * q * pr), ourNo: o.no, insNo: t.no, insRoom: t.room, what: nt + nb + '. Connected by hand' + cp, note: o.note || '', xnote: nt, xbold: nb, sort: o.no, head: o.head || '', linked: true });
+                    const gg = g || { name: priced[0].room, ours: [], theirs: [] };
+                    rows.push({ id: 'k' + o.no, room: gg.name, kind: 'DIFF', entry: 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: o.qty, unit: o.unit,
+                        price: o.price, amount: r2(po), ourNo: o.no, insNo: priced[0].no, insRoom: priced[0].room,
+                        what: 'Connected by hand to Ins line' + (many ? 's ' : ' ') + nos + ': theirs credited below' + cp, note: o.note || '', sort: o.no, head: o.head || '', linked: true });
+                    const cr = mkTheirs(gg, prefOf(gg));
+                    priced.forEach(t => { const kt = lineKey(t); cr({ it: t, action: kt.action, base: kt.base }, 'DIFF', 'Connected by hand to our line ' + o.no + (t.room !== priced[0].room ? ' (their room ' + t.room + ')' : ''), o.no + 0.5, 0, o.head || '', true); });
+                    rows.filter(r => r.kind === 'DIFF' && r.entry === 'Credit' && priced.some(t => r.id === 't' + t.no)).forEach(r => { r.linked = true; });
                 });
                 // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
                 const dice = (p, q) => { const A = new Set(wordsOf(p)), B = new Set(wordsOf(q)); let k = 0; A.forEach(w => { if (B.has(w)) k++; }); return A.size + B.size ? 2 * k / (A.size + B.size) : 0; };
@@ -777,7 +755,7 @@
                 rows.filter(r => r.kind === 'OURS').forEach(o => {
                     let best = null, bs = 0;
                     rows.forEach(t => {
-                        if (t.kind !== 'THEIRS' || t.room !== o.room || usedT.has(t) || !t.cat || t.cat !== o.cat || t.unit !== o.unit) return;
+                        if (t.kind !== 'THEIRS' || t.room !== o.room || usedT.has(t) || !t.cat || t.cat !== o.cat || t.unit !== o.unit || notPair(o.ourNo, t.insNo)) return;
                         if (Math.abs(o.qty - t.qty) > DIFF_PCT * Math.max(o.qty, t.qty) + 0.005) return;
                         const sc = dice(o.desc, t.desc);
                         if (sc >= PAIR_MIN && sc > bs) { best = t; bs = sc; }
@@ -829,7 +807,7 @@
                     TH.forEach(t => {
                         const ti = tItem[t.insNo], kt = lineKey(ti), pr = P(ti.room), wt = keyW(t.desc);
                         let best = null;
-                        const offer = (o, rank, score, why) => { if (!best || rank < best.rank || (rank === best.rank && score > best.score + 1e-9)) best = { o, rank, score, why }; };
+                        const offer = (o, rank, score, why) => { if (notPair(o.ourNo, t.insNo)) return; if (!best || rank < best.rank || (rank === best.rank && score > best.score + 1e-9)) best = { o, rank, score, why }; };
                         OU.forEach(o => {
                             const oi = oItem[o.ourNo], ko = lineKey(oi);
                             // 1. the same item in the same room of ours, under another heading (our ALL ELEVATIONS line against their Left Elevation)
@@ -876,7 +854,7 @@
                 change.sort((a, b) => (order[a.room] ?? 1e9) - (order[b.room] ?? 1e9) || a.sort - b.sort);
                 const oursTotal = r2(sumP(ours.items)), insTotal = r2(sumP(ins.items));
                 return { rows, oursTotal, insTotal, leftOut: r2(sumP(leftOurs) - sumP(leftIns)), common: r2(common), theirsOnly: r2(theirsOnly), change, changed: r2(changed),
-                    copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), suggest, linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
+                    copies: copies.map(x => ({ ours: x.c.no, ins: x.k.t.no, desc: cleanDesc(x.c.desc) })), suggest: suggest.filter(x => !notPair(x.ours, x.ins)), linksUsed: LK.map(k => k.l), linksSkipped: (links || []).filter(l => !LK.some(k => k.l === l)) };
             };
             const oursWorkbook = (XLSX, changes, recap, meta) => {
                 const wb = XLSX.utils.book_new();
@@ -1832,10 +1810,11 @@
             const [showKind, setShowKind] = useState({ OURS: true, DIFF: true, THEIRS: false });
             // Nov 22: lines connected by hand [{ ours, ins, ourDesc, insDesc }], saved with the room pairings
             const [links, setLinks] = useState([]);
+            const [noPairs, setNoPairs] = useState([]);   /* Nov 23 (build 5): suggestions marked "Not a pair", saved with the job */
             const [linkRoom, setLinkRoom] = useState('');
             const [linkOurs, setLinkOurs] = useState('');
             const [linkIns, setLinkIns] = useState('');
-            useEffect(() => { setLinks((saved && saved.links) || []); }, [saved]);
+            useEffect(() => { setLinks((saved && saved.links) || []); setNoPairs((saved && saved.noPairs) || []); }, [saved]);
 
             useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
                 const list = [];
@@ -1893,11 +1872,11 @@
                 setNewRooms(fresh);
             }, [ourRooms, insRooms, saved]);
             useEffect(() => { setLines(null); setOff({}); }, [pairs]);
-            const compareLines = (lk) => {
+            const compareLines = (lk, np) => {
                 const m = {};
                 insRooms.forEach(r => { m[r.name] = partFromValue(pairs[r.name]); });
                 setOff({});
-                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap, lib || null, Array.isArray(lk) ? lk : links));
+                setLines(EstCompare.lineCompare(ours.est, ins.est, insRooms.map(r => r.name), ourRooms.map(r => r.name), m, recap, lib || null, Array.isArray(lk) ? lk : links, Array.isArray(np) ? np : noPairs));
             };
             const cd = EstCompare.cleanDesc;
             const itemText = (it) => '#' + it.no + ' ' + cd(it.desc) + ' ' + qty(it.qty) + ' ' + it.unit + ' @ ' + qty(it.price);
@@ -1906,6 +1885,7 @@
             const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part)) : [];
             const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom && !links.some(l => l.ins === it.no)) : [];
             const setLinksAndCompare = (lk) => { setLinks(lk); setSaveMsg(''); if (lines) compareLines(lk); };
+            const setNoPairsAndCompare = (np) => { setNoPairs(np); setSaveMsg(''); if (lines) compareLines(null, np); };
             const connectNos = (oNo, tNo) => {
                 const o = ours.est.items.find(it => it.no === +oNo), t = ins.est.items.find(it => it.no === +tNo);
                 if (!o || !t || links.some(l => l.ins === t.no)) return;   /* Nov 23: several of theirs may connect to one of ours */
@@ -1940,7 +1920,7 @@
                         ourFile: ours.est.fileName, ourTotal: ours.est.readTotal, ourRooms: ourRooms.map(r => ({ name: r.name, subs: r.subs, heads: r.heads })),
                         insFile: ins.est.fileName, insTotal: ins.est.readTotal, insRooms: insRooms.map(r => r.name),
                         pairs: insRooms.map(r => { const p = partFromValue(pairs[r.name]); return { adj: r.name, ours: p ? p.room : '', kind: p ? p.kind : '', part: p ? p.part : '' }; }),
-                        links,
+                        links, noPairs,
                         savedBy: { uid: profile.uid, name: profile.name || profile.email || '' },
                         savedAt: now
                     };
@@ -2132,7 +2112,7 @@
                                         </table>
                                         <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
                                             <div style={{ fontWeight: 600, marginBottom: '6px' }}>Connect lines by hand</div>
-                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. A connected pair becomes one net line on our code. Two or more of their lines can be connected to the same line of ours; they are added together. Saved with Save room pairings.</div>
+                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. Ours more: our line goes in as an Add with their line as a Credit right below it. Insurance more: our line goes on the Change in ours list. Two or more of their lines can be connected to the same line of ours; they are added together. Saved with Save room pairings.</div>
                                             <div className="bar" style={{ marginTop: 0, flexWrap: 'wrap' }}>
                                                 <select value={linkRoom} onChange={e => { setLinkRoom(e.target.value); setLinkOurs(''); setLinkIns(''); }}>
                                                     <option value="">-- Their room --</option>
@@ -2151,7 +2131,7 @@
                                             {suggestions.length > 0 && (
                                                 <div style={{ marginTop: '10px' }}>
                                                     <div style={{ fontWeight: 600 }}>Suggested pairs ({suggestions.length})</div>
-                                                    <div className="muted" style={{ marginTop: 0, marginBottom: '6px' }}>Nothing is paired until you click Connect. Left alone, our line stays as it is and theirs stays Theirs only. The last column shows what connecting would do.</div>
+                                                    <div className="muted" style={{ marginTop: 0, marginBottom: '6px' }}>Nothing is paired until you click Connect. Not a pair takes the suggestion (and any "Ins has" note) away: their line stays Theirs only. The last column shows what connecting would do.</div>
                                                     <table>
                                                         <tbody>
                                                             {suggestions.map(x => {
@@ -2161,11 +2141,12 @@
                                                                 const already = links.filter(l => l.ours === x.ours).map(l => itemNo(ins.est, l.ins)).filter(Boolean);
                                                                 const po = o.pre || 0, pt = (t.pre || 0) + already.reduce((a, y) => a + (y.pre || 0), 0), net = po - pt;
                                                                 const result = t.status ? '' : 'Ours ' + money(po) + ' - Ins ' + money(pt) + (already.length ? ' (with Ins #' + already.map(y => y.no).join(', #') + ')' : '') + ' = '
-                                                                    + (Math.abs(net) < 0.005 ? 'same' : net > 0 ? 'Add ' + money(net) : 'insurance more, ours changes to theirs');
+                                                                    + (Math.abs(net) < 0.005 ? 'same, nothing to enter' : net > 0 ? money(net) + ' more: our line as an Add, theirs as a Credit below it' : 'insurance more, ours changes to theirs');
                                                                 return (
                                                                     <tr key={x.ours + '-' + x.ins}>
                                                                         <td>{x.room}</td><td>Ins {itemText(t)}</td><td>with ours {itemText(o)}</td><td className="small">{x.why}</td><td className="small">{result}</td>
                                                                         <td><button className="btn-secondary" onClick={() => connectNos(x.ours, x.ins)}>Connect</button></td>
+                                                                        <td><button className="btn-secondary" onClick={() => setNoPairsAndCompare(noPairs.concat([{ ours: x.ours, ins: x.ins, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]))}>Not a pair</button></td>
                                                                     </tr>
                                                                 );
                                                             })}
@@ -2189,6 +2170,19 @@
                                                                 </tr>
                                                             );
                                                         })}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                            {noPairs.length > 0 && <div style={{ fontWeight: 600, marginTop: '10px' }}>Not a pair ({noPairs.length})</div>}
+                                            {noPairs.length > 0 && (
+                                                <table style={{ marginTop: '8px' }}>
+                                                    <tbody>
+                                                        {noPairs.map(l => (
+                                                            <tr key={'np' + l.ours + '-' + l.ins}>
+                                                                <td>Ins #{l.ins} {l.insDesc}</td><td>not with ours #{l.ours} {l.ourDesc}</td>
+                                                                <td><button className="btn-secondary" onClick={() => setNoPairsAndCompare(noPairs.filter(x => x !== l))}>Undo</button></td>
+                                                            </tr>
+                                                        ))}
                                                     </tbody>
                                                 </table>
                                             )}
