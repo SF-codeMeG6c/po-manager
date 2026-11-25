@@ -684,7 +684,7 @@
                             amount: kind === 'DIFF' ? -(rr && ourPrice ? r2(x.it.qty * ourPrice) : r2(x.it.pre || 0)) : r2(x.it.pre || 0), ourNo: null, insNo: x.it.no, insRoom: x.it.room,
                             what: (check ? 'CHECK CODE. ' : '') + what + (rr ? '. Credit as replace only' + (ourPrice ? ' at our replace price' : '') : '') + from, note: x.it.note || '', sort,
                             choices: catOnly || (!code && found ? found.slice(0, 6).map(c => c.cat + ' ' + c.sel).join(', ') : ''), check, head: head || '',
-                            xnote: check ? 'CHECK CODE - Ins: ' + cleanDesc(x.it.desc).replace(/\*+$/, '') + ' ' + f2(x.it.qty) + ' ' + x.it.unit + ' @ ' + f2(x.it.price) : '' });
+                            xnote: '' });   /* Nov 25 (Spencer): no CHECK CODE note typed in Xactimate any more, in either script; the Why column still says CHECK CODE */
                 };
                 groups.forEach(g => {
                     const slots = {}, order = [];
@@ -732,21 +732,41 @@
                 });
                 // Nov 23 (Spencer, build 5): connected pairs, one or several of theirs on ONE of ours (their dollars added together):
                 // same dollars -> nothing; insurance more -> Change in ours; ours more -> our full line as an Add, then each of theirs as a Credit below it. No net line, no comparison note.
-                const LKn = {};
-                LK.forEach(k => { (LKn[k.o.no] = LKn[k.o.no] || []).push(k); });
-                Object.keys(LKn).map(n => LKn[n].slice().sort((p, q) => p.t.no - q.t.no)).forEach(ks => {
-                    const o = ks[0].o, priced = ks.filter(k => !isAI(k.t)).map(k => k.t), g = groupOf[ks[0].t.room], po = o.pre || 0;
-                    if (!priced.length) { asInc(g, o, ks[0].t, '. Connected by hand'); return; }
-                    const pt = sumP(priced), dd = r2(po - pt), nos = priced.map(t => t.no).join(', '), many = priced.length > 1;
+                // Nov 25 (Spencer, build 6): one insurance line may also be connected to several of ours. Connected lines form groups (every line reachable through connections);
+                // each group is compared in dollars, all of ours against all of theirs: same -> nothing; insurance more -> Change in ours (the first of ours changes to theirs,
+                // the other lines of ours are removed); ours more -> our lines as Adds and their lines as Credits right below the first of ours.
+                const comps = [];
+                LK.forEach(k => {
+                    const hit = comps.filter(c => c.os.includes(k.o) || c.ts.includes(k.t));
+                    const c = hit[0] || { os: [], ts: [], ks: [] };
+                    if (!hit.length) comps.push(c);
+                    hit.slice(1).forEach(h => { h.os.forEach(x => { if (!c.os.includes(x)) c.os.push(x); }); h.ts.forEach(x => { if (!c.ts.includes(x)) c.ts.push(x); }); c.ks = c.ks.concat(h.ks); comps.splice(comps.indexOf(h), 1); });
+                    if (!c.os.includes(k.o)) c.os.push(k.o);
+                    if (!c.ts.includes(k.t)) c.ts.push(k.t);
+                    c.ks.push(k);
+                });
+                comps.forEach(c => {
+                    const os = c.os.slice().sort((p, q) => p.no - q.no), ts = c.ts.slice().sort((p, q) => p.no - q.no), o = os[0];
+                    const priced = ts.filter(t => !isAI(t)), g = groupOf[ts[0].room], po = sumP(os);
+                    if (!priced.length) { asInc(g, o, ts[0], '. Connected by hand'); os.slice(1).forEach(x => rows.push({ id: 'o' + x.no, room: g ? g.name : ts[0].room, kind: 'OURS', entry: 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: x.qty, unit: x.unit, price: x.price, amount: r2(x.pre || 0), ourNo: x.no, insNo: null, insRoom: '', what: 'Not in their estimate', note: x.note || '', sort: x.no, head: x.head || '' })); return; }
+                    const pt = sumP(priced), dd = r2(po - pt), nos = priced.map(t => t.no).join(', '), onos = os.map(x => x.no).join(', '), many = priced.length > 1, manyO = os.length > 1;
                     if (!dd) { common += po - pt; return; }
-                    if (dd < 0) { chg(g, o, priced, 'Insurance more (connected by hand' + (many ? ', Ins lines ' + nos + ' together' : '') + ')'); return; }
-                    const cp = copies.filter(x => ks.includes(x.k)).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + x.k.t.no + ': remove it from our estimate').join('');
+                    if (dd < 0) {
+                        chg(g, o, priced, 'Insurance more (connected by hand' + (many ? ', Ins lines ' + nos + ' together' : '') + (manyO ? ', against our lines ' + onos + ' together' : '') + ')');
+                        os.slice(1).forEach(x => {
+                            change.push({ room: g ? g.name : priced[0].room, ourNo: x.no, cat: x.cat, sel: x.sel, desc: cleanDesc(x.desc), qty: x.qty, unit: x.unit, price: x.price, amount: r2(x.pre || 0),
+                                insNo: nos, insCode: '', insDesc: '', insQty: null, insUnit: '', insPrice: null, insAmount: null, why: 'Covered by Ins line' + (many ? 's ' : ' ') + nos + ' (now on our line ' + o.no + '): remove it from our estimate', sort: x.no, remove: true });
+                            changed += x.pre || 0;
+                        });
+                        return;
+                    }
+                    const cp = copies.filter(x => c.ks.includes(x.k)).map(x => '. Our line ' + x.c.no + ' is a copy of Ins line ' + x.k.t.no + ': remove it from our estimate').join('');
                     const gg = g || { name: priced[0].room, ours: [], theirs: [] };
-                    rows.push({ id: 'k' + o.no, room: gg.name, kind: 'DIFF', entry: 'Add', cat: o.cat, sel: o.sel, act: o.act, desc: cleanDesc(o.desc), qty: o.qty, unit: o.unit,
-                        price: o.price, amount: r2(po), ourNo: o.no, insNo: priced[0].no, insRoom: priced[0].room,
-                        what: 'Connected by hand to Ins line' + (many ? 's ' : ' ') + nos + ': theirs credited below' + cp, note: o.note || '', sort: o.no, head: o.head || '', linked: true });
+                    os.forEach((x, i) => rows.push({ id: 'k' + x.no, room: gg.name, kind: 'DIFF', entry: 'Add', cat: x.cat, sel: x.sel, act: x.act, desc: cleanDesc(x.desc), qty: x.qty, unit: x.unit,
+                        price: x.price, amount: r2(x.pre || 0), ourNo: x.no, insNo: priced[0].no, insRoom: priced[0].room,
+                        what: 'Connected by hand to Ins line' + (many ? 's ' : ' ') + nos + (manyO ? ' (with our lines ' + onos + ')' : '') + (i ? '' : ': theirs credited below' + cp), note: x.note || '', sort: x.no, head: x.head || '', linked: true }));
                     const cr = mkTheirs(gg, prefOf(gg));
-                    priced.forEach(t => { const kt = lineKey(t); cr({ it: t, action: kt.action, base: kt.base }, 'DIFF', 'Connected by hand to our line ' + o.no + (t.room !== priced[0].room ? ' (their room ' + t.room + ')' : ''), o.no + 0.5, 0, o.head || '', true); });
+                    priced.forEach(t => { const kt = lineKey(t); cr({ it: t, action: kt.action, base: kt.base }, 'DIFF', 'Connected by hand to our line' + (manyO ? 's ' + onos : ' ' + o.no) + (t.room !== priced[0].room ? ' (their room ' + t.room + ')' : ''), o.no + 0.5, 0, o.head || '', true); });
                     rows.filter(r => r.kind === 'DIFF' && r.entry === 'Credit' && priced.some(t => r.id === 't' + t.no)).forEach(r => { r.linked = true; });
                 });
                 // Nov 16: same scope under a different item. Same room, same CAT and unit, qty within 10%, shared words -> note on OUR line only
@@ -1883,12 +1903,12 @@
             const liveItem = (it) => !it.status && it.qty > 0;
             const linkPart = linkRoom ? partFromValue(pairs[linkRoom]) : null;
             const linkOurList = ours.est && linkPart ? ours.est.items.filter(it => liveItem(it) && it.room === linkPart.room && (linkPart.kind !== 'h' || it.head === linkPart.part)) : [];
-            const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom && !links.some(l => l.ins === it.no)) : [];
+            const linkInsList = ins.est && linkRoom ? ins.est.items.filter(it => liveItem(it) && it.room === linkRoom) : [];   /* Nov 25: a line of theirs can be connected to more than one of ours */
             const setLinksAndCompare = (lk) => { setLinks(lk); setSaveMsg(''); if (lines) compareLines(lk); };
             const setNoPairsAndCompare = (np) => { setNoPairs(np); setSaveMsg(''); if (lines) compareLines(null, np); };
             const connectNos = (oNo, tNo) => {
                 const o = ours.est.items.find(it => it.no === +oNo), t = ins.est.items.find(it => it.no === +tNo);
-                if (!o || !t || links.some(l => l.ins === t.no)) return;   /* Nov 23: several of theirs may connect to one of ours */
+                if (!o || !t || links.some(l => l.ins === t.no && l.ours === o.no)) return;   /* only the same connection twice is refused */
                 setLinksAndCompare(links.concat([{ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]));
             };
             const connect = () => { connectNos(linkOurs, linkIns); setLinkOurs(''); setLinkIns(''); };
@@ -2112,7 +2132,7 @@
                                         </table>
                                         <div className="section" style={{ background: '#f7f9fc', padding: '12px', marginBottom: '14px' }}>
                                             <div style={{ fontWeight: 600, marginBottom: '6px' }}>Connect lines by hand</div>
-                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. Ours more: our line goes in as an Add with their line as a Credit right below it. Insurance more: our line goes on the Change in ours list. Two or more of their lines can be connected to the same line of ours; they are added together. Saved with Save room pairings.</div>
+                                            <div className="muted" style={{ marginTop: 0, marginBottom: '8px' }}>For a line of ours and a line of theirs that are the same scope. Ours more: our line goes in as an Add with their line as a Credit right below it. Insurance more: our line goes on the Change in ours list. Two or more of their lines can be connected to the same line of ours, and one of their lines to two or more of ours: connected lines are added together and compared as one. Saved with Save room pairings.</div>
                                             <div className="bar" style={{ marginTop: 0, flexWrap: 'wrap' }}>
                                                 <select value={linkRoom} onChange={e => { setLinkRoom(e.target.value); setLinkOurs(''); setLinkIns(''); }}>
                                                     <option value="">-- Their room --</option>
@@ -2120,11 +2140,11 @@
                                                 </select>
                                                 <select value={linkIns} disabled={!linkRoom} onChange={e => setLinkIns(e.target.value)} style={{ maxWidth: '420px' }}>
                                                     <option value="">-- Their line --</option>
-                                                    {linkInsList.map(it => <option key={it.no} value={it.no}>{itemText(it)}</option>)}
+                                                    {linkInsList.map(it => { const w = links.filter(l => l.ins === it.no).map(l => '#' + l.ours); return <option key={it.no} value={it.no}>{itemText(it) + (w.length ? '  (connected to ours ' + w.join(', ') + ')' : '')}</option>; })}
                                                 </select>
                                                 <select value={linkOurs} disabled={!linkRoom} onChange={e => setLinkOurs(e.target.value)} style={{ maxWidth: '420px' }}>
                                                     <option value="">{linkRoom && !linkPart ? '(no room of ours paired)' : '-- Our line --'}</option>
-                                                    {linkOurList.map(it => <option key={it.no} value={it.no}>{itemText(it)}</option>)}
+                                                    {linkOurList.map(it => { const w = links.filter(l => l.ours === it.no).map(l => '#' + l.ins); return <option key={it.no} value={it.no}>{itemText(it) + (w.length ? '  (connected to Ins ' + w.join(', ') + ')' : '')}</option>; })}
                                                 </select>
                                                 <button className="btn-secondary" disabled={!linkOurs || !linkIns} onClick={connect}>Connect</button>
                                             </div>
