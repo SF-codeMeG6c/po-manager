@@ -108,7 +108,8 @@
             const FURNITURE = /Page: \d+$|^CONTINUED - |^CAT SEL|^CALC QTY|^QUANTITY UNIT|Height: /;
 
             // pdf.js text items of one page -> rows of text, top to bottom
-            const pageRows = (items) => {
+            const pageRows = (items, ocr) => {
+                if (ocr) return ocrRows(items);
                 const rows = [];
                 items.forEach(it => {
                     const s = (it.s || '').trim();
@@ -124,11 +125,38 @@
                 });
             };
 
+            // OCR copies (scanned paper run through text recognition, Nov 25): the words of one printed line sit at slightly
+            // different heights and the page can be tilted, so a word joins the row whose nearest word to its left is level with it
+            const ocrRows = (items) => {
+                const rows = [];
+                items.map(it => ({ x: it.x, y: it.y, s: (it.s || '').trim() })).filter(it => it.s)
+                    .sort((a, b) => a.x - b.x)
+                    .forEach(it => {
+                        let best = null, gap = 3;
+                        rows.forEach(r => { const d = Math.abs(r.lastY - it.y); if (d < gap) { gap = d; best = r; } });
+                        if (!best) { best = { parts: [], ys: [] }; rows.push(best); }
+                        best.parts.push(it); best.ys.push(it.y); best.lastY = it.y;
+                    });
+                rows.forEach(r => { r.y = r.ys.reduce((a, b) => a + b, 0) / r.ys.length; });
+                rows.sort((a, b) => b.y - a.y);
+                const U = '(?:EA|SF|LF|SY|HR|MO|DA|WK|CF|CY|SQ|TN|LB|GL|BX|RL|BF|MN|KT|PR|YR)';
+                const digits = (w) => w.replace(/[lIJ]/g, '1').replace(/[OQ]/g, '0').replace(/S/g, '5');   // letters OCR reads in place of digits
+                return rows.map(r => r.parts.map(q => q.s).join(' ').replace(/\s+/g, ' ').trim()
+                    .replace(/^([\dlIO](?: ?[\dlIO])*) ?\. (?=\S)/, (m, n) => /\d/.test(n) ? digits(n.replace(/ /g, '')) + '. ' : m)   // "10 I. Final" -> "101. Final"
+                    .replace(new RegExp('(^|\\s)([\\dlIJ]+) ?\\. ?([\\dO]{2}) ?(' + U + ')\\b', 'g'), '$1$2.$3$4')      // "l . 00EA" -> "l.00EA"
+                    .replace(/(^|\s)([\dlI]+) \.(?=[\dO])/g, '$1$2.')                                       // "l .00EA" -> "l.00EA"
+                    .split(' ').map(w => new RegExp('^[\\dlIJO,]*\\.[\\dlIOQS]{2}(' + U + ')?$').test(w) ? digits(w.replace(new RegExp(U + '$'), '')) + (w.match(new RegExp(U + '$')) || [''])[0] : w).join(' ')   // l.OOEA -> 1.00EA
+                    .replace(new RegExp('^(\\d+)\\. (\\d\\d) ?(' + U + ')\\b'), '$1.$2 $3')                    // "8. 00LF" -> "8.00 LF"
+                    .replace(new RegExp('(\\d\\.\\d\\d) ?(' + U + ')\\b', 'g'), '$1 $2')                         // 1.00EA -> 1.00 EA
+                    .replace(/(?<!^\d*)(\d) ?[.,] ?([\dlIO]) ?([\dlIO])(?![\d.,])/g, (m, a, b, c) => a + '.' + digits(b + c))   // "234 .8 6", "79 ,26", "2.1 I" -> 234.86, 79.26, 2.11
+                    .replace(/(\d) ,(\d{3})/g, '$1,$2'));
+            };
+
             // pages: [{ items: [{ s, x, y }] }]  ->  { format, items, roomTotals, printedTotal, estimate, priceList, problems }
             // format 'coded' = prints CAT / SEL columns (ours, and some carriers); 'plain' = description only (most carrier prints)
-            const parseEstimate = (pages) => {
+            const parseEstimate = (pages, ocr) => {
                 const rows = [];
-                pages.forEach(p => pageRows(p.items).forEach(t => rows.push(t)));
+                pages.forEach(p => pageRows(p.items, ocr).forEach(t => rows.push(t)));
                 const coded = rows.some(t => /^CAT SEL/.test(t));
                 const out = { format: coded ? 'coded' : 'plain', items: [], roomTotals: {}, printedTotal: null, estimate: '', priceList: '', problems: [] };
                 const headRe = coded ? /^(\d+)\. ([A-Z]{3}) (\S+) ([+\-&A-Z]) (.+)$/ : /^(\d+)\. (.+)$/;
@@ -236,6 +264,17 @@
                             const c2 = joined.search(/\d+\/\S+|\bAvg\.|\bNA\b/);
                             const n2 = ((c2 >= 0 ? joined.slice(0, c2) : joined).slice(joined.indexOf(q[0]) + q[0].length).match(new RegExp('(?<![\\d(])' + NUM, 'g')) || []).map(num);
                             if (n2.length >= 4) { it.price = n2[0]; it.tax = n2[1]; it.op = n2[2]; it.total = n2[3]; ok = true; }
+                        }
+                    }
+                    if (ocr && ok && !coded && !it.status) {
+                        // OCR copies: a misread digit shows up when quantity x price + tax + O&P does not equal the RCV.
+                        // The row also prints depreciation and ACV (RCV = ACV + depreciation), so two of the three agreeing settles it.
+                        const calc = r2(it.qty * it.price + it.tax + it.op);
+                        if (Math.abs(calc - it.total) > 0.05) {
+                            const d = block[qi].match(new RegExp('\\((' + NUM + ')\\) (' + NUM + ')$'));
+                            const acvDep = d ? r2(num(d[1]) + num(d[2])) : null;
+                            if (acvDep != null && Math.abs(acvDep - calc) <= 0.05) it.total = calc;
+                            else out.problems.push('Line ' + it.no + ' (' + it.desc + ') numbers do not add up (scan misread) - check it against the PDF');
                         }
                     }
                     if (!ok) { out.problems.push('Line ' + it.no + ' (' + it.desc + ') could not be read'); it.price = 0; it.tax = 0; it.op = 0; it.total = 0; it.unreadable = true; }
@@ -1472,7 +1511,12 @@
                 const tc = await (await doc.getPage(n)).getTextContent();
                 pages.push({ items: tc.items.filter(i => i.str && i.str.trim()).map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5] })) });
             }
-            const est = EstCompare.parseEstimate(pages);
+            let est = EstCompare.parseEstimate(pages);
+            if (!est.items.length || est.problems.length) {
+                // a scanned copy run through OCR reads with tilted rows and misread digits: try the OCR reading and keep it if it reads better
+                const scan = EstCompare.parseEstimate(pages, true);
+                if (scan.items.length && (!est.items.length || scan.problems.length < est.problems.length)) { est = scan; est.ocr = true; }
+            }
             est.fileName = file.name;
             return est;
         };
@@ -1487,6 +1531,7 @@
                     {error && <div className="read bad">{error}</div>}
                     {est && !busy && (
                         <div className={'read ' + (est.problems.length ? 'bad' : 'ok')}>
+                            {est.ocr && <b>Scanned copy (OCR) · </b>}
                             {est.estimate && <b>{est.estimate} · </b>}
                             {est.items.length} lines in {est.roomCheck.length} rooms, {money(est.readTotal)}
                             {est.problems.length === 0 && (est.printedTotal != null ? ' — matches the printed total and every room total' : ' — every room matches its printed total')}
