@@ -1835,6 +1835,23 @@
             const [linkOurs, setLinkOurs] = useState('');
             const [linkIns, setLinkIns] = useState('');
             useEffect(() => { setLinks((saved && saved.links) || []); setNoPairs((saved && saved.noPairs) || []); }, [saved]);
+            // Nov 25 (Spencer, build 7): saved results. Each "Save results" click stores a dated snapshot of what is on the screen in estCompare/{jobId}_ours/versions
+            // (kind 'oursResult'; never changed or deleted). The snapshot itself is one JSON string (data); the other fields are for the list.
+            const [results, setResults] = useState([]);
+            const [resMsg, setResMsg] = useState('');
+            const [resNote, setResNote] = useState('');
+            const [resBusy, setResBusy] = useState(false);
+            const [viewRes, setViewRes] = useState(null);     // an opened snapshot { doc, data }
+            const [viewTab, setViewTab] = useState('diff');
+            useEffect(() => {
+                setResults([]); setViewRes(null); setResMsg('');
+                if (!jobId) return;
+                let live = true;
+                db.collection('estCompare').doc(jobId + '_ours').collection('versions').where('kind', '==', 'oursResult').get()
+                    .then(q => { if (live) setResults(q.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => resTime(b) - resTime(a))); })
+                    .catch(e => { if (live) setResMsg('Could not load saved results: ' + e.message); });
+                return () => { live = false; };
+            }, [jobId]);
 
             useEffect(() => db.collection('jobs').onSnapshot(snapshot => {
                 const list = [];
@@ -1987,6 +2004,56 @@
                 setTimeout(() => URL.revokeObjectURL(a.href), 1000);
             };
 
+            const resTime = (r) => r.savedAt && r.savedAt.toDate ? r.savedAt.toDate().getTime() : r.savedAtMs || 0;
+            const resWhen = (r) => { const t = resTime(r); return t ? new Date(t).toLocaleString() : ''; };
+            const saveResults = async () => {
+                if (!jobId || !lines || resBusy) return;
+                setResBusy(true); setResMsg('');
+                try {
+                    const job = jobs.find(j => j.id === jobId) || {};
+                    const made = new Date();
+                    const entry = kept.filter(r => r.entry !== 'Info'), info = kept.filter(r => r.entry === 'Info');
+                    const sum = (l) => Math.round(l.reduce((a, r) => a + r.amount, 0) * 100) / 100;
+                    const payload = {
+                        changes, recap,
+                        meta: { ourName: ours.est.fileName, ourEstimate: ours.est.estimate, insName: ins.est.fileName, insEstimate: ins.est.estimate, made: made.toLocaleString() },
+                        lines, offKeys: Object.keys(off).filter(k => off[k]), links, noPairs,
+                        pairs: insRooms.map(r => { const p = partFromValue(pairs[r.name]); return { adj: r.name, ours: p ? p.room : '', kind: p ? p.kind : '', part: p ? p.part : '' }; })
+                    };
+                    const data = JSON.stringify(payload);
+                    if (data.length > 900000) throw new Error('these results are too large to save in one record (' + Math.round(data.length / 1000) + ' KB)');
+                    const rec = {
+                        kind: 'oursResult', jobId, jobCode: job.code || '', note: resNote.trim(),
+                        ourFile: ours.est.fileName, ourTotal: ours.est.readTotal, insFile: ins.est.fileName, insTotal: ins.est.readTotal,
+                        diffRows: entry.length, creditRows: entry.filter(r => r.entry === 'Credit').length, diffTotal: sum(entry),
+                        theirsRows: info.length, theirsTotal: sum(info), changeRows: (lines.change || []).length, changedTotal: lines.changed || 0,
+                        revisedTotal: Math.round((lines.oursTotal + sum(info) - (lines.changed || 0)) * 100) / 100,
+                        linkCount: links.length, noPairCount: noPairs.length,
+                        savedBy: { uid: profile.uid, name: profile.name || profile.email || '' }, savedAtMs: made.getTime(),
+                        data
+                    };
+                    const ref = db.collection('estCompare').doc(jobId + '_ours').collection('versions').doc();
+                    await ref.set({ ...rec, savedAt: firebase.firestore.FieldValue.serverTimestamp() });
+                    setResults(rs => [{ id: ref.id, ...rec }].concat(rs));
+                    setResNote('');
+                    setResMsg('Results saved ' + made.toLocaleString() + '.');
+                } catch (e) {
+                    setResMsg('Could not save the results: ' + e.message);
+                }
+                setResBusy(false);
+            };
+            const resData = (r) => { try { return JSON.parse(r.data); } catch (e) { return null; } };
+            const resKept = (d) => { const offSet = new Set(d.offKeys || []); return ((d.lines && d.lines.rows) || []).filter(x => !offSet.has(x.id + x.room)); };
+            const openResult = (r) => { const d = resData(r); if (!d) { setResMsg('That saved result could not be read.'); return; } setViewTab('diff'); setViewRes({ doc: r, data: d }); };
+            const resultExcel = (r) => {
+                const d = resData(r);
+                if (!d) { setResMsg('That saved result could not be read.'); return; }
+                const wb = EstCompare.oursWorkbook(window.XLSX, d.changes || [], d.recap, { ...d.meta, lines: d.lines ? { ...d.lines, rows: resKept(d) } : null });
+                const t = new Date(resTime(r));
+                const day = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+                window.XLSX.writeFile(wb, 'Ours_vs_Insurance_' + String(r.jobCode || 'estimate').replace(/[^\w.-]+/g, '_') + '_saved_' + day + '.xlsx');
+            };
+
             const warnings = [];
             if (ready) {
                 if (ours.est.readTotal === ins.est.readTotal && ours.est.items.length === ins.est.items.length) warnings.push('Both files have the same line count and total. Check that one is ours and one is the insurance estimate.');
@@ -2021,8 +2088,91 @@
                             <EstimateFile label="Insurance estimate (PDF)" {...ins} onPick={pick(setIns)} />
                         </div>
                         {warnings.map((w, i) => <div key={i} className="read bad" style={{ marginBottom: '10px' }}>{w}</div>)}
-                        <div className="muted">The PDFs are read in this browser and never uploaded. Only the room names and pairings are saved, when you click Save.</div>
+                        <div className="muted">The PDFs are read in this browser and never uploaded. Room names, pairings and connections are saved when you click Save; the lines and totals are saved when you click Save results.</div>
                     </div>
+
+                    {jobId && (results.length > 0 || (resMsg && !lines)) && (
+                        <div className="section">
+                            <div className="section-title">Saved results for this job ({results.length})</div>
+                            <div className="muted" style={{ marginTop: 0, marginBottom: '10px' }}>Each one is the comparison as it stood when Save results was clicked. They are never changed. View or download one without uploading the PDFs.</div>
+                            {resMsg && !lines && <div className="read bad" style={{ marginBottom: '10px' }}>{resMsg}</div>}
+                            {results.length > 0 && (
+                                <div className="scroll">
+                                    <table>
+                                        <thead><tr><th>Saved</th><th>By</th><th>Note</th><th>Estimates</th><th className="n">Differences</th><th className="n">Change in ours</th><th className="n">Theirs only</th><th className="n">Revised ours</th><th></th><th></th></tr></thead>
+                                        <tbody>
+                                            {results.map(r => (
+                                                <tr key={r.id} style={viewRes && viewRes.doc.id === r.id ? { background: '#edf7ed' } : null}>
+                                                    <td>{resWhen(r)}</td><td>{(r.savedBy && r.savedBy.name) || ''}</td><td>{r.note || ''}</td>
+                                                    <td className="small">{r.ourFile}<br />{r.insFile}</td>
+                                                    <td className="n">{r.diffRows} rows<br />{money(r.diffTotal || 0)}</td>
+                                                    <td className="n">{r.changeRows}</td>
+                                                    <td className="n">{r.theirsRows} rows<br />{money(r.theirsTotal || 0)}</td>
+                                                    <td className="n">{money(r.revisedTotal || 0)}</td>
+                                                    <td><button className="btn-secondary" onClick={() => viewRes && viewRes.doc.id === r.id ? setViewRes(null) : openResult(r)}>{viewRes && viewRes.doc.id === r.id ? 'Close' : 'View'}</button></td>
+                                                    <td><button className="btn-secondary" onClick={() => resultExcel(r)}>Excel</button></td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                            {viewRes && (() => {
+                                const d = viewRes.data, r = viewRes.doc, rows = resKept(d);
+                                const diff = rows.filter(x => x.entry !== 'Info'), info = rows.filter(x => x.entry === 'Info'), chg = (d.lines && d.lines.change) || [];
+                                const tabs = [['diff', 'Differences (' + diff.length + ')'], ['change', 'Change in ours (' + chg.length + ')'], ['theirs', 'Theirs only (' + info.length + ')'], ['pairs', 'Connections (' + (d.links || []).length + ') and Not a pair (' + (d.noPairs || []).length + ')']];
+                                const list = viewTab === 'diff' ? diff : info;
+                                return (
+                                    <div style={{ marginTop: '14px' }}>
+                                        <div style={{ fontWeight: 600 }}>Saved {resWhen(r)}{r.note ? ' — ' + r.note : ''} (read only)</div>
+                                        <div className="muted" style={{ marginTop: '2px' }}>Ours: {r.ourFile} ({money(r.ourTotal || 0)}). Insurance: {r.insFile} ({money(r.insTotal || 0)}). Differences {money(r.diffTotal || 0)}; our revised estimate should total {money(r.revisedTotal || 0)}.</div>
+                                        <div className="bar">
+                                            {tabs.map(t => <button key={t[0]} className={viewTab === t[0] ? 'btn-primary' : 'btn-secondary'} onClick={() => setViewTab(t[0])}>{t[1]}</button>)}
+                                        </div>
+                                        <div className="scroll">
+                                            {(viewTab === 'diff' || viewTab === 'theirs') && (
+                                                <table>
+                                                    <thead><tr><th>Room</th><th>Entry</th><th>Code</th><th>Description</th><th className="n">Qty</th><th>Unit</th><th className="n">Unit price</th><th className="n">Amount</th><th className="n">Ours #</th><th className="n">Theirs #</th><th>Why</th></tr></thead>
+                                                    <tbody>
+                                                        {list.map((x, i) => (
+                                                            <tr key={i}>
+                                                                <td>{x.room}</td><td>{x.entry === 'Info' ? 'Theirs only' : x.entry}</td><td>{x.cat} {x.sel} {x.act}</td>
+                                                                <td>{x.desc}{x.note ? <div className="small">{x.note}</div> : null}</td>
+                                                                <td className="n">{qty(x.qty)}</td><td>{x.unit}</td><td className="n">{qty(x.price)}</td><td className="n">{money(x.amount)}</td>
+                                                                <td className="n">{x.ourNo || ''}</td><td className="n">{x.insNo || ''}</td><td className="small">{x.what}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                            {viewTab === 'change' && (
+                                                <table>
+                                                    <thead><tr><th>Room</th><th className="n">Ours #</th><th>Our line</th><th className="n">Our $</th><th>Change to</th><th className="n">Their $</th><th>Why</th></tr></thead>
+                                                    <tbody>
+                                                        {chg.map((c, i) => (
+                                                            <tr key={i}>
+                                                                <td>{c.room}</td><td className="n">{c.ourNo}</td><td>{c.cat} {c.sel} {c.desc} {qty(c.qty)} {c.unit} @ {qty(c.price)}</td><td className="n">{money(c.amount || 0)}</td>
+                                                                <td>{c.remove ? 'REMOVE' : (c.insCode ? c.insCode + ' ' : '') + (c.insDesc || '') + (c.insQty != null ? ' ' + qty(c.insQty) + ' ' + (c.insUnit || '') + ' @ ' + qty(c.insPrice) : '')}</td>
+                                                                <td className="n">{c.insAmount != null ? money(c.insAmount) : ''}</td><td className="small">{c.why}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                            {viewTab === 'pairs' && (
+                                                <table>
+                                                    <tbody>
+                                                        {(d.links || []).map((l, i) => <tr key={'l' + i}><td>Connected</td><td>Ins #{l.ins} {l.insDesc}</td><td>with ours #{l.ours} {l.ourDesc}</td></tr>)}
+                                                        {(d.noPairs || []).map((l, i) => <tr key={'n' + i}><td>Not a pair</td><td>Ins #{l.ins} {l.insDesc}</td><td>not with ours #{l.ours} {l.ourDesc}</td></tr>)}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    )}
 
                     {ready && (
                         <div>
@@ -2114,6 +2264,14 @@
                                     {lines && <button className="btn-secondary" onClick={() => downloadScript(false)}>Download Xactimate script</button>}
                                     {lines && <button className="btn-secondary" onClick={() => downloadScript(true)} title="Ticked Theirs only rows, at their unit price, for a copy of our estimate with rooms renamed to match theirs">Download script: theirs only</button>}
                                 </div>
+                                {lines && (
+                                    <div className="bar" style={{ marginTop: 0 }}>
+                                        <input type="text" value={resNote} onChange={e => setResNote(e.target.value)} placeholder="Note for this save (optional), e.g. sent to adjuster" style={{ flex: 1, minWidth: '240px' }} disabled={!jobId} />
+                                        <button className="btn-secondary" onClick={saveResults} disabled={!jobId || resBusy} title="Stores a dated copy of these lines, Change in ours, theirs only and totals with the job. Saved copies are never changed.">{resBusy ? 'Saving…' : 'Save results'}</button>
+                                        {!jobId && <span className="muted" style={{ marginTop: 0 }}>Pick a job at the top to save results.</span>}
+                                        {resMsg && <span className={'read ' + (/^Could not|could not be read/.test(resMsg) ? 'bad' : 'ok')} style={{ marginTop: 0 }}>{resMsg}</span>}
+                                    </div>
+                                )}
                                 <div className="muted" style={{ marginBottom: '6px' }}>{lib === null ? 'Loading the code library…' : lib ? 'Code library: ' + lib.count.toLocaleString() + ' codes' + (lib.made ? ' (made ' + lib.made + ')' : '') + '. Used for their lines with no code.' : 'Code library not found (est-compare/codes.json). Their lines with no code are guessed from our lines only.'}</div>
                                 {!lines && <div className="muted">Uses the room pairings above. Lines in common (within 10%) are hidden. Changing a pairing clears the results.</div>}
                                 {lines && (
