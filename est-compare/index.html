@@ -932,7 +932,8 @@
                 // Nov 27 (Spencer, build B): the same item pair he connected in one room is suggested first in every other room
                 // (their description + action against our code, grade marks dropped), so "Connect all like this" can connect them all at once
                 {
-                    const keyT = (it) => { const k = lineKey(it); return k.base + '|' + k.action; };
+                    /* their description as a key; scan misreads evened out (5/ 8" = 5/8", Rl3 = R13, al9 = a19) */
+                    const keyT = (it) => { const k = lineKey(it); return k.base.replace(/(\d) ?\/ ?(\d)/g, '$1/$2').split(' ').map(w => /\d/.test(w) ? w.replace(/[li]/g, '1').replace(/o/g, '0') : w).join(' ') + '|' + k.action; };
                     const keyO = (it) => it.cat ? it.cat + '|' + selStem(it.sel) + '|' + (it.act || '') + '|' + it.unit : 'd|' + keyT(it);
                     const like = {};
                     LK.forEach(k => { const key = keyT(k.t) + ' >> ' + keyO(k.o); if (!like[key]) like[key] = { room: k.t.room, ins: k.t.no, ours: k.o.no }; });
@@ -948,8 +949,20 @@
                             suggest.push({ room: t.room, ours: o.ourNo, ins: t.insNo, why: 'Same as your connection in ' + lp.room + ' (Ins #' + lp.ins + ' with ours #' + lp.ours + ')', like: key });
                         });
                         for (let i = suggest.length - 1; i >= 0; i--) if (won.has(suggest[i].ins) && !suggest[i].like) suggest.splice(i, 1);
-                        suggest.sort((a, b) => (a.like ? 0 : 1) - (b.like ? 0 : 1) || a.ins - b.ins || a.ours - b.ours);
                     }
+                    /* Nov 27 (Spencer): the same item pair suggested in 2 or more rooms is grouped before anything is connected, so it can be connected all at once */
+                    const grp = {};
+                    suggest.forEach(x => {
+                        if (x.like || !oByNo[x.ours] || !tByNo[x.ins]) return;
+                        x.gk = 'g|' + keyT(tByNo[x.ins]) + ' >> ' + keyO(oByNo[x.ours]);
+                        (grp[x.gk] = grp[x.gk] || new Set()).add(x.room);
+                    });
+                    suggest.forEach(x => {
+                        if (x.gk && grp[x.gk].size >= 2) { x.like = x.gk; x.why += ' (same pair in ' + grp[x.gk].size + ' rooms)'; }
+                        delete x.gk;
+                    });
+                    const rank = (x) => !x.like ? 2 : /^g\|/.test(x.like) ? 1 : 0;   /* connected-like first, then groups, then the rest */
+                    suggest.sort((a, b) => rank(a) - rank(b) || a.ins - b.ins || a.ours - b.ours);
                 }
                 for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i])) rows.splice(i, 1);
                 const order = {};
