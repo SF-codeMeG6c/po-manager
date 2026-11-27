@@ -929,6 +929,28 @@
                     rows.filter(r => r.kind === 'OURS' && r.room === g.name && cats.has(r.cat) && !drop.has(r))
                         .forEach(o => suggest.push({ room: g.name, ours: o.ourNo, ins: it.no, why: 'Ins AS INCURRED, same category ' + o.cat }));
                 });
+                // Nov 27 (Spencer, build B): the same item pair he connected in one room is suggested first in every other room
+                // (their description + action against our code, grade marks dropped), so "Connect all like this" can connect them all at once
+                {
+                    const keyT = (it) => { const k = lineKey(it); return k.base + '|' + k.action; };
+                    const keyO = (it) => it.cat ? it.cat + '|' + selStem(it.sel) + '|' + (it.act || '') + '|' + it.unit : 'd|' + keyT(it);
+                    const like = {};
+                    LK.forEach(k => { const key = keyT(k.t) + ' >> ' + keyO(k.o); if (!like[key]) like[key] = { room: k.t.room, ins: k.t.no, ours: k.o.no }; });
+                    if (Object.keys(like).length) {
+                        const OO = rows.filter(r => r.kind === 'OURS' && !drop.has(r) && oByNo[r.ourNo]);
+                        const won = new Set();
+                        rows.filter(r => r.kind === 'THEIRS' && !drop.has(r) && tByNo[r.insNo]).forEach(t => {
+                            const kt = keyT(tByNo[t.insNo]);
+                            const o = OO.find(x => x.room === t.room && like[kt + ' >> ' + keyO(oByNo[x.ourNo])] && !notPair(x.ourNo, t.insNo));
+                            if (!o) return;
+                            const key = kt + ' >> ' + keyO(oByNo[o.ourNo]), lp = like[key];
+                            won.add(t.insNo);
+                            suggest.push({ room: t.room, ours: o.ourNo, ins: t.insNo, why: 'Same as your connection in ' + lp.room + ' (Ins #' + lp.ins + ' with ours #' + lp.ours + ')', like: key });
+                        });
+                        for (let i = suggest.length - 1; i >= 0; i--) if (won.has(suggest[i].ins) && !suggest[i].like) suggest.splice(i, 1);
+                        suggest.sort((a, b) => (a.like ? 0 : 1) - (b.like ? 0 : 1) || a.ins - b.ins || a.ours - b.ours);
+                    }
+                }
                 for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i])) rows.splice(i, 1);
                 const order = {};
                 groups.forEach((g, i) => { if (order[g.name] === undefined) order[g.name] = i; });
@@ -1997,6 +2019,15 @@
                 setLinksAndCompare(links.concat([{ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]));
             };
             const connect = () => { connectNos(linkOurs, linkIns); setLinkOurs(''); setLinkIns(''); };
+            /* Nov 27 (build B): connect every suggestion that is the same item pair as one he already connected */
+            const connectLike = (key) => {
+                const add = [];
+                (lines.suggest || []).filter(x => x.like === key).forEach(x => {
+                    const o = ours.est.items.find(it => it.no === x.ours), t = ins.est.items.find(it => it.no === x.ins);
+                    if (o && t && !links.some(l => l.ins === t.no && l.ours === o.no) && !add.some(l => l.ins === t.no)) add.push({ ours: o.no, ins: t.no, ourDesc: cd(o.desc), insDesc: cd(t.desc) });
+                });
+                if (add.length) setLinksAndCompare(links.concat(add));
+            };
             const itemNo = (est, no) => est.items.find(it => it.no === no);
             const suggestions = lines && lines.suggest ? lines.suggest.filter(x => !links.some(l => l.ins === x.ins)) : [];
             const kept = lines ? lines.rows.filter(r => !off[r.id + r.room]) : [];
@@ -2391,7 +2422,8 @@
                                                                 return (
                                                                     <tr key={x.ours + '-' + x.ins}>
                                                                         <td>{x.room}</td><td>Ins {itemText(t)}</td><td>with ours {itemText(o)}</td><td className="small">{x.why}</td><td className="small">{result}</td>
-                                                                        <td><button className="btn-secondary" onClick={() => connectNos(x.ours, x.ins)}>Connect</button></td>
+                                                                        <td><button className="btn-secondary" onClick={() => connectNos(x.ours, x.ins)}>Connect</button>
+                                                                            {x.like && suggestions.filter(y => y.like === x.like).length > 1 && <button className="btn-secondary" style={{ marginTop: '4px' }} onClick={() => connectLike(x.like)}>Connect all like this ({suggestions.filter(y => y.like === x.like).length})</button>}</td>
                                                                         <td><button className="btn-secondary" onClick={() => setNoPairsAndCompare(noPairs.concat([{ ours: x.ours, ins: x.ins, ourDesc: cd(o.desc), insDesc: cd(t.desc) }]))}>Not a pair</button></td>
                                                                     </tr>
                                                                 );
