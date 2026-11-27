@@ -829,6 +829,26 @@
                     o.what += '. ' + o.xnote;
                     suggest.push({ room: o.room, ours: o.ourNo, ins: best.insNo, why: 'Similar item, qty within 10%' });
                 });
+                // Nov 27 (Spencer, Hollenbeck): loose suggestions must look like the same kind of item. Same selector (grade marks + - dropped: MC+ = MC++)
+                // passes; otherwise the action must match, unit prices within 2x, and an add-on line only goes with an add-on line.
+                const oByNo = {}, tByNo = {};
+                ours.items.forEach(it => { oByNo[it.no] = it; });
+                ins.items.forEach(it => { tByNo[it.no] = it; });
+                const selStem = (x) => String(x || '').toUpperCase().replace(/[+\-<>]+$/, '');
+                const actOf = (it) => it.act || ACT_OF[lineKey(it).action];
+                const addOnLine = (it) => /^(add[\s-]*on|additional)\b/i.test(lineKey(it).base);
+                const sameSel = (o, t) => !!(o.cat && o.sel && t.cat && t.sel && o.cat === t.cat && selStem(o.sel) === selStem(t.sel));
+                const looksSame = (o, t) => {   /* o, t = screen rows (OURS / THEIRS) */
+                    if (sameSel(o, t)) return true;
+                    const oi = oByNo[o.ourNo], ti = tByNo[t.insNo];
+                    if (!oi || !ti) return false;
+                    /* Nov 27 (Spencer): R&R and replace count as the same action (their R&R travertine vs our tile floor covering) */
+                    const act = (it) => { const a = actOf(it); return a === '&' ? '+' : a; };
+                    if (act(oi) !== act(ti) || addOnLine(oi) !== addOnLine(ti)) return false;
+                    /* R&R against replace: also the same unit and quantities within 25% (keeps their R&R travertine off our mortar bed / bullnose) */
+                    if (actOf(oi) !== actOf(ti) && (oi.unit !== ti.unit || Math.abs(oi.qty - ti.qty) > 0.25 * Math.max(oi.qty, ti.qty))) return false;
+                    return oi.price > 0 && ti.price > 0 && Math.max(oi.price, ti.price) <= 2 * Math.min(oi.price, ti.price);
+                };
                 // Nov 22 (Spencer): also suggest an Ours only and a Theirs only line in the same room whose notes share 2 or more words (e.g. "window sill")
                 const noteW = (t) => new Set(wordsOf(t || '').filter(w => w.length > 2));
                 rows.filter(r => r.kind === 'OURS' && !drop.has(r) && r.note).forEach(o => {
@@ -837,7 +857,7 @@
                     rows.forEach(t => {
                         if (t.kind !== 'THEIRS' || t.room !== o.room || drop.has(t) || !t.note || suggest.some(x => x.ours === o.ourNo && x.ins === t.insNo)) return;
                         const sh = [...noteW(t.note)].filter(w => wo.has(w));
-                        if (sh.length >= 2) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
+                        if (sh.length >= 2 && looksSame(o, t)) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
                     });
                 });
                 // Nov 23 (Spencer, build 4): more suggested pairs, only among lines still Ours only / Theirs only. Each of theirs gets ONE suggestion (the best);
@@ -876,6 +896,9 @@
                             if (o.unit === t.unit && ko.action === kt.action && near(o.qty, t.qty, 0.02) && measured(o) && measured(t)) offer(o, 2, -Math.abs(o.qty - t.qty), 'Same quantity and action');
                             // 3. same room, same category, a key word in common (in the descriptions, or in our note)
                             if (!t.cat || t.cat !== o.cat) return;
+                            /* Nov 27: same selector = same item (grade may differ), shown first */
+                            if (sameSel(o, t)) { offer(o, 0, -Math.abs(o.qty - t.qty), 'Same item code ' + o.cat + ' ' + selStem(o.sel)); return; }
+                            if (!looksSame(o, t)) return;
                             const wo = keyW(o.desc), sh = wt.filter(w => wo.some(v => likeW(w, v)));
                             if (sh.length) { offer(o, 3, 2 * sh.length / (wt.length + wo.length), 'Same category ' + o.cat + ', both say: ' + sh.join(' ')); return; }
                             const wn = keyW(o.note), sn = wt.filter(w => wn.some(v => likeW(w, v)));
