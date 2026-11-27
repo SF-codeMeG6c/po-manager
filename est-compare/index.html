@@ -893,7 +893,8 @@
                             if (o.room !== t.room && pr && oi.room === pr.room && ko.base === kt.base && ko.action === kt.action) { offer(o, 1, 0, 'Same item elsewhere in our ' + oi.room + (oi.head ? ' (' + oi.head + ')' : '')); return; }
                             if (o.room !== t.room) return;
                             // 2. same room, same unit and action, quantity within 2%, any category (their quarter round against our base shoe)
-                            if (o.unit === t.unit && ko.action === kt.action && near(o.qty, t.qty, 0.02) && measured(o) && measured(t)) offer(o, 2, -Math.abs(o.qty - t.qty), 'Same quantity and action');
+                            /* Nov 27 (Spencer): rules 2 and 5 must also pass looksSame (final cleaning vs HEPA floor, add-on vs remove cement board) */
+                            if (o.unit === t.unit && ko.action === kt.action && near(o.qty, t.qty, 0.02) && measured(o) && measured(t) && looksSame(o, t)) offer(o, 2, -Math.abs(o.qty - t.qty), 'Same quantity and action');
                             // 3. same room, same category, a key word in common (in the descriptions, or in our note)
                             if (!t.cat || t.cat !== o.cat) return;
                             /* Nov 27: same selector = same item (grade may differ), shown first */
@@ -914,7 +915,7 @@
                             const ti = tItem[t.insNo];
                             if (made.some(x => x.t === t) || ti.room !== m.ti.room || t.unit !== m.t.unit || Math.abs(t.qty - m.t.qty) > 0.005 || !t.cat || !measured(t)) return;
                             const o = OU.find(x => x !== m.o && oItem[x.ourNo].room === m.oi.room && (oItem[x.ourNo].head || '') === (m.oi.head || '') && x.unit === m.o.unit && Math.abs(x.qty - m.o.qty) <= 0.005 && x.cat === t.cat);
-                            if (o) made.push({ t, ti, o, oi: oItem[o.ourNo], why: 'Goes with Ins #' + m.t.insNo + ' and ours #' + m.o.ourNo + ' (same quantities, category ' + t.cat + ')' });
+                            if (o && looksSame(o, t)) made.push({ t, ti, o, oi: oItem[o.ourNo], why: 'Goes with Ins #' + m.t.insNo + ' and ours #' + m.o.ourNo + ' (same quantities, category ' + t.cat + ')' });
                         });
                     });
                     made.forEach(m => suggest.push({ room: m.t.room, ours: m.o.ourNo, ins: m.t.insNo, why: m.why }));
