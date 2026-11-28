@@ -857,7 +857,7 @@
                     rows.forEach(t => {
                         if (t.kind !== 'THEIRS' || t.room !== o.room || drop.has(t) || !t.note || suggest.some(x => x.ours === o.ourNo && x.ins === t.insNo)) return;
                         const sh = [...noteW(t.note)].filter(w => wo.has(w));
-                        if (sh.length >= 2 && looksSame(o, t)) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
+                        if (sh.length >= 2 && o.unit === t.unit && looksSame(o, t)) suggest.push({ room: o.room, ours: o.ourNo, ins: t.insNo, why: 'Notes share: ' + sh.join(' ') });
                     });
                 });
                 // Nov 23 (Spencer, build 4): more suggested pairs, only among lines still Ours only / Theirs only. Each of theirs gets ONE suggestion (the best);
@@ -933,9 +933,15 @@
                 // Nov 27 (Spencer, build B): the same item pair he connected in one room is suggested first in every other room
                 // (their description + action against our code, grade marks dropped), so "Connect all like this" can connect them all at once
                 {
-                    /* their description as a key; scan misreads evened out (5/ 8" = 5/8", Rl3 = R13, al9 = a19) */
-                    const keyT = (it) => { const k = lineKey(it); return k.base.replace(/(\d) ?\/ ?(\d)/g, '$1/$2').split(' ').map(w => /\d/.test(w) ? w.replace(/[li]/g, '1').replace(/o/g, '0') : w).join(' ') + '|' + k.action; };
-                    const keyO = (it) => it.cat ? it.cat + '|' + selStem(it.sel) + '|' + (it.act || '') + '|' + it.unit : 'd|' + keyT(it);
+                    /* Nov 27 (Spencer): matched loosely - the first two words of their description (scan misreads evened out: 5/ 8" = 5/8", machi ne, IO = 10)
+                       + unit + action, against our category + the letters of our selector (B>1SP = B>2SP) + action + unit. Matches must still pass looksSame. */
+                    const keyT = (it) => {
+                        const k = lineKey(it), [d, unit] = k.base.split('|');
+                        const w = d.replace(/(\d) ?\/ ?(\d)/g, '$1/$2').replace(/[^a-z0-9\/&]+/g, ' ').trim().split(' ')
+                            .map(x => /\d/.test(x) ? x.replace(/[li]/g, '1').replace(/o/g, '0') : x).filter(Boolean).slice(0, 2).join(' ');
+                        return w + '|' + unit + '|' + k.action;
+                    };
+                    const keyO = (it) => it.cat ? it.cat + '|' + String(it.sel || '').toUpperCase().replace(/[^A-Z]/g, '') + '|' + (it.act || '') + '|' + it.unit : 'd|' + keyT(it);
                     const like = {};
                     LK.forEach(k => { const key = keyT(k.t) + ' >> ' + keyO(k.o); if (!like[key]) like[key] = { room: k.t.room, ins: k.t.no, ours: k.o.no }; });
                     if (Object.keys(like).length) {
@@ -943,7 +949,7 @@
                         const won = new Set();
                         rows.filter(r => r.kind === 'THEIRS' && !drop.has(r) && tByNo[r.insNo]).forEach(t => {
                             const kt = keyT(tByNo[t.insNo]);
-                            const o = OO.find(x => x.room === t.room && like[kt + ' >> ' + keyO(oByNo[x.ourNo])] && !notPair(x.ourNo, t.insNo));
+                            const o = OO.find(x => x.room === t.room && like[kt + ' >> ' + keyO(oByNo[x.ourNo])] && !notPair(x.ourNo, t.insNo) && looksSame(x, t));
                             if (!o) return;
                             const key = kt + ' >> ' + keyO(oByNo[o.ourNo]), lp = like[key];
                             won.add(t.insNo);
